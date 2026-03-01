@@ -1,4 +1,3 @@
-from typing import Optional
 from pydantic_settings import BaseSettings
 
 
@@ -23,7 +22,7 @@ class Settings(BaseSettings):
     # Redis
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
-    REDIS_PASSWORD: Optional[str] = None
+    REDIS_PASSWORD: str | None = None
 
     @property
     def redis_url(self) -> str:
@@ -34,12 +33,12 @@ class Settings(BaseSettings):
     NATS_URL: str = "nats://localhost:4222"
 
     # Service-specific
-    ALPHA_VANTAGE_API_KEY: Optional[str] = None
+    ALPHA_VANTAGE_API_KEY: str | None = None
     DEFAULT_FETCH_INTERVAL: str = "1d"
     MAX_CONCURRENT_FETCHES: int = 5
     CACHE_TTL_SECONDS: int = 3600
 
-    model_config = {"env_file": ".env", "case_sensitive": True}
+    model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}
 
 
 settings = Settings()
