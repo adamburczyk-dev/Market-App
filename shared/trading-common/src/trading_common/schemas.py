@@ -4,12 +4,12 @@ Każdy serwis importuje: from trading_common.schemas import OHLCVBar
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
 
 
-class Interval(str, Enum):
+class Interval(StrEnum):
     M1 = "1m"
     M5 = "5m"
     M15 = "15m"
@@ -46,7 +46,7 @@ class OHLCVBar(BaseModel):
         return v
 
 
-class Signal(str, Enum):
+class Signal(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"

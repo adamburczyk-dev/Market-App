@@ -4,13 +4,13 @@ Każdy event musi dziedziczyć z BaseEvent.
 """
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     MARKET_DATA_UPDATED = "market_data.updated"
     FEATURES_COMPUTED = "features.computed"
     SIGNAL_GENERATED = "signal.generated"
