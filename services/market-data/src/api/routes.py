@@ -1,5 +1,4 @@
 from datetime import date
-from typing import Optional
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query
@@ -13,8 +12,8 @@ router = APIRouter()
 async def get_ohlcv(
     symbol: str,
     interval: Interval = Interval.D1,
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = Query(default=100, le=5000),
 ) -> list[OHLCVBar]:
     """Pobierz dane OHLCV dla symbolu."""
