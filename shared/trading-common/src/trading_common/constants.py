@@ -29,6 +29,6 @@ NATS_SUBJECTS = {
 }
 
 # Risk defaults
-DEFAULT_MAX_POSITION_PCT = 0.05   # max 5% portfela na jedną pozycję
-DEFAULT_MAX_DRAWDOWN_PCT = 0.20   # stop trading przy 20% drawdown
+DEFAULT_MAX_POSITION_PCT = 0.05  # max 5% portfela na jedną pozycję
+DEFAULT_MAX_DRAWDOWN_PCT = 0.20  # stop trading przy 20% drawdown
 DEFAULT_VAR_CONFIDENCE = 0.95

@@ -12,6 +12,7 @@ System tradingowy oparty na mikroserwisach: event-driven, Kubernetes-ready od dn
 - [Shared Library](#shared-library)
 - [Uruchamianie](#uruchamianie)
 - [Testowanie](#testowanie)
+- [Git Workflow](#git-workflow)
 - [CI/CD](#cicd)
 - [Kubernetes / Helm](#kubernetes--helm)
 - [Struktura plików](#struktura-plików)
@@ -264,6 +265,92 @@ from src.main import app  # dopiero tutaj
 ### Reguła testowania
 
 > Każdy nowy kod musi mieć testy. Nowy endpoint → test HTTP. Nowa funkcja biznesowa → test jednostkowy. Nowy event → test kontraktu.
+
+---
+
+## Git Workflow
+
+### Strategia branchy
+
+```
+main        ← produkcja; chroniony przez hook (brak bezpośrednich commitów)
+│
+└── develop ← integracja; bieżąca gałąź robocza
+    │
+    ├── feat/market-data-fetcher   ← nowa funkcja
+    ├── fix/ohlcv-validator-high-low
+    └── chore/update-dependencies
+```
+
+### Codzienny cykl pracy
+
+```bash
+# 1. Utwórz branch z develop
+git checkout develop
+git checkout -b feat/nazwa-funkcji
+
+# 2. Pracuj i commituj (pre-commit lint uruchomi się automatycznie)
+git add services/market-data/src/...
+git commit -m "feat(market-data): add OHLCV fetcher via yfinance"
+
+# 3. Scal do develop po zakończeniu
+git checkout develop
+git merge --no-ff feat/nazwa-funkcji
+git branch -d feat/nazwa-funkcji
+
+# 4. Do main przez PR (GitHub) — CI musi przejść
+```
+
+### Format commitów (Conventional Commits)
+
+```
+<typ>(<zakres>): <opis>
+
+typ:    feat | fix | chore | docs | test | refactor | perf
+zakres: market-data | feature-engine | strategy | shared | infra | ci
+```
+
+Przykłady:
+```
+feat(market-data): implement OHLCV fetch from yfinance
+fix(shared): replace deprecated datetime.utcnow with timezone-aware
+test(market-data): add integration tests for DB layer
+chore(deps): bump pydantic to 2.12
+```
+
+### Pre-commit hooks (automatyczne przy `git commit`)
+
+| Hook | Akcja |
+|------|-------|
+| `trailing-whitespace` | Usuwa trailing whitespace |
+| `end-of-file-fixer` | Zapewnia newline na końcu pliku |
+| `check-yaml` / `check-toml` | Walidacja składni |
+| `check-added-large-files` | Blokuje pliki > 500 KB |
+| `no-commit-to-branch` | Blokuje bezpośredni commit na `main` |
+| `ruff` | Lint + auto-fix |
+| `ruff-format` | Formatowanie kodu |
+
+Konfiguracja: [`.pre-commit-config.yaml`](.pre-commit-config.yaml)
+
+```bash
+# Ręczne uruchomienie na wszystkich plikach
+python -m pre_commit run --all-files
+
+# Reinstalacja hooków (np. po klonowaniu)
+python -m pre_commit install
+```
+
+### Podłączenie remote (GitHub)
+
+```bash
+# 1. Utwórz repo na GitHub (bez inicjalizacji — repo jest już lokalnie)
+# 2. Podłącz remote i wypchnij
+git remote add origin https://github.com/<user>/<repo>.git
+git push -u origin main
+git push -u origin develop
+```
+
+> Ustaw ochronę brancha `main` w GitHub: Settings → Branches → Add rule → wymagaj PR + CI pass.
 
 ---
 

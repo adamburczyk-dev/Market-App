@@ -70,24 +70,18 @@ jobs:
           flags: shared
 
   # ============================================================
-  # Testy serwisów (matrix)
+  # Testy serwisów (matrix — tylko zmienione serwisy)
   # ============================================================
   test-services:
     needs: [detect-changes, test-shared]
     runs-on: ubuntu-latest
+    # Uruchom tylko jeśli detect-changes wykrył co najmniej jeden zmieniony serwis
+    if: ${{ needs.detect-changes.outputs.services != '[]' && needs.detect-changes.outputs.services != '' }}
     strategy:
       fail-fast: false
       matrix:
-        service:
-          - market-data
-          - feature-engine
-          - strategy
-          - backtest
-          - ml-pipeline
-          - risk-mgmt
-          - execution
-          - notification
-          - dashboard
+        # Dynamiczna macierz — tylko serwisy które się zmieniły (lub zależą od shared)
+        service: ${{ fromJSON(needs.detect-changes.outputs.services) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -97,15 +91,21 @@ jobs:
       - name: Install shared lib
         run: pip install -e shared/trading-common
       - name: Install service deps
+        # 'shared' nie jest serwisem — pomijamy instalację i testy dla niego
+        if: ${{ matrix.service != 'shared' }}
         run: pip install -e "services/${{ matrix.service }}[dev]"
       - name: Lint
+        if: ${{ matrix.service != 'shared' }}
         run: ruff check services/${{ matrix.service }}/
       - name: Type check
-        run: mypy services/${{ matrix.service }}/src/ --ignore-missing-imports
+        if: ${{ matrix.service != 'shared' }}
+        run: cd services/${{ matrix.service }} && mypy src/
       - name: Test
+        if: ${{ matrix.service != 'shared' }}
         run: |
           cd services/${{ matrix.service }}
           pytest tests/ -v --cov=src --cov-report=xml
       - uses: codecov/codecov-action@v4
+        if: ${{ matrix.service != 'shared' }}
         with:
           flags: ${{ matrix.service }}

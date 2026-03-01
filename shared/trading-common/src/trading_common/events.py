@@ -3,15 +3,14 @@ Event definitions — kontrakt asynchronicznej komunikacji przez NATS.
 Każdy event musi dziedziczyć z BaseEvent.
 """
 
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Optional
+from datetime import UTC, datetime
+from enum import StrEnum
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     MARKET_DATA_UPDATED = "market_data.updated"
     FEATURES_COMPUTED = "features.computed"
     SIGNAL_GENERATED = "signal.generated"
@@ -27,9 +26,9 @@ class EventType(str, Enum):
 class BaseEvent(BaseModel):
     event_id: str = Field(default_factory=lambda: str(uuid4()))
     event_type: EventType
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_service: str
-    correlation_id: Optional[str] = None
+    correlation_id: str | None = None
 
     def subject(self) -> str:
         """NATS subject dla tego eventu."""
@@ -96,7 +95,7 @@ class BacktestCompletedEvent(BaseEvent):
     backtest_id: str
     strategy_name: str
     total_return: float
-    sharpe_ratio: Optional[float] = None
+    sharpe_ratio: float | None = None
     source_service: str = "backtest"
 
 

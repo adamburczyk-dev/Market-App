@@ -4,13 +4,12 @@ Każdy serwis importuje: from trading_common.schemas import OHLCVBar
 """
 
 from datetime import datetime
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
 
 
-class Interval(str, Enum):
+class Interval(StrEnum):
     M1 = "1m"
     M5 = "5m"
     M15 = "15m"
@@ -28,7 +27,7 @@ class OHLCVBar(BaseModel):
     low: float = Field(gt=0)
     close: float = Field(gt=0)
     volume: float = Field(ge=0)
-    source: Optional[str] = None
+    source: str | None = None
 
     @field_validator("high")
     @classmethod
@@ -47,7 +46,7 @@ class OHLCVBar(BaseModel):
         return v
 
 
-class Signal(str, Enum):
+class Signal(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
@@ -60,8 +59,8 @@ class TradingSignal(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     price: float = Field(gt=0)
     timestamp: datetime
-    stop_loss: Optional[float] = Field(default=None, gt=0)
-    take_profit: Optional[float] = Field(default=None, gt=0)
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
     metadata: dict = Field(default_factory=dict)
 
 
@@ -72,9 +71,9 @@ class PortfolioMetrics(BaseModel):
     positions_value: float
     daily_pnl: float
     daily_pnl_pct: float
-    sharpe_ratio: Optional[float] = None
-    sortino_ratio: Optional[float] = None
-    max_drawdown: Optional[float] = None
-    current_drawdown: Optional[float] = None
-    var_95: Optional[float] = None
-    cvar_95: Optional[float] = None
+    sharpe_ratio: float | None = None
+    sortino_ratio: float | None = None
+    max_drawdown: float | None = None
+    current_drawdown: float | None = None
+    var_95: float | None = None
+    cvar_95: float | None = None
