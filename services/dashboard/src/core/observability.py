@@ -1,4 +1,4 @@
-"""Observability setup — Prometheus + structured logging. Wzorzec wspólny dla wszystkich serwisów."""
+"""Observability — Prometheus metrics + structured logging dla wszystkich serwisów."""
 
 import structlog
 from fastapi import FastAPI
