@@ -1,20 +1,22 @@
 """Testy kontraktów Pydantic — walidacja danych między serwisami."""
 
+from datetime import UTC, datetime
+
 import pytest
-from datetime import datetime, timezone
+
 from trading_common.schemas import (
     Interval,
     OHLCVBar,
+    PortfolioMetrics,
     Signal,
     TradingSignal,
-    PortfolioMetrics,
 )
 
 
 def make_bar(**kwargs) -> dict:
     defaults = {
         "symbol": "AAPL",
-        "timestamp": datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
+        "timestamp": datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
         "interval": Interval.D1,
         "open": 150.0,
         "high": 155.0,
@@ -77,7 +79,7 @@ class TestTradingSignal:
             "signal": Signal.BUY,
             "confidence": 0.75,
             "price": 153.0,
-            "timestamp": datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
+            "timestamp": datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
         }
         return {**defaults, **kwargs}
 
@@ -116,7 +118,7 @@ class TestTradingSignal:
 class TestPortfolioMetrics:
     def test_valid_metrics(self):
         m = PortfolioMetrics(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
             total_value=105_000.0,
             cash=50_000.0,
             positions_value=55_000.0,
@@ -130,7 +132,7 @@ class TestPortfolioMetrics:
 
     def test_optional_fields_default_none(self):
         m = PortfolioMetrics(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
             total_value=100_000.0,
             cash=100_000.0,
             positions_value=0.0,

@@ -1,17 +1,12 @@
 """Testy event definitions — weryfikacja kontraktów NATS."""
 
-import pytest
-from datetime import datetime, timezone
+from datetime import datetime
+
 from trading_common.events import (
-    EventType,
     BaseEvent,
+    EventType,
     MarketDataUpdatedEvent,
-    FeaturesComputedEvent,
     SignalGeneratedEvent,
-    OrderSubmittedEvent,
-    OrderFilledEvent,
-    RiskLimitBreachedEvent,
-    AlertTriggeredEvent,
 )
 
 
