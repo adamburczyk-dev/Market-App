@@ -1,0 +1,12 @@
+# Grafana provisioning — automatyczne ładowanie dashboardów
+apiVersion: 1
+
+providers:
+  - name: trading-system
+    orgId: 1
+    folder: "Trading System"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

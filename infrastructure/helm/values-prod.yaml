@@ -1,0 +1,47 @@
+# Production overrides — nadpisuje values.yaml
+global:
+  imagePullPolicy: Always
+  env: production
+
+marketData:
+  replicaCount: 2
+  env:
+    LOG_LEVEL: WARNING
+
+featureEngine:
+  replicaCount: 2
+  env:
+    LOG_LEVEL: WARNING
+
+strategy:
+  replicaCount: 2
+
+backtest:
+  replicaCount: 1
+
+mlPipeline:
+  enabled: true
+  replicaCount: 1
+
+riskMgmt:
+  enabled: true
+  replicaCount: 2
+
+execution:
+  enabled: true
+  replicaCount: 2
+
+notification:
+  enabled: true
+  replicaCount: 1
+
+dashboard:
+  enabled: true
+  replicaCount: 1
+
+postgres:
+  storage: 100Gi
+
+prometheus:
+  storage: 200Gi
+  retention: 90d

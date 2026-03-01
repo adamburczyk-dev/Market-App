@@ -1,0 +1,54 @@
+name: Deploy to Kubernetes
+
+on:
+  workflow_run:
+    workflows: ["Build & Push Docker Images"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Środowisko docelowe"
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    environment: ${{ inputs.environment || 'staging' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Deploy
+        run: |
+          VALUES_FILE=./infrastructure/helm/values.yaml
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            VALUES_FILE="$VALUES_FILE -f ./infrastructure/helm/values-prod.yaml"
+          fi
+
+          helm upgrade --install trading-system ./infrastructure/helm \
+            -f $VALUES_FILE \
+            --namespace trading-system \
+            --create-namespace \
+            --wait \
+            --timeout 5m \
+            --set global.imagePullPolicy=Always
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/market-data -n trading-system
+          kubectl rollout status deployment/feature-engine -n trading-system
+          kubectl rollout status deployment/strategy -n trading-system
+          kubectl rollout status deployment/backtest -n trading-system

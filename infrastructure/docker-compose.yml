@@ -1,0 +1,290 @@
+# NIE MA 'version:' — deprecated od Docker Compose v2
+name: trading-system
+
+services:
+  # ==================== INFRASTRUCTURE ====================
+
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: ts-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-trading_db}
+      POSTGRES_USER: ${DB_USER:-trader}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trader} -d ${DB_NAME:-trading_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ts-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-dev_redis_pass}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-dev_redis_pass}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nats:
+    image: nats:2-alpine
+    container_name: ts-nats
+    ports:
+      - "4222:4222"   # Client
+      - "8222:8222"   # Monitoring HTTP
+    command: >
+      --jetstream
+      --store_dir /data
+      --http_port 8222
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ==================== OBSERVABILITY ====================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ts-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ts-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: grafana-clock-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - prometheus
+
+  loki:
+    image: grafana/loki:latest
+    container_name: ts-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+
+  # ==================== API GATEWAY ====================
+
+  traefik:
+    image: traefik:v3.0
+    container_name: ts-gateway
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--accesslog=true"
+    ports:
+      - "80:80"
+      - "8080:8080"   # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # ==================== APPLICATION SERVICES ====================
+  # Serwisy uruchamiane gdy ich Dockerfile / kod są gotowe.
+  # Odkomentuj dany blok po zaimplementowaniu serwisu.
+
+  market-data:
+    build:
+      context: ..
+      dockerfile: services/market-data/Dockerfile
+    container_name: ts-market-data
+    environment:
+      SERVICE_NAME: market-data
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-trading_db}
+      DB_USER: ${DB_USER:-trader}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      NATS_URL: nats://nats:4222
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    volumes:
+      - ../services/market-data/src:/app/src   # hot-reload dev
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.market-data.rule=PathPrefix(`/api/v1/market-data`)"
+
+  feature-engine:
+    build:
+      context: ..
+      dockerfile: services/feature-engine/Dockerfile
+    container_name: ts-feature-engine
+    environment:
+      SERVICE_NAME: feature-engine
+      DB_HOST: postgres
+      DB_NAME: ${DB_NAME:-trading_db}
+      DB_USER: ${DB_USER:-trader}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      NATS_URL: nats://nats:4222
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.feature-engine.rule=PathPrefix(`/api/v1/features`)"
+
+  strategy:
+    build:
+      context: ..
+      dockerfile: services/strategy/Dockerfile
+    container_name: ts-strategy
+    environment:
+      SERVICE_NAME: strategy
+      NATS_URL: nats://nats:4222
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8003:8000"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.strategy.rule=PathPrefix(`/api/v1/strategy`)"
+
+  backtest:
+    build:
+      context: ..
+      dockerfile: services/backtest/Dockerfile
+    container_name: ts-backtest
+    environment:
+      SERVICE_NAME: backtest
+      DB_HOST: postgres
+      DB_NAME: ${DB_NAME:-trading_db}
+      DB_USER: ${DB_USER:-trader}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      NATS_URL: nats://nats:4222
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8004:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backtest.rule=PathPrefix(`/api/v1/backtest`)"
+
+  # --- Faza 3 (tydzień 13+) ---
+  # ml-pipeline:
+  #   build:
+  #     context: ..
+  #     dockerfile: services/ml-pipeline/Dockerfile
+  #   container_name: ts-ml-pipeline
+  #   ports:
+  #     - "8005:8000"
+
+  # --- Faza 4 (tydzień 19+) ---
+  # risk-mgmt:
+  #   build:
+  #     context: ..
+  #     dockerfile: services/risk-mgmt/Dockerfile
+  #   container_name: ts-risk-mgmt
+  #   ports:
+  #     - "8006:8000"
+
+  # --- Faza 4 (tydzień 21) ---
+  # dashboard:
+  #   build:
+  #     context: ..
+  #     dockerfile: services/dashboard/Dockerfile
+  #   container_name: ts-dashboard
+  #   ports:
+  #     - "8501:8501"
+
+  # --- Faza 5 (tydzień 22+) ---
+  # execution:
+  #   build:
+  #     context: ..
+  #     dockerfile: services/execution/Dockerfile
+  #   container_name: ts-execution
+  #   ports:
+  #     - "8007:8000"
+
+  # notification:
+  #   build:
+  #     context: ..
+  #     dockerfile: services/notification/Dockerfile
+  #   container_name: ts-notification
+  #   ports:
+  #     - "8008:8000"
+
+volumes:
+  postgres_data:
+  redis_data:
+  nats_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:

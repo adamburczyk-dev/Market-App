@@ -1,0 +1,65 @@
+# Production overrides — używaj razem z docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+name: trading-system
+
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # W produkcji: brak eksponowania portu na zewnątrz
+    ports: []
+
+  redis:
+    ports: []
+
+  nats:
+    ports:
+      - "4222:4222"   # tylko client port; monitoring wyłączony
+
+  traefik:
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt_data:/letsencrypt
+
+  market-data:
+    # Brak hot-reload volume w produkcji
+    volumes: []
+    environment:
+      LOG_LEVEL: INFO
+
+  feature-engine:
+    volumes: []
+    environment:
+      LOG_LEVEL: INFO
+
+  strategy:
+    volumes: []
+    environment:
+      LOG_LEVEL: INFO
+
+  backtest:
+    volumes: []
+    environment:
+      LOG_LEVEL: INFO
+
+volumes:
+  postgres_data:
+  redis_data:
+  nats_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  letsencrypt_data:

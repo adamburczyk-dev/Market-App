@@ -1,0 +1,94 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: development
+    system: trading-system
+
+# Reguły alertów (plik tworzony oddzielnie)
+rule_files:
+  - "alert-rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  # Prometheus sam siebie
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ==================== APPLICATION SERVICES ====================
+  # FastAPI + prometheus-fastapi-instrumentator eksponuje /metrics
+
+  - job_name: market-data
+    static_configs:
+      - targets: ["market-data:8000"]
+    metrics_path: /metrics
+    relabel_configs:
+      - target_label: service
+        replacement: market-data
+
+  - job_name: feature-engine
+    static_configs:
+      - targets: ["feature-engine:8000"]
+    metrics_path: /metrics
+    relabel_configs:
+      - target_label: service
+        replacement: feature-engine
+
+  - job_name: strategy
+    static_configs:
+      - targets: ["strategy:8000"]
+    metrics_path: /metrics
+    relabel_configs:
+      - target_label: service
+        replacement: strategy
+
+  - job_name: backtest
+    static_configs:
+      - targets: ["backtest:8000"]
+    metrics_path: /metrics
+    relabel_configs:
+      - target_label: service
+        replacement: backtest
+
+  # --- Faza 3+ ---
+  # - job_name: ml-pipeline
+  #   static_configs:
+  #     - targets: ["ml-pipeline:8000"]
+
+  # - job_name: risk-mgmt
+  #   static_configs:
+  #     - targets: ["risk-mgmt:8000"]
+
+  # - job_name: execution
+  #   static_configs:
+  #     - targets: ["execution:8000"]
+
+  # - job_name: notification
+  #   static_configs:
+  #     - targets: ["notification:8000"]
+
+  # ==================== INFRASTRUCTURE ====================
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: nats
+    static_configs:
+      - targets: ["nats:8222"]
+    metrics_path: /metrics
+
+  - job_name: traefik
+    static_configs:
+      - targets: ["traefik:8080"]
+    metrics_path: /metrics

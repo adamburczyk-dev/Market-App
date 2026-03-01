@@ -1,0 +1,23 @@
+# Normalizacja końców linii: repozytorium przechowuje LF,
+# Windows checkout konwertuje do CRLF, commit konwertuje z powrotem do LF.
+* text=auto eol=lf
+
+# Pliki które MUSZĄ mieć LF (skrypty shell, Docker, YAML)
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.toml      text eol=lf
+*.py        text eol=lf
+*.md        text eol=lf
+*.sql       text eol=lf
+*.tpl       text eol=lf
+Makefile    text eol=lf
+
+# Pliki binarne — bez konwersji
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.gz        binary
+*.zip       binary
+*.whl       binary
