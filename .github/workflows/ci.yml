@@ -99,7 +99,7 @@ jobs:
         run: ruff check services/${{ matrix.service }}/
       - name: Type check
         if: ${{ matrix.service != 'shared' }}
-        run: mypy services/${{ matrix.service }}/src/ --ignore-missing-imports
+        run: cd services/${{ matrix.service }} && mypy src/
       - name: Test
         if: ${{ matrix.service != 'shared' }}
         run: |

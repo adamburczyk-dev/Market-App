@@ -41,4 +41,4 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}
 
 
-settings = Settings()  # type: ignore[call-arg]
+settings = Settings()

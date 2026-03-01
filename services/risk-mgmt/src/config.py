@@ -1,4 +1,3 @@
-from typing import Optional
 from pydantic_settings import BaseSettings
 
 
@@ -7,7 +6,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
-    REDIS_PASSWORD: Optional[str] = None
+    REDIS_PASSWORD: str | None = None
     NATS_URL: str = "nats://localhost:4222"
 
     @property
@@ -18,4 +17,4 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}
 
 
-settings = Settings()  # type: ignore[call-arg]
+settings = Settings()
