@@ -18,9 +18,19 @@ class EventType(StrEnum):
     ORDER_FILLED = "order.filled"
     ORDER_REJECTED = "order.rejected"
     RISK_LIMIT_BREACHED = "risk.limit_breached"
+    CIRCUIT_BREAKER_TRIGGERED = "risk.circuit_breaker"
     MODEL_TRAINED = "ml.model_trained"
+    MODEL_DRIFT_DETECTED = "ml.drift_detected"
+    MODEL_RETRAINED = "ml.model_retrained"
     ALERT_TRIGGERED = "alert.triggered"
     BACKTEST_COMPLETED = "backtest.completed"
+    STRATEGY_STATUS_CHANGED = "strategy.status_changed"
+
+
+class CircuitBreakerLevel(StrEnum):
+    YELLOW = "yellow"
+    RED = "red"
+    BLACK = "black"
 
 
 class BaseEvent(BaseModel):
@@ -105,3 +115,42 @@ class AlertTriggeredEvent(BaseEvent):
     message: str
     severity: str = "info"  # "info" | "warning" | "critical"
     source_service: str
+
+
+class CircuitBreakerTriggeredEvent(BaseEvent):
+    event_type: EventType = EventType.CIRCUIT_BREAKER_TRIGGERED
+    level: CircuitBreakerLevel
+    trigger_metric: str
+    current_value: float
+    threshold_value: float
+    action_taken: str
+    source_service: str = "risk-mgmt"
+
+
+class ModelDriftDetectedEvent(BaseEvent):
+    event_type: EventType = EventType.MODEL_DRIFT_DETECTED
+    model_id: str
+    drift_type: str
+    severity: str  # "warning" | "critical"
+    recommended_action: str
+    source_service: str = "ml-pipeline"
+
+
+class ModelRetrainedEvent(BaseEvent):
+    event_type: EventType = EventType.MODEL_RETRAINED
+    model_id: str
+    old_sharpe: float
+    new_sharpe: float
+    retrain_reason: str
+    source_service: str = "ml-pipeline"
+
+
+class StrategyStatusChangedEvent(BaseEvent):
+    event_type: EventType = EventType.STRATEGY_STATUS_CHANGED
+    strategy_name: str
+    old_status: str
+    new_status: str
+    reason: str
+    sharpe_90d: float
+    profit_factor_30d: float
+    source_service: str = "strategy"

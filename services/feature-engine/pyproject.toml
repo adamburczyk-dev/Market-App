@@ -16,6 +16,7 @@ dependencies = [
     "pydantic-settings>=2.2",
     "redis>=5.0",
     "nats-py>=2.7",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
