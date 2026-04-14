@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime
 
+import pytest
+
 from trading_common.risk_envelope import RiskEnvelope, RiskLimits
 from trading_common.schemas import Signal, TradingSignal
 
@@ -62,6 +64,70 @@ class TestRiskLimitsDefaults:
         limits = RiskLimits(max_drawdown_pct=0.10, min_confidence=0.70)
         assert limits.max_drawdown_pct == 0.10
         assert limits.min_confidence == 0.70
+
+
+class TestRiskLimitsValidation:
+    def test_zero_max_position_pct_raises(self):
+        with pytest.raises(ValueError, match="max_position_pct"):
+            RiskLimits(max_position_pct=0.0)
+
+    def test_negative_max_drawdown_pct_raises(self):
+        with pytest.raises(ValueError, match="max_drawdown_pct"):
+            RiskLimits(max_drawdown_pct=-0.1)
+
+    def test_above_one_min_confidence_raises(self):
+        with pytest.raises(ValueError, match="min_confidence"):
+            RiskLimits(min_confidence=1.5)
+
+    def test_zero_correlated_positions_raises(self):
+        with pytest.raises(ValueError, match="max_correlated_positions"):
+            RiskLimits(max_correlated_positions=0)
+
+    def test_boundary_one_is_valid(self):
+        limits = RiskLimits(max_position_pct=1.0, max_drawdown_pct=1.0)
+        assert limits.max_position_pct == 1.0
+
+    def test_valid_defaults_pass(self):
+        limits = RiskLimits()
+        assert limits.max_position_pct == 0.05
+
+
+class TestRiskEnvelopeSectorCorrelation:
+    def test_sector_full_rejects(self):
+        envelope = make_envelope()
+        approved, reason = envelope.check_signal(
+            make_signal(),
+            **{**SAFE_CONTEXT, "sector_positions": {"Technology": 3}},
+            signal_sector="Technology",
+        )
+        assert approved is False
+        assert "sector" in reason
+
+    def test_sector_below_limit_approves(self):
+        envelope = make_envelope()
+        approved, reason = envelope.check_signal(
+            make_signal(),
+            **{**SAFE_CONTEXT, "sector_positions": {"Technology": 2}},
+            signal_sector="Technology",
+        )
+        assert approved is True
+
+    def test_no_sector_skips_check(self):
+        envelope = make_envelope()
+        approved, _ = envelope.check_signal(
+            make_signal(),
+            **{**SAFE_CONTEXT, "sector_positions": {"Technology": 10}},
+        )
+        assert approved is True
+
+    def test_unknown_sector_zero_count(self):
+        envelope = make_envelope()
+        approved, _ = envelope.check_signal(
+            make_signal(),
+            **{**SAFE_CONTEXT, "sector_positions": {"Technology": 3}},
+            signal_sector="Healthcare",
+        )
+        assert approved is True
 
 
 class TestRiskEnvelopeApproved:

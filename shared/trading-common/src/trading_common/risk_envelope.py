@@ -17,6 +17,23 @@ class RiskLimits:
     max_correlated_positions: int = 3
     min_confidence: float = 0.55
 
+    def __post_init__(self) -> None:
+        for field_name in [
+            "max_position_pct",
+            "max_portfolio_exposure_pct",
+            "max_single_loss_pct",
+            "max_daily_loss_pct",
+            "max_drawdown_pct",
+            "min_confidence",
+        ]:
+            val = getattr(self, field_name)
+            if not (0 < val <= 1.0):
+                raise ValueError(f"{field_name} must be in (0, 1.0], got {val}")
+        if self.max_correlated_positions < 1:
+            raise ValueError(
+                f"max_correlated_positions must be >= 1, got {self.max_correlated_positions}"
+            )
+
 
 class RiskEnvelope:
     """
@@ -42,6 +59,7 @@ class RiskEnvelope:
         current_drawdown_pct: float,
         daily_loss_pct: float,
         sector_positions: dict[str, int],
+        signal_sector: str | None = None,
     ) -> tuple[bool, str]:
         """Returns (approved, reason). Reason is structured for parsing."""
         # 1. Drawdown hard stop
@@ -70,7 +88,16 @@ class RiskEnvelope:
                 f"_exceeds_{self.limits.max_portfolio_exposure_pct:.1%}"
             )
 
-        # 5. Risk per trade (only when stop_loss is provided)
+        # 5. Sector correlation check
+        if signal_sector is not None:
+            sector_count = sector_positions.get(signal_sector, 0)
+            if sector_count >= self.limits.max_correlated_positions:
+                return False, (
+                    f"sector_{signal_sector}_has_{sector_count}"
+                    f"_positions_limit_{self.limits.max_correlated_positions}"
+                )
+
+        # 6. Risk per trade (only when stop_loss is provided)
         if signal.stop_loss is not None and portfolio_value > 0:
             risk_per_share = abs(signal.price - signal.stop_loss)
             if risk_per_share > 0:

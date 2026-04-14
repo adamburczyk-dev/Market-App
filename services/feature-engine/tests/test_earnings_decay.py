@@ -25,6 +25,14 @@ class TestDecayWeight:
         weights = [decay_weight(d) for d in range(0, 90, 10)]
         assert all(w1 >= w2 for w1, w2 in zip(weights, weights[1:], strict=False))
 
+    def test_zero_half_life_raises(self):
+        with pytest.raises(ValueError, match="half_life"):
+            decay_weight(10, half_life=0.0)
+
+    def test_negative_half_life_raises(self):
+        with pytest.raises(ValueError, match="half_life"):
+            decay_weight(10, half_life=-5.0)
+
 
 class TestSurpriseScore:
     def test_positive_surprise(self):

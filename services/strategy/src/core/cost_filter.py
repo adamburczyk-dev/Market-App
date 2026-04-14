@@ -56,11 +56,6 @@ class CostAwareFilter:
         adjusted_cost_bps = self.costs.total_roundtrip_bps * multiplier
         required_edge_bps = adjusted_cost_bps * self.min_edge_multiple
 
-        # Annualize cost drag if holding > 1 day — cost is fixed, edge grows
-        # For multi-day holds, cost per day decreases
-        cost_per_day_bps = adjusted_cost_bps / max(holding_period_days, 1)
-        edge_per_day_bps = expected_return_bps / max(holding_period_days, 1)
-
         is_profitable = expected_return_bps >= required_edge_bps
 
         details = {
@@ -70,10 +65,7 @@ class CostAwareFilter:
             "edge_to_cost_ratio": (
                 expected_return_bps / adjusted_cost_bps if adjusted_cost_bps > 0 else float("inf")
             ),
-            "cost_per_day_bps": cost_per_day_bps,
-            "edge_per_day_bps": edge_per_day_bps,
             "market_cap_tier": market_cap_tier,
-            "holding_period_days": holding_period_days,
         }
 
         return is_profitable, details

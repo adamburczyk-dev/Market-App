@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 class SignalPerformance:
     """Tracks rolling performance for a single signal source."""
 
-    outcomes: deque[float] = field(default_factory=lambda: deque(maxlen=60))
+    outcomes: deque[float] = field(default_factory=deque)
 
     @property
     def hit_rate(self) -> float:
@@ -27,11 +27,12 @@ class SignalPerformance:
 
     @property
     def information_ratio(self) -> float:
-        """Mean / std of outcomes. Returns 0 if insufficient data."""
-        if len(self.outcomes) < 2:
+        """Mean / std of outcomes. Returns 0 if insufficient data or NaN/Inf present."""
+        finite_outcomes = [o for o in self.outcomes if math.isfinite(o)]
+        if len(finite_outcomes) < 2:
             return 0.0
-        mean = self.avg_return
-        variance = sum((o - mean) ** 2 for o in self.outcomes) / (len(self.outcomes) - 1)
+        mean = sum(finite_outcomes) / len(finite_outcomes)
+        variance = sum((o - mean) ** 2 for o in finite_outcomes) / (len(finite_outcomes) - 1)
         std = math.sqrt(variance)
         if std == 0:
             return 0.0

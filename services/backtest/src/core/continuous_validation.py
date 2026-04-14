@@ -69,8 +69,11 @@ class ContinuousWalkForward(ABC):
         current_sharpe = await self._run_backtest(strategy_name, strategy_params, ohlcv_data)
 
         # Compute degradation
-        if original_oos_sharpe != 0:
-            degradation_pct = (original_oos_sharpe - current_sharpe) / abs(original_oos_sharpe)
+        if original_oos_sharpe > 0:
+            degradation_pct = (original_oos_sharpe - current_sharpe) / original_oos_sharpe
+        elif original_oos_sharpe < 0:
+            # Negative baseline: worsening means current is more negative
+            degradation_pct = -(current_sharpe - original_oos_sharpe) / abs(original_oos_sharpe)
         else:
             degradation_pct = 0.0
 

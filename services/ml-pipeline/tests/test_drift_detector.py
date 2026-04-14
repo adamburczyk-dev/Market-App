@@ -137,6 +137,36 @@ class TestGenerateReport:
         )
         assert report.sharpe_decay_pct == 0.0
 
+    def test_negative_baseline_sharpe_worsening(self):
+        """Negative baseline getting worse (more negative) triggers retrain."""
+        report = self.detector.generate_report(
+            model_id="model_v1",
+            feature_psi_scores={},
+            prediction_ks_pvalue=0.50,
+            rolling_sharpe_30d=-0.8,
+            rolling_sharpe_90d=-0.6,
+            baseline_sharpe=-0.5,
+            rolling_accuracy_30d=0.55,
+        )
+        # decay = (-0.8 - (-0.5)) / 0.5 = -0.6
+        assert report.sharpe_decay_pct == pytest.approx(-0.6)
+        assert report.needs_retrain is True
+
+    def test_negative_baseline_sharpe_improving(self):
+        """Negative baseline improving (less negative) does NOT trigger retrain."""
+        report = self.detector.generate_report(
+            model_id="model_v1",
+            feature_psi_scores={},
+            prediction_ks_pvalue=0.50,
+            rolling_sharpe_30d=-0.2,
+            rolling_sharpe_90d=-0.3,
+            baseline_sharpe=-0.5,
+            rolling_accuracy_30d=0.55,
+        )
+        # decay = (-0.2 - (-0.5)) / 0.5 = 0.6 (positive = improvement)
+        assert report.sharpe_decay_pct == pytest.approx(0.6)
+        assert report.needs_retrain is False
+
     def test_report_fields_populated(self):
         report = self.detector.generate_report(
             model_id="test_model",

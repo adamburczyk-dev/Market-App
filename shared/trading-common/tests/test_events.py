@@ -10,6 +10,8 @@ from trading_common.events import (
     MarketDataUpdatedEvent,
     ModelDriftDetectedEvent,
     ModelRetrainedEvent,
+    ModelTrainedEvent,
+    OrderRejectedEvent,
     SignalGeneratedEvent,
     StrategyStatusChangedEvent,
 )
@@ -264,6 +266,58 @@ class TestStrategyStatusChangedEvent:
         restored = StrategyStatusChangedEvent.model_validate(data)
         assert restored.strategy_name == e.strategy_name
         assert restored.sharpe_90d == e.sharpe_90d
+
+
+class TestOrderRejectedEvent:
+    def test_valid_event(self):
+        e = OrderRejectedEvent(
+            order_id="ord-001",
+            symbol="AAPL",
+            reason="insufficient_margin",
+        )
+        assert e.order_id == "ord-001"
+        assert e.event_type == EventType.ORDER_REJECTED
+        assert e.source_service == "execution"
+        assert e.original_signal_id is None
+
+    def test_with_signal_id(self):
+        e = OrderRejectedEvent(
+            order_id="ord-002",
+            symbol="MSFT",
+            reason="risk_limit",
+            original_signal_id="sig-123",
+        )
+        assert e.original_signal_id == "sig-123"
+
+    def test_subject(self):
+        e = OrderRejectedEvent(order_id="o1", symbol="X", reason="test")
+        assert e.subject() == "order.rejected"
+
+
+class TestModelTrainedEvent:
+    def test_valid_event(self):
+        e = ModelTrainedEvent(
+            model_id="xgb_v5",
+            model_type="xgboost",
+            training_duration_s=120.5,
+            metrics={"rmse": 0.03, "r2": 0.85},
+        )
+        assert e.model_id == "xgb_v5"
+        assert e.event_type == EventType.MODEL_TRAINED
+        assert e.source_service == "ml-pipeline"
+        assert e.metrics["r2"] == 0.85
+
+    def test_default_metrics(self):
+        e = ModelTrainedEvent(
+            model_id="rf_v1",
+            model_type="random_forest",
+            training_duration_s=60.0,
+        )
+        assert e.metrics == {}
+
+    def test_subject(self):
+        e = ModelTrainedEvent(model_id="m1", model_type="t", training_duration_s=1.0)
+        assert e.subject() == "ml.model_trained"
 
 
 class TestEventTypes:

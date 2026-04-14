@@ -75,8 +75,8 @@ class TestIsSectorAllowed:
     def test_crisis_allows_utilities(self):
         assert self.alloc.is_sector_allowed("crisis", "Utilities")
 
-    def test_crisis_blocks_healthcare(self):
-        assert not self.alloc.is_sector_allowed("crisis", "Health Care")
+    def test_crisis_allows_healthcare(self):
+        assert self.alloc.is_sector_allowed("crisis", "Health Care")
 
     def test_crisis_blocks_tech(self):
         assert not self.alloc.is_sector_allowed("crisis", "Information Technology")
@@ -84,6 +84,15 @@ class TestIsSectorAllowed:
     # Unknown regime: all allowed (no entry in dict → None)
     def test_unknown_regime_allows_all(self):
         assert self.alloc.is_sector_allowed("unknown_regime", "Energy")
+
+    # Case-insensitive matching
+    def test_case_insensitive_sector(self):
+        assert self.alloc.is_sector_allowed("crisis", "consumer staples")
+        assert self.alloc.is_sector_allowed("crisis", "UTILITIES")
+        assert self.alloc.is_sector_allowed("slowdown", "health care")
+
+    def test_whitespace_trimmed(self):
+        assert self.alloc.is_sector_allowed("crisis", " Consumer Staples ")
 
     # Recovery: all allowed
     def test_recovery_allows_all(self):

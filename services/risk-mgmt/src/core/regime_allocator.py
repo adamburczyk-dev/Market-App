@@ -27,7 +27,7 @@ class RegimeAllocator:
             "Information Technology",
         },
         "contraction": {"Consumer Staples", "Utilities", "Health Care"},
-        "crisis": {"Consumer Staples", "Utilities"},
+        "crisis": {"Consumer Staples", "Utilities", "Health Care"},
     }
 
     def max_exposure(self, regime: str) -> float:
@@ -39,7 +39,8 @@ class RegimeAllocator:
         allowed = self.ALLOWED_SECTORS.get(regime)
         if allowed is None:
             return True
-        return sector in allowed
+        sector_lower = sector.strip().lower()
+        return any(s.lower() == sector_lower for s in allowed)
 
     def required_cash_pct(self, regime: str) -> float:
         """Minimum cash allocation for given regime."""

@@ -38,9 +38,9 @@ class TestSignalPerformance:
         ir = sp.information_ratio
         assert ir > 0
 
-    def test_deque_maxlen(self):
+    def test_deque_no_hardcoded_maxlen(self):
         sp = SignalPerformance()
-        assert sp.outcomes.maxlen == 60
+        assert sp.outcomes.maxlen is None
 
     def test_information_ratio_single_value(self):
         """With only 1 data point, IR should be 0 (insufficient data)."""
@@ -142,3 +142,26 @@ class TestAdaptiveWeightOptimizer:
         opt.record_outcome("unknown", 0.05)  # should not crash
         weights = opt.compute_weights()
         assert "unknown" not in weights
+
+    def test_nan_in_outcomes_ignored(self):
+        sp = SignalPerformance()
+        sp.outcomes.extend([0.01, float("nan"), 0.03, 0.02])
+        ir = sp.information_ratio
+        assert ir != float("nan")
+        assert isinstance(ir, float)
+
+    def test_inf_in_outcomes_ignored(self):
+        sp = SignalPerformance()
+        sp.outcomes.extend([0.01, float("inf"), 0.03, -float("inf"), 0.02])
+        ir = sp.information_ratio
+        assert ir != float("inf")
+        assert isinstance(ir, float)
+
+    def test_all_nan_returns_zero(self):
+        sp = SignalPerformance()
+        sp.outcomes.extend([float("nan"), float("nan")])
+        assert sp.information_ratio == 0.0
+
+    def test_optimizer_maxlen_from_lookback(self):
+        opt = AdaptiveWeightOptimizer(["a"], lookback_days=30)
+        assert opt.performance["a"].outcomes.maxlen == 30

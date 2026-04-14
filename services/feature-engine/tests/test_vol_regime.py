@@ -38,6 +38,10 @@ class TestClassifyVix:
     def test_very_high_vix(self):
         assert classify_vix(120) == "extreme"
 
+    def test_negative_vix_raises(self):
+        with pytest.raises(ValueError, match="negative"):
+            classify_vix(-5)
+
 
 class TestExposureScalar:
     def test_low_vix_boosts(self):

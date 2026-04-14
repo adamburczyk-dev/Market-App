@@ -16,10 +16,22 @@ class DrawdownAdaptiveSizer:
         base_risk_per_trade: float = 0.02,
         dd_scaling_start: float = 0.05,
         dd_scaling_end: float = 0.15,
+        max_position_pct: float = 0.05,
     ) -> None:
+        if base_risk_per_trade <= 0:
+            raise ValueError(f"base_risk_per_trade must be > 0, got {base_risk_per_trade}")
+        if dd_scaling_start < 0:
+            raise ValueError(f"dd_scaling_start must be >= 0, got {dd_scaling_start}")
+        if dd_scaling_start >= dd_scaling_end:
+            raise ValueError(
+                f"dd_scaling_start ({dd_scaling_start}) must be < dd_scaling_end ({dd_scaling_end})"
+            )
+        if max_position_pct <= 0:
+            raise ValueError(f"max_position_pct must be > 0, got {max_position_pct}")
         self.base_risk = base_risk_per_trade
         self.dd_start = dd_scaling_start
         self.dd_end = dd_scaling_end
+        self.max_position_pct = max_position_pct
 
     def compute_risk_budget(self, current_drawdown_pct: float) -> float:
         """
@@ -53,6 +65,5 @@ class DrawdownAdaptiveSizer:
         max_risk_amount = portfolio_value * risk_budget
         shares = int(max_risk_amount / risk_per_share)
 
-        max_position_pct = 0.05
-        max_shares_by_position = int(portfolio_value * max_position_pct / entry_price)
+        max_shares_by_position = int(portfolio_value * self.max_position_pct / entry_price)
         return min(shares, max_shares_by_position)

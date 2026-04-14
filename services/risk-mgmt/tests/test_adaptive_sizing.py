@@ -5,6 +5,38 @@ import pytest
 from src.core.adaptive_sizing import DrawdownAdaptiveSizer
 
 
+class TestConstructorValidation:
+    def test_negative_base_risk_raises(self):
+        with pytest.raises(ValueError, match="base_risk_per_trade"):
+            DrawdownAdaptiveSizer(base_risk_per_trade=-0.01)
+
+    def test_zero_base_risk_raises(self):
+        with pytest.raises(ValueError, match="base_risk_per_trade"):
+            DrawdownAdaptiveSizer(base_risk_per_trade=0.0)
+
+    def test_negative_dd_start_raises(self):
+        with pytest.raises(ValueError, match="dd_scaling_start"):
+            DrawdownAdaptiveSizer(dd_scaling_start=-0.01)
+
+    def test_start_gte_end_raises(self):
+        with pytest.raises(ValueError, match="dd_scaling_start"):
+            DrawdownAdaptiveSizer(dd_scaling_start=0.15, dd_scaling_end=0.10)
+
+    def test_start_equals_end_raises(self):
+        with pytest.raises(ValueError, match="dd_scaling_start"):
+            DrawdownAdaptiveSizer(dd_scaling_start=0.10, dd_scaling_end=0.10)
+
+    def test_negative_max_position_pct_raises(self):
+        with pytest.raises(ValueError, match="max_position_pct"):
+            DrawdownAdaptiveSizer(max_position_pct=-0.01)
+
+    def test_custom_max_position_pct(self):
+        sizer = DrawdownAdaptiveSizer(max_position_pct=0.10)
+        # With 10% cap: 100k * 10% / 50 = 200 shares
+        shares = sizer.position_size(100_000, 50.0, 49.0, 0.0)
+        assert shares == 200
+
+
 class TestComputeRiskBudget:
     def setup_method(self):
         self.sizer = DrawdownAdaptiveSizer()

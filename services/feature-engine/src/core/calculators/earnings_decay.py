@@ -11,6 +11,8 @@ def decay_weight(days_since_earnings: int, half_life: float = 30.0) -> float:
     At half_life days: weight = 0.5
     At 0 days: weight = 1.0
     """
+    if half_life <= 0:
+        raise ValueError(f"half_life must be > 0, got {half_life}")
     if days_since_earnings < 0:
         return 0.0
     return math.pow(0.5, days_since_earnings / half_life)

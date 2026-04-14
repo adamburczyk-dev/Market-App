@@ -73,6 +73,32 @@ class TestEdgeCases:
         assert result.recommended_status == "active"
 
     @pytest.mark.asyncio
+    async def test_zero_original_sharpe_negative_current(self):
+        """Zero baseline + negative current → deactivate."""
+        wf = MockWalkForward(mock_sharpe=-0.3)
+        result = await wf.revalidate("strat_v1", 0.0, [], {})
+        assert result.degradation_pct == 0.0
+        assert result.recommended_status == "deactivate"
+
+    @pytest.mark.asyncio
+    async def test_negative_baseline_worsening(self):
+        """Negative baseline, more negative current → positive degradation."""
+        wf = MockWalkForward(mock_sharpe=-0.8)
+        result = await wf.revalidate("strat_v1", -0.5, [], {})
+        # degradation = -((-0.8) - (-0.5)) / 0.5 = -(−0.3)/0.5 = 0.6
+        assert result.degradation_pct == pytest.approx(0.6)
+        assert result.recommended_status == "deactivate"  # negative sharpe
+
+    @pytest.mark.asyncio
+    async def test_negative_baseline_improving(self):
+        """Negative baseline, less negative current → negative degradation."""
+        wf = MockWalkForward(mock_sharpe=-0.2)
+        result = await wf.revalidate("strat_v1", -0.5, [], {})
+        # degradation = -((-0.2) - (-0.5)) / 0.5 = -(0.3)/0.5 = -0.6
+        assert result.degradation_pct == pytest.approx(-0.6)
+        assert result.recommended_status == "deactivate"  # still negative sharpe
+
+    @pytest.mark.asyncio
     async def test_custom_params(self):
         wf = MockWalkForward(
             mock_sharpe=0.5,

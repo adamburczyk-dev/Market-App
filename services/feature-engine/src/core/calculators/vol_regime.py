@@ -23,13 +23,13 @@ EXPOSURE_SCALAR: dict[str, float] = {
 
 def classify_vix(vix: float) -> str:
     """Classify VIX value into a volatility regime."""
+    if vix < 0:
+        raise ValueError(f"VIX cannot be negative, got {vix}")
     for low, high, label in VIX_REGIMES:
         if low <= vix < high:
             return label
-    # VIX >= 100 or negative edge case
-    if vix >= 100:
-        return "extreme"
-    return "normal"
+    # VIX >= 100 — still extreme
+    return "extreme"
 
 
 def exposure_scalar(vix: float) -> float:

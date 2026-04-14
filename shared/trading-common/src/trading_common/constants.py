@@ -29,10 +29,14 @@ NATS_SUBJECTS = {
     "backtest_done": "backtest.completed",
     "model_drift": "ml.drift_detected",
     "model_retrained": "ml.model_retrained",
+    "model_trained": "ml.model_trained",
+    "order_rejected": "order.rejected",
     "strategy_status": "strategy.status_changed",
 }
 
 # Risk defaults (Layer 2 — full risk-mgmt-svc)
+# NOTE: Layer 2 drawdown (0.20) is intentionally higher than Layer 1 RiskEnvelope (0.15).
+# Layer 1 is a conservative pre-trade gate; Layer 2 is the full risk management system.
 DEFAULT_MAX_POSITION_PCT = 0.05  # max 5% portfela na jedną pozycję
 DEFAULT_MAX_DRAWDOWN_PCT = 0.20  # stop trading przy 20% drawdown
 DEFAULT_VAR_CONFIDENCE = 0.95

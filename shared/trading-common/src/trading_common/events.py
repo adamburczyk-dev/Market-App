@@ -145,6 +145,24 @@ class ModelRetrainedEvent(BaseEvent):
     source_service: str = "ml-pipeline"
 
 
+class OrderRejectedEvent(BaseEvent):
+    event_type: EventType = EventType.ORDER_REJECTED
+    order_id: str
+    symbol: str
+    reason: str
+    original_signal_id: str | None = None
+    source_service: str = "execution"
+
+
+class ModelTrainedEvent(BaseEvent):
+    event_type: EventType = EventType.MODEL_TRAINED
+    model_id: str
+    model_type: str
+    training_duration_s: float
+    metrics: dict = Field(default_factory=dict)
+    source_service: str = "ml-pipeline"
+
+
 class StrategyStatusChangedEvent(BaseEvent):
     event_type: EventType = EventType.STRATEGY_STATUS_CHANGED
     strategy_name: str

@@ -56,11 +56,10 @@ class TestCostAwareFilterProfitable:
 
     def test_multi_day_hold_profitable(self):
         """Holding period doesn't change profitability threshold — cost is per trade."""
-        ok, details = self.filt.is_profitable_after_costs(
-            100.0, holding_period_days=5, market_cap_tier="large"
-        )
+        ok, details = self.filt.is_profitable_after_costs(100.0, market_cap_tier="large")
         assert ok is True
-        assert details["cost_per_day_bps"] == pytest.approx(24.0 / 5)
+        assert "cost_per_day_bps" not in details
+        assert "edge_per_day_bps" not in details
 
 
 class TestCostAwareFilterUnprofitable:

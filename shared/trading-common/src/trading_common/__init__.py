@@ -1,6 +1,8 @@
 """trading-common — shared contracts for the trading system."""
 
 from trading_common.events import (
+    AlertTriggeredEvent,
+    BacktestCompletedEvent,
     BaseEvent,
     CircuitBreakerLevel,
     CircuitBreakerTriggeredEvent,
@@ -8,6 +10,11 @@ from trading_common.events import (
     MarketDataUpdatedEvent,
     ModelDriftDetectedEvent,
     ModelRetrainedEvent,
+    ModelTrainedEvent,
+    OrderFilledEvent,
+    OrderRejectedEvent,
+    OrderSubmittedEvent,
+    RiskLimitBreachedEvent,
     SignalGeneratedEvent,
     StrategyStatusChangedEvent,
 )
@@ -21,20 +28,27 @@ from trading_common.schemas import (
 )
 
 __all__ = [
-    "Interval",
-    "OHLCVBar",
-    "Signal",
-    "TradingSignal",
-    "PortfolioMetrics",
-    "RiskEnvelope",
-    "RiskLimits",
-    "EventType",
+    "AlertTriggeredEvent",
+    "BacktestCompletedEvent",
     "BaseEvent",
     "CircuitBreakerLevel",
     "CircuitBreakerTriggeredEvent",
+    "EventType",
+    "Interval",
     "MarketDataUpdatedEvent",
     "ModelDriftDetectedEvent",
     "ModelRetrainedEvent",
+    "ModelTrainedEvent",
+    "OHLCVBar",
+    "OrderFilledEvent",
+    "OrderRejectedEvent",
+    "OrderSubmittedEvent",
+    "PortfolioMetrics",
+    "RiskEnvelope",
+    "RiskLimits",
+    "RiskLimitBreachedEvent",
+    "Signal",
     "SignalGeneratedEvent",
     "StrategyStatusChangedEvent",
+    "TradingSignal",
 ]

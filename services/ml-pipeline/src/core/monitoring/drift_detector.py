@@ -63,8 +63,8 @@ class DriftDetector:
         ref_counts, _ = np.histogram(reference, bins=bin_edges)
         cur_counts, _ = np.histogram(current, bins=bin_edges)
 
-        ref_pct = ref_counts / len(reference) + eps
-        cur_pct = cur_counts / len(current) + eps
+        ref_pct = (ref_counts + eps) / (ref_counts.sum() + eps * bins)
+        cur_pct = (cur_counts + eps) / (cur_counts.sum() + eps * bins)
 
         psi = np.sum((cur_pct - ref_pct) * np.log(cur_pct / ref_pct))
         return float(psi)
@@ -100,7 +100,10 @@ class DriftDetector:
             name for name, psi in feature_psi_scores.items() if psi > self.PSI_THRESHOLD
         ]
 
-        # Sharpe decay
+        # Sharpe decay: (rolling - baseline) / |baseline|
+        # Works for both positive and negative baselines:
+        # - positive baseline, rolling drops → negative decay → triggers retrain
+        # - negative baseline, rolling worsens → negative decay → triggers retrain
         if baseline_sharpe != 0:
             sharpe_decay_pct = (rolling_sharpe_30d - baseline_sharpe) / abs(baseline_sharpe)
         else:
