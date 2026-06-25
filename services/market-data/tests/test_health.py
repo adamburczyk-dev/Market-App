@@ -1,4 +1,4 @@
-"""Testy health / ready endpoints — weryfikacja startu serwisu."""
+"""Testy health / ready / metrics / symbols — weryfikacja startu serwisu."""
 
 import pytest
 from httpx import AsyncClient
@@ -31,7 +31,8 @@ async def test_metrics_endpoint_exists(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_list_symbols(client: AsyncClient):
+async def test_list_symbols_falls_back_to_defaults(client: AsyncClient):
+    """Bez podpiętego serwisu /symbols zwraca domyślne symbole."""
     response = await client.get("/api/v1/market-data/symbols")
     assert response.status_code == 200
     body = response.json()
@@ -41,15 +42,7 @@ async def test_list_symbols(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_get_ohlcv_not_implemented(client: AsyncClient):
+async def test_ohlcv_without_service_returns_503(client: AsyncClient):
+    """Endpoint wymagający serwisu zwraca 503, gdy serwis nie jest gotowy."""
     response = await client.get("/api/v1/market-data/ohlcv/AAPL")
-    assert response.status_code == 501
-
-
-@pytest.mark.asyncio
-async def test_trigger_fetch_accepted(client: AsyncClient):
-    response = await client.post("/api/v1/market-data/fetch/AAPL")
-    assert response.status_code == 202
-    body = response.json()
-    assert body["status"] == "accepted"
-    assert body["symbol"] == "AAPL"
+    assert response.status_code == 503

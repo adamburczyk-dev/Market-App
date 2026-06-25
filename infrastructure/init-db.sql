@@ -22,7 +22,6 @@ CREATE SCHEMA IF NOT EXISTS execution;
 -- Tabela OHLCV (hypertable TimescaleDB)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS market_data.ohlcv (
-    id          BIGSERIAL,
     symbol      TEXT        NOT NULL,
     interval    TEXT        NOT NULL,
     ts          TIMESTAMPTZ NOT NULL,
@@ -33,7 +32,9 @@ CREATE TABLE IF NOT EXISTS market_data.ohlcv (
     volume      DOUBLE PRECISION NOT NULL,
     source      TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (id, ts)
+    -- Natural key: enables idempotent upserts (ON CONFLICT / merge) and dedupe.
+    -- Includes ts (partition column) as required for TimescaleDB hypertable unique keys.
+    PRIMARY KEY (symbol, interval, ts)
 );
 
 -- Konwertuj na hypertable (partycjonowanie po czasie)

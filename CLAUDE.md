@@ -32,13 +32,15 @@ landed before the Week-2 foundation).
   `cross_asset`), strategy (`decay_monitor`, `cost_filter`, `adaptive_weights`), risk-mgmt
   (`adaptive_sizing`, `regime_allocator`), ml-pipeline (`drift_detector`), backtest
   (`continuous_validation`).
-- `market-data` is still a **501 skeleton** (`services/market-data/src/api/routes.py`) — the stated
-  Week-2 focus is **not done**.
+- `market-data` is now **functionally implemented** (Direction #1 done): Yahoo + Alpha Vantage
+  fetchers, async storage (SQLAlchemy/asyncpg, idempotent upsert), Redis cache (in-memory fallback),
+  `MarketDataUpdatedEvent` publishing, wired through FastAPI lifespan. 27 tests green; verified
+  end-to-end (fetch → store → read) incl. a lifespan smoke with all backends down.
 
 **Direction (where the project should go, in order):**
-1. **Finish the foundation:** implement `market-data` — Yahoo/AlphaVantage fetchers → async
-   TimescaleDB storage → Redis cache → publish `MarketDataUpdatedEvent`. Nothing downstream is real
-   until OHLCV actually flows.
+1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event.
+   Next refinements (deferred, non-blocking): bulk `ON CONFLICT` insert instead of per-row merge,
+   NATS **JetStream** stream binding (currently core publish), a scheduled/periodic fetch job.
 2. **Wire the orphaned components** into their services (API endpoints + NATS publishers/subscribers)
    so the already-tested logic runs.
 3. **Build serwisy 10–13** (fundamental-data, macro-data, company-classifier, signal-aggregator)
@@ -62,8 +64,17 @@ landed before the Week-2 foundation).
   their event classes (+22 tests → 126 green); replaced the dead high/low field validators with a
   `model_validator`; consolidated all project context into this CLAUDE.md section (removed
   `docs/PROJECT_STATUS.md` and `docs/git-workflow-guide.md`); fixed dangling doc references.
+  Merged to `main`.
+- 2026-06-25 — Direction #1 (market-data implementation): fetchers (Yahoo via yfinance, Alpha
+  Vantage via aiohttp, fallback chain), `OHLCVRepository` (async, idempotent merge upsert),
+  Redis cache + in-memory fallback, `NatsPublisher`/`NullPublisher`, `MarketDataService`
+  orchestration, real FastAPI routes (`GET /ohlcv`, `POST /fetch`, `GET /symbols`) wired via
+  lifespan with graceful degradation. Changed `init-db.sql` ohlcv PK to natural
+  `(symbol, interval, ts)` to enable idempotent upserts. 27 tests green; ruff + mypy clean.
 
-**Next:** `market-data` implementation (fetchers → storage → cache → event), per Direction #1.
+**Next:** Direction #2 — wire an orphaned component into its service (suggest starting with
+feature-engine: expose calculators via an endpoint + subscribe to `MarketDataUpdatedEvent`,
+publish `FeaturesReadyEvent`).
 
 ## Architecture rules (non-negotiable)
 
