@@ -6,17 +6,64 @@ Production-grade algorithmic trading system. 13 independent Python microservices
 via NATS JetStream (events) and HTTP (request/response).
 
 **Key docs:**
-- Full 24-week development plan: `docs/Plan_Rozwoju_Systemu_Tradingowego_2.md`
-- ML/AI integration plan (serwisy 10–13, feature tiers, model stacks): `docs/ml_integration_plan.md`
+- **Project context/status/direction: this file** — see "Project status & direction" below (single source of truth I read every session)
+- Full 24-week development plan: `Plan_Rozwoju_Systemu_Tradingowego_2.md` (repo root)
+- Framework supplement — 12 components (risk envelope, drift/decay monitors, cost filter, regime allocator, …): `docs/framework_supplement.md`
+- ML/AI integration plan (serwisy 10–13, feature tiers, model stacks): not yet a standalone doc; initial contracts live in
+  `shared/trading-common` (schemas + events). Write `docs/ml_integration_plan.md` before deep work on serwisy 10–13.
 
-## Current state
+## Project status & direction
 
-<!-- UPDATE WEEKLY -->
-Phase: 1 — Foundation
-Week: 2
-Focus: Full implementation of `market-data-svc` — fetchers, TimescaleDB storage, Redis cache, NATS events
-Done: Repo structure, `shared/trading-common`, docker-compose (postgres, redis, nats, prometheus, grafana, traefik), CI pipeline, market-data skeleton (`/health`, `/metrics`), Helm chart scaffold
-Next: YahooFetcher + AlphaVantageFetcher, async storage layer, Redis cache, `MarketDataUpdatedEvent` publishing
+> Single living context block. Read this first every session. Keep the progress log append-only.
+> If a fresh analysis surfaces new bugs or improvement ideas, **propose them here and to the user** —
+> do not silently proceed.
+
+**Phase:** 1 — Foundation. **Reality check: there is a priority inversion** (Week-19+ framework work
+landed before the Week-2 foundation).
+
+**Verified ground truth** (run locally on Python 3.12 — not from memory):
+- `shared/trading-common`: 126 tests green, `ruff` + `mypy --strict` clean. Contracts present:
+  `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
+  `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
+  set incl. ML/AI extension, `RiskEnvelope`.
+- All 9 service skeletons: `/health` `/ready` `/metrics` green.
+- Framework-supplement components implemented + unit-tested but **NOT wired into FastAPI/NATS**
+  (orphaned — they don't run at runtime): feature-engine calculators (`vol_regime`, `earnings_decay`,
+  `cross_asset`), strategy (`decay_monitor`, `cost_filter`, `adaptive_weights`), risk-mgmt
+  (`adaptive_sizing`, `regime_allocator`), ml-pipeline (`drift_detector`), backtest
+  (`continuous_validation`).
+- `market-data` is still a **501 skeleton** (`services/market-data/src/api/routes.py`) — the stated
+  Week-2 focus is **not done**.
+
+**Direction (where the project should go, in order):**
+1. **Finish the foundation:** implement `market-data` — Yahoo/AlphaVantage fetchers → async
+   TimescaleDB storage → Redis cache → publish `MarketDataUpdatedEvent`. Nothing downstream is real
+   until OHLCV actually flows.
+2. **Wire the orphaned components** into their services (API endpoints + NATS publishers/subscribers)
+   so the already-tested logic runs.
+3. **Build serwisy 10–13** (fundamental-data, macro-data, company-classifier, signal-aggregator)
+   against the now-existing shared contracts. When `signal-aggregator` exists, move
+   `adaptive_weights.py` + `cost_filter.py` there from `strategy/` (their spec home — framework_supplement B3/B4).
+4. **Contracts-first** always: extend `shared/trading-common` before adding any cross-service type.
+
+**Known issues / tech debt** (propose a fix when you touch the area):
+- [P1] Orphaned components: tested but unreachable at runtime — wire incrementally (Direction #2).
+- [P2] `adaptive_weights.py` / `cost_filter.py` sit in `strategy/` but belong in `signal-aggregator/` (not created yet).
+- [P2] No `docs/ml_integration_plan.md`; serwisy 10–13 reference it conceptually. Initial contracts now in code — write the doc before deep ML work.
+- [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
+- [P3] `infrastructure/terraform/` is referenced in README but absent (planned).
+- [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
+- [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
+
+**Progress log (append-only):**
+- 2026-06-25 — Full repo audit: verified tests/lint/types green on 3.12; catalogued the priority
+  inversion and the orphaned framework components.
+- 2026-06-25 — Consistency sprint: added 5 missing shared schemas + 7 ML/AI `EventType` values &
+  their event classes (+22 tests → 126 green); replaced the dead high/low field validators with a
+  `model_validator`; consolidated all project context into this CLAUDE.md section (removed
+  `docs/PROJECT_STATUS.md` and `docs/git-workflow-guide.md`); fixed dangling doc references.
+
+**Next:** `market-data` implementation (fetchers → storage → cache → event), per Direction #1.
 
 ## Architecture rules (non-negotiable)
 
@@ -44,7 +91,7 @@ Next: YahooFetcher + AlphaVantageFetcher, async storage layer, Redis cache, `Mar
 | notification | 8008 | Alerts: Telegram, email, Slack |
 | dashboard | 8501 | UI: Streamlit or React |
 
-### ML/AI Extension (4 new — defined in ml_integration_plan.md)
+### ML/AI Extension (4 new — initial contracts in `trading-common`; full plan TBD)
 
 | Service | Port | Purpose | Priority |
 |---------|------|---------|----------|
@@ -84,10 +131,10 @@ services/{name}/
 `shared/trading-common` — pip-installable package.
 - `trading_common.schemas` — Pydantic models shared across services
   (OHLCVBar, TradingSignal, PortfolioMetrics, CompanyProfile, FinancialStatements,
-  MacroSnapshot, SentimentSnapshot, FeatureVector — see ml_integration_plan.md Fragment 1)
+  MacroSnapshot, SentimentSnapshot, FeatureVector — defined in `schemas.py`)
 - `trading_common.events` — Event definitions
   (MarketDataUpdatedEvent, SignalGeneratedEvent, FundamentalsUpdatedEvent,
-  MacroUpdatedEvent, SentimentUpdatedEvent, CompanyClassifiedEvent — see ml_integration_plan.md Fragment 2)
+  MacroUpdatedEvent, SentimentUpdatedEvent, CompanyClassifiedEvent — defined in `events.py`)
 - Install in each service: `pip install -e ../../shared/trading-common`
 
 Service A NEVER imports directly from Service B. Shared types go in trading-common.

@@ -3,10 +3,11 @@ Shared Pydantic models — kontrakt między serwisami.
 Każdy serwis importuje: from trading_common.schemas import OHLCVBar
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
+from typing import Self
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class Interval(StrEnum):
@@ -29,21 +30,18 @@ class OHLCVBar(BaseModel):
     volume: float = Field(ge=0)
     source: str | None = None
 
-    @field_validator("high")
-    @classmethod
-    def high_gte_low(cls, v: float, info: object) -> float:
-        data = getattr(info, "data", {})
-        if "low" in data and v < data["low"]:
-            raise ValueError("high must be >= low")
-        return v
+    @model_validator(mode="after")
+    def check_high_low(self) -> Self:
+        """OHLC invariant: high must be >= low.
 
-    @field_validator("low")
-    @classmethod
-    def low_lte_high(cls, v: float, info: object) -> float:
-        data = getattr(info, "data", {})
-        if "high" in data and v > data["high"]:
-            raise ValueError("low must be <= high")
-        return v
+        Uses a model-level validator (mode="after") because field validators
+        only see *previously* validated fields — when ``high`` is validated
+        ``low`` is not yet available, so a per-field check on ``high`` is dead
+        code. A model validator sees the full, validated bar.
+        """
+        if self.high < self.low:
+            raise ValueError("high must be >= low")
+        return self
 
 
 class Signal(StrEnum):
@@ -77,3 +75,92 @@ class PortfolioMetrics(BaseModel):
     current_drawdown: float | None = None
     var_95: float | None = None
     cvar_95: float | None = None
+
+
+# ============================================================
+# ML/AI extension contracts (serwisy 10-13).
+# Initial, intentionally minimal contracts — defined here ("contracts first")
+# so that fundamental-data / macro-data / company-classifier / signal-aggregator
+# can be built against a stable shared shape. Refine as those services mature.
+# ============================================================
+
+
+class MacroRegime(StrEnum):
+    """Market regimes — values aligned with risk-mgmt RegimeAllocator keys."""
+
+    EXPANSION = "expansion"
+    RECOVERY = "recovery"
+    SLOWDOWN = "slowdown"
+    CONTRACTION = "contraction"
+    CRISIS = "crisis"
+
+
+class CompanyProfile(BaseModel):
+    """Company metadata — drives model-stack routing (company-classifier-svc)."""
+
+    symbol: str
+    name: str | None = None
+    sector: str | None = None
+    industry: str | None = None
+    country: str | None = None
+    exchange: str | None = None
+    market_cap: float | None = Field(default=None, ge=0)
+    style: str | None = None  # "growth" | "value" | "blend"
+    model_stack: str | None = None  # assigned ML model-stack id
+    as_of: datetime | None = None
+
+
+class FinancialStatements(BaseModel):
+    """Periodic fundamentals from SEC EDGAR (10-Q/10-K) + derived Piotroski F-Score."""
+
+    symbol: str
+    period_end: date
+    fiscal_period: str  # "Q1".."Q4" | "FY"
+    revenue: float | None = None
+    net_income: float | None = None
+    total_assets: float | None = Field(default=None, ge=0)
+    total_liabilities: float | None = Field(default=None, ge=0)
+    operating_cash_flow: float | None = None
+    eps: float | None = None
+    piotroski_f_score: int | None = Field(default=None, ge=0, le=9)
+    source: str | None = None
+    filed_at: datetime | None = None
+
+
+class MacroSnapshot(BaseModel):
+    """Macro state from FRED + derived market regime (macro-data-svc)."""
+
+    timestamp: datetime
+    regime: MacroRegime | None = None
+    yield_curve_10y_2y: float | None = None
+    credit_spread_baa_10y: float | None = None
+    pmi: float | None = None
+    cpi_yoy: float | None = None
+    unemployment_rate: float | None = None
+    fed_funds_rate: float | None = None
+
+
+class SentimentSnapshot(BaseModel):
+    """News / social sentiment for a symbol."""
+
+    symbol: str
+    timestamp: datetime
+    sentiment_score: float = Field(ge=-1.0, le=1.0)
+    news_count: int = Field(default=0, ge=0)
+    social_volume: int | None = Field(default=None, ge=0)
+    source: str | None = None
+
+
+class FeatureVector(BaseModel):
+    """Computed features for one symbol/timestamp (feature-engine-svc).
+
+    Feature values should be cross-sectional percentile ranks where applicable
+    (López de Prado), not raw values.
+    """
+
+    symbol: str
+    timestamp: datetime
+    interval: Interval
+    features: dict[str, float] = Field(default_factory=dict)
+    tier: int | None = Field(default=None, ge=1, le=3)
+    rank_transformed: bool = False

@@ -6,12 +6,19 @@ from trading_common.events import (
     BaseEvent,
     CircuitBreakerLevel,
     CircuitBreakerTriggeredEvent,
+    CompanyClassifiedEvent,
     EventType,
+    FeaturesReadyEvent,
+    FundamentalsUpdatedEvent,
+    MacroUpdatedEvent,
     MarketDataUpdatedEvent,
     ModelDriftDetectedEvent,
     ModelRetrainedEvent,
     ModelTrainedEvent,
     OrderRejectedEvent,
+    RegimeChangedEvent,
+    SentimentUpdatedEvent,
+    SignalAggregatedEvent,
     SignalGeneratedEvent,
     StrategyStatusChangedEvent,
 )
@@ -335,5 +342,61 @@ class TestEventTypes:
         assert EventType.MODEL_RETRAINED == "ml.model_retrained"
         assert EventType.STRATEGY_STATUS_CHANGED == "strategy.status_changed"
 
+    def test_ml_extension_event_types_exist(self):
+        assert EventType.FUNDAMENTALS_UPDATED == "fundamentals.updated"
+        assert EventType.MACRO_UPDATED == "macro.updated"
+        assert EventType.REGIME_CHANGED == "macro.regime_changed"
+        assert EventType.SENTIMENT_UPDATED == "sentiment.updated"
+        assert EventType.COMPANY_CLASSIFIED == "company.classified"
+        assert EventType.FEATURES_READY == "features.ready"
+        assert EventType.SIGNAL_AGGREGATED == "signal.aggregated"
+
     def test_event_type_count(self):
-        assert len(EventType) == 14
+        assert len(EventType) == 21
+
+
+class TestMlExtensionEvents:
+    def test_fundamentals_updated(self):
+        e = FundamentalsUpdatedEvent(symbol="AAPL", period_end="2024-03-31", fiscal_period="Q1")
+        assert e.subject() == "fundamentals.updated"
+        assert e.source_service == "fundamental-data"
+
+    def test_macro_updated(self):
+        e = MacroUpdatedEvent(regime="expansion")
+        assert e.subject() == "macro.updated"
+        assert e.source_service == "macro-data"
+
+    def test_regime_changed(self):
+        e = RegimeChangedEvent(old_regime="expansion", new_regime="contraction")
+        assert e.subject() == "macro.regime_changed"
+        assert e.new_regime == "contraction"
+
+    def test_sentiment_updated(self):
+        e = SentimentUpdatedEvent(symbol="TSLA", sentiment_score=-0.4)
+        assert e.subject() == "sentiment.updated"
+        assert e.sentiment_score == -0.4
+
+    def test_company_classified(self):
+        e = CompanyClassifiedEvent(symbol="NVDA", style="growth", model_stack="growth_tech_v1")
+        assert e.subject() == "company.classified"
+        assert e.source_service == "company-classifier"
+
+    def test_features_ready(self):
+        e = FeaturesReadyEvent(symbol="MSFT", interval="1d", features_count=42, tier=2)
+        assert e.subject() == "features.ready"
+        assert e.features_count == 42
+
+    def test_signal_aggregated(self):
+        e = SignalAggregatedEvent(
+            symbol="AAPL", final_signal="BUY", confidence=0.82, components_count=3
+        )
+        assert e.subject() == "signal.aggregated"
+        assert e.source_service == "signal-aggregator"
+
+    def test_serialization_roundtrip(self):
+        e = SignalAggregatedEvent(
+            symbol="SPY", final_signal="HOLD", confidence=0.5, components_count=2
+        )
+        restored = SignalAggregatedEvent.model_validate(e.model_dump())
+        assert restored.final_signal == e.final_signal
+        assert restored.components_count == e.components_count

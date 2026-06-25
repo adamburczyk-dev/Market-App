@@ -168,7 +168,7 @@ make logs
 > **Uwaga:** `.env` musi być w katalogu root (`Market_App/`), nie w `infrastructure/`.
 > Makefile przekazuje `--env-file .env` do compose automatycznie.
 
-### Status infrastruktury (zweryfikowany)
+### Status infrastruktury (oczekiwany — weryfikowalny po `make up`; brak Dockera w sandbox/CI)
 
 | Komponent | Status | Weryfikacja |
 |-----------|--------|-------------|
@@ -240,14 +240,17 @@ python -m pytest tests/ -v --cov=src --cov-report=term-missing
 
 ### Co jest testowane
 
-| Komponent | Pliki testów | Liczba testów | Zakres |
-|-----------|-------------|:---:|--------|
-| `trading-common` | [`test_schemas.py`](shared/trading-common/tests/test_schemas.py) | 20 | Walidacja Pydantic: OHLCVBar, TradingSignal, PortfolioMetrics |
-| `trading-common` | [`test_events.py`](shared/trading-common/tests/test_events.py) | 12 | Kontrakty NATS, event IDs, serialization |
-| `trading-common` | [`test_utils.py`](shared/trading-common/tests/test_utils.py) | 9 | utcnow, to_utc, symbol_to_topic |
-| `market-data` | [`test_health.py`](services/market-data/tests/test_health.py) | 7 | /health, /ready, /metrics, /ohlcv, /fetch, /symbols |
-| pozostałe 8 serwisów | `test_health.py` | 4 × 8 = 32 | /health, /ready, /metrics per serwis |
-| **RAZEM** | | **80** | |
+> Liczby testów są orientacyjne (rosną wraz z kodem) — źródłem prawdy jest `make test`.
+> Stan na 2026-06-25: ~330 testów, wszystkie zielone na Pythonie 3.12.
+
+| Komponent | Co jest testowane | Orientacyjnie |
+|-----------|-------------------|:---:|
+| `trading-common` | Kontrakty Pydantic (schemas), eventy NATS, `RiskEnvelope`, utils | ~126 |
+| `market-data` | Szkielet: /health, /ready, /metrics, /ohlcv, /fetch, /symbols | 7 |
+| `strategy` | `decay_monitor`, `cost_filter`, `adaptive_weights` + health | ~66 |
+| `risk-mgmt` | `adaptive_sizing`, `regime_allocator` + health | ~57 |
+| `feature-engine` | `vol_regime`, `earnings_decay`, `cross_asset` + health | ~50 |
+| pozostałe serwisy | health + komponenty `framework_supplement` | rośnie |
 
 ### Znane wzorce konfiguracji testów
 

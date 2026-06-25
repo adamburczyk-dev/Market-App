@@ -25,6 +25,14 @@ class EventType(StrEnum):
     ALERT_TRIGGERED = "alert.triggered"
     BACKTEST_COMPLETED = "backtest.completed"
     STRATEGY_STATUS_CHANGED = "strategy.status_changed"
+    # ML/AI extension (serwisy 10-13)
+    FUNDAMENTALS_UPDATED = "fundamentals.updated"
+    MACRO_UPDATED = "macro.updated"
+    REGIME_CHANGED = "macro.regime_changed"
+    SENTIMENT_UPDATED = "sentiment.updated"
+    COMPANY_CLASSIFIED = "company.classified"
+    FEATURES_READY = "features.ready"
+    SIGNAL_AGGREGATED = "signal.aggregated"
 
 
 class CircuitBreakerLevel(StrEnum):
@@ -172,3 +180,62 @@ class StrategyStatusChangedEvent(BaseEvent):
     sharpe_90d: float
     profit_factor_30d: float
     source_service: str = "strategy"
+
+
+# ============================================================
+# ML/AI extension events (serwisy 10-13)
+# ============================================================
+
+
+class FundamentalsUpdatedEvent(BaseEvent):
+    event_type: EventType = EventType.FUNDAMENTALS_UPDATED
+    symbol: str
+    period_end: str  # ISO date of the reporting period
+    fiscal_period: str  # "Q1".."Q4" | "FY"
+    source_service: str = "fundamental-data"
+
+
+class MacroUpdatedEvent(BaseEvent):
+    event_type: EventType = EventType.MACRO_UPDATED
+    regime: str | None = None
+    source_service: str = "macro-data"
+
+
+class RegimeChangedEvent(BaseEvent):
+    event_type: EventType = EventType.REGIME_CHANGED
+    old_regime: str
+    new_regime: str
+    source_service: str = "macro-data"
+
+
+class SentimentUpdatedEvent(BaseEvent):
+    event_type: EventType = EventType.SENTIMENT_UPDATED
+    symbol: str
+    sentiment_score: float
+    source_service: str = "sentiment-data"
+
+
+class CompanyClassifiedEvent(BaseEvent):
+    event_type: EventType = EventType.COMPANY_CLASSIFIED
+    symbol: str
+    style: str  # "growth" | "value" | "blend"
+    model_stack: str
+    source_service: str = "company-classifier"
+
+
+class FeaturesReadyEvent(BaseEvent):
+    event_type: EventType = EventType.FEATURES_READY
+    symbol: str
+    interval: str
+    features_count: int
+    tier: int | None = None
+    source_service: str = "feature-engine"
+
+
+class SignalAggregatedEvent(BaseEvent):
+    event_type: EventType = EventType.SIGNAL_AGGREGATED
+    symbol: str
+    final_signal: str  # "BUY" | "SELL" | "HOLD"
+    confidence: float
+    components_count: int
+    source_service: str = "signal-aggregator"

@@ -32,6 +32,14 @@ NATS_SUBJECTS = {
     "model_trained": "ml.model_trained",
     "order_rejected": "order.rejected",
     "strategy_status": "strategy.status_changed",
+    # ML/AI extension (serwisy 10-13)
+    "fundamentals": "fundamentals.updated",
+    "macro": "macro.updated",
+    "regime_changed": "macro.regime_changed",
+    "sentiment": "sentiment.updated",
+    "company_classified": "company.classified",
+    "features_ready": "features.ready",
+    "signal_aggregated": "signal.aggregated",
 }
 
 # Risk defaults (Layer 2 — full risk-mgmt-svc)

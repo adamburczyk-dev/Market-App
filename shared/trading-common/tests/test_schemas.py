@@ -1,13 +1,19 @@
 """Testy kontraktów Pydantic — walidacja danych między serwisami."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
 from trading_common.schemas import (
+    CompanyProfile,
+    FeatureVector,
+    FinancialStatements,
     Interval,
+    MacroRegime,
+    MacroSnapshot,
     OHLCVBar,
     PortfolioMetrics,
+    SentimentSnapshot,
     Signal,
     TradingSignal,
 )
@@ -141,3 +147,108 @@ class TestPortfolioMetrics:
         )
         assert m.sharpe_ratio is None
         assert m.var_95 is None
+
+
+class TestCompanyProfile:
+    def test_minimal(self):
+        p = CompanyProfile(symbol="AAPL")
+        assert p.symbol == "AAPL"
+        assert p.model_stack is None
+
+    def test_full(self):
+        p = CompanyProfile(
+            symbol="NVDA",
+            name="NVIDIA",
+            sector="Information Technology",
+            market_cap=3_000_000_000_000.0,
+            style="growth",
+            model_stack="growth_tech_v1",
+        )
+        assert p.style == "growth"
+
+    def test_negative_market_cap_raises(self):
+        with pytest.raises(ValueError):
+            CompanyProfile(symbol="X", market_cap=-1.0)
+
+
+class TestFinancialStatements:
+    def test_valid(self):
+        fs = FinancialStatements(
+            symbol="AAPL",
+            period_end=date(2024, 3, 31),
+            fiscal_period="Q1",
+            revenue=90_000_000_000.0,
+            piotroski_f_score=8,
+        )
+        assert fs.fiscal_period == "Q1"
+        assert fs.piotroski_f_score == 8
+
+    def test_f_score_out_of_range_raises(self):
+        with pytest.raises(ValueError):
+            FinancialStatements(
+                symbol="X", period_end=date(2024, 1, 1), fiscal_period="FY", piotroski_f_score=10
+            )
+
+
+class TestMacroSnapshot:
+    def test_minimal(self):
+        s = MacroSnapshot(timestamp=datetime(2024, 1, 1, tzinfo=UTC))
+        assert s.regime is None
+
+    def test_with_regime(self):
+        s = MacroSnapshot(timestamp=datetime(2024, 1, 1, tzinfo=UTC), regime=MacroRegime.CRISIS)
+        assert s.regime == MacroRegime.CRISIS
+
+    def test_regime_values_match_allocator_keys(self):
+        # Wartości muszą zgadzać się z risk-mgmt RegimeAllocator
+        assert {r.value for r in MacroRegime} == {
+            "expansion",
+            "recovery",
+            "slowdown",
+            "contraction",
+            "crisis",
+        }
+
+
+class TestSentimentSnapshot:
+    def test_valid(self):
+        s = SentimentSnapshot(
+            symbol="TSLA", timestamp=datetime(2024, 1, 1, tzinfo=UTC), sentiment_score=0.3
+        )
+        assert s.news_count == 0
+
+    def test_score_out_of_range_raises(self):
+        with pytest.raises(ValueError):
+            SentimentSnapshot(
+                symbol="X", timestamp=datetime(2024, 1, 1, tzinfo=UTC), sentiment_score=1.5
+            )
+
+
+class TestFeatureVector:
+    def test_valid(self):
+        fv = FeatureVector(
+            symbol="AAPL",
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            interval=Interval.D1,
+            features={"rsi_14": 0.6, "macd": -0.2},
+            tier=1,
+            rank_transformed=True,
+        )
+        assert fv.features["rsi_14"] == 0.6
+        assert fv.rank_transformed is True
+
+    def test_defaults(self):
+        fv = FeatureVector(
+            symbol="MSFT", timestamp=datetime(2024, 1, 1, tzinfo=UTC), interval=Interval.H1
+        )
+        assert fv.features == {}
+        assert fv.tier is None
+
+    def test_tier_out_of_range_raises(self):
+        with pytest.raises(ValueError):
+            FeatureVector(
+                symbol="X",
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                interval=Interval.D1,
+                tier=4,
+            )
