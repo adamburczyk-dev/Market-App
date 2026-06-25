@@ -1,9 +1,10 @@
-"""NATS event publishing for market-data."""
+"""NATS JetStream event publishing for market-data."""
 
 from typing import Protocol
 
 import structlog
-from nats.aio.client import Client as NatsClient
+from nats.js import JetStreamContext
+from nats.js.errors import NotFoundError
 from trading_common.events import BaseEvent
 
 logger = structlog.get_logger()
@@ -24,11 +25,34 @@ class NullPublisher:
 
 
 class NatsPublisher:
-    """Publish events to NATS on their declared subject."""
+    """Publish events to NATS JetStream (at-least-once delivery + dedup).
 
-    def __init__(self, client: NatsClient) -> None:
-        self._client = client
+    The event_id is sent as the ``Nats-Msg-Id`` header so JetStream deduplicates
+    re-published events within the stream's dedup window — safe to retry a fetch.
+    """
+
+    def __init__(self, js: JetStreamContext) -> None:
+        self._js = js
 
     async def publish(self, event: BaseEvent) -> None:
-        await self._client.publish(event.subject(), event.model_dump_json().encode())
-        logger.info("Published event", subject=event.subject(), event_id=event.event_id)
+        ack = await self._js.publish(
+            event.subject(),
+            event.model_dump_json().encode(),
+            headers={"Nats-Msg-Id": event.event_id},
+        )
+        logger.info(
+            "Published event",
+            subject=event.subject(),
+            event_id=event.event_id,
+            stream=ack.stream,
+            seq=ack.seq,
+        )
+
+
+async def ensure_stream(js: JetStreamContext, name: str, subjects: list[str]) -> None:
+    """Create the JetStream stream if it does not already exist (idempotent)."""
+    try:
+        await js.stream_info(name)
+    except NotFoundError:
+        await js.add_stream(name=name, subjects=subjects)
+        logger.info("Created JetStream stream", stream=name, subjects=subjects)

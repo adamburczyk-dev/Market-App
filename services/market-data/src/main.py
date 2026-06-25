@@ -13,7 +13,7 @@ from src.core.fetchers import build_default_fetcher
 from src.core.observability import setup_observability
 from src.core.service import MarketDataService
 from src.core.storage import OHLCVRepository
-from src.events.publisher import NatsPublisher, NullPublisher, Publisher
+from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
 from src.models.db import Base, make_engine, make_sessionmaker
 
 logger = structlog.get_logger()
@@ -48,9 +48,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     nats_client = None
     try:
         nats_client = await nats.connect(settings.NATS_URL)
-        publisher = NatsPublisher(nats_client)
+        js = nats_client.jetstream()
+        await ensure_stream(js, settings.NATS_STREAM_NAME, [settings.NATS_STREAM_SUBJECTS])
+        publisher = NatsPublisher(js)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("NATS unavailable, event publishing disabled", error=str(exc))
+        logger.warning("NATS/JetStream unavailable, event publishing disabled", error=str(exc))
         publisher = NullPublisher()
         nats_client = None
 

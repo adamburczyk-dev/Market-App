@@ -34,13 +34,14 @@ landed before the Week-2 foundation).
   (`continuous_validation`).
 - `market-data` is now **functionally implemented** (Direction #1 done): Yahoo + Alpha Vantage
   fetchers, async storage (SQLAlchemy/asyncpg, idempotent upsert), Redis cache (in-memory fallback),
-  `MarketDataUpdatedEvent` publishing, wired through FastAPI lifespan. 27 tests green; verified
-  end-to-end (fetch → store → read) incl. a lifespan smoke with all backends down.
+  `MarketDataUpdatedEvent` publishing over **NATS JetStream** (msg-id dedup), wired through FastAPI
+  lifespan. 28 tests green; verified end-to-end (fetch → store → read) incl. a lifespan smoke with
+  all backends down.
 
 **Direction (where the project should go, in order):**
-1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event.
-   Next refinements (deferred, non-blocking): bulk `ON CONFLICT` insert instead of per-row merge,
-   NATS **JetStream** stream binding (currently core publish), a scheduled/periodic fetch job.
+1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
+   (NATS **JetStream**, `Nats-Msg-Id` dedup). Next refinements (deferred, non-blocking): bulk
+   `ON CONFLICT` insert instead of per-row merge, a scheduled/periodic fetch job.
 2. **Wire the orphaned components** into their services (API endpoints + NATS publishers/subscribers)
    so the already-tested logic runs.
 3. **Build serwisy 10–13** (fundamental-data, macro-data, company-classifier, signal-aggregator)
@@ -56,6 +57,10 @@ landed before the Week-2 foundation).
 - [P3] `infrastructure/terraform/` is referenced in README but absent (planned).
 - [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
 - [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
+- [env] Docker CLI + daemon are available (start `dockerd` as root if the socket is missing), but
+  egress policy can block Docker Hub (seen: 403 on `production.cloudfront.docker.com`) → image
+  pulls / `docker compose up` may fail. It's per-session network policy; verify containers in a
+  session whose policy allows Docker Hub.
 
 **Progress log (append-only):**
 - 2026-06-25 — Full repo audit: verified tests/lint/types green on 3.12; catalogued the priority
@@ -71,6 +76,11 @@ landed before the Week-2 foundation).
   orchestration, real FastAPI routes (`GET /ohlcv`, `POST /fetch`, `GET /symbols`) wired via
   lifespan with graceful degradation. Changed `init-db.sql` ohlcv PK to natural
   `(symbol, interval, ts)` to enable idempotent upserts. 27 tests green; ruff + mypy clean.
+- 2026-06-25 — JetStream: `market-data` now publishes `MarketDataUpdatedEvent` via NATS **JetStream**
+  (jetstream context + idempotent `ensure_stream` creating the `MARKET_DATA` stream + `Nats-Msg-Id`
+  dedup header) instead of core publish. +1 test (28 green). Live container round-trip NOT run this
+  session: Docker daemon is up but Docker Hub egress is policy-blocked (403) — verified via unit
+  test against the nats-py JetStream API. Run the real round-trip in a Docker-Hub-allowed session.
 
 **Next:** Direction #2 — wire an orphaned component into its service (suggest starting with
 feature-engine: expose calculators via an endpoint + subscribe to `MarketDataUpdatedEvent`,

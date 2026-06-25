@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     # NATS
     NATS_URL: str = "nats://localhost:4222"
+    NATS_STREAM_NAME: str = "MARKET_DATA"
+    NATS_STREAM_SUBJECTS: str = "market_data.>"
 
     # Service-specific
     ALPHA_VANTAGE_API_KEY: str | None = None
