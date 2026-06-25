@@ -57,10 +57,14 @@ landed before the Week-2 foundation).
 - [P3] `infrastructure/terraform/` is referenced in README but absent (planned).
 - [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
 - [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
-- [env] Docker CLI + daemon are available (start `dockerd` as root if the socket is missing), but
-  egress policy can block Docker Hub (seen: 403 on `production.cloudfront.docker.com`) → image
-  pulls / `docker compose up` may fail. It's per-session network policy; verify containers in a
-  session whose policy allows Docker Hub.
+- [env] Docker CLI + daemon are available (start `dockerd` as root if the socket is missing). Under
+  the **Trusted** egress policy, Docker Hub *registry* hosts are allowlisted but NOT the blob CDN
+  Docker actually redirects to (`production.cloudfront.docker.com` → 403; the allowlist only has the
+  Cloudflare variant `production.cloudflare.docker.com`). → `docker pull` / `docker compose up` fail
+  under Trusted. Fix: edit the environment's **Network access** → **Full** (or **Custom** + add
+  `production.cloudfront.docker.com`), then start a new session.
+  To verify NATS/JetStream **without Docker** (Go module proxy is allowlisted):
+  `GOSUMDB=off go install github.com/nats-io/nats-server/v2@v2.10.22` then run `nats-server -js`.
 
 **Progress log (append-only):**
 - 2026-06-25 — Full repo audit: verified tests/lint/types green on 3.12; catalogued the priority
@@ -81,6 +85,11 @@ landed before the Week-2 foundation).
   dedup header) instead of core publish. +1 test (28 green). Live container round-trip NOT run this
   session: Docker daemon is up but Docker Hub egress is policy-blocked (403) — verified via unit
   test against the nats-py JetStream API. Run the real round-trip in a Docker-Hub-allowed session.
+- 2026-06-25 — JetStream round-trip **verified for real** against a live `nats-server` (installed via
+  `go install`, no Docker needed): the production `NatsPublisher` + `ensure_stream` created the
+  `MARKET_DATA` stream, published, deduplicated a re-published `Nats-Msg-Id` (duplicate kept seq=1,
+  stream count stayed 2), and a pull consumer read both messages back. Docker-based run still blocked
+  by the Trusted egress (cloudfront blob host 403) — see the `[env]` note for the fix.
 
 **Next:** Direction #2 — wire an orphaned component into its service (suggest starting with
 feature-engine: expose calculators via an endpoint + subscribe to `MarketDataUpdatedEvent`,
