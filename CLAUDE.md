@@ -27,23 +27,27 @@ landed before the Week-2 foundation).
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
   set incl. ML/AI extension, `RiskEnvelope`.
 - All 9 service skeletons: `/health` `/ready` `/metrics` green.
-- Framework-supplement components implemented + unit-tested but **NOT wired into FastAPI/NATS**
-  (orphaned — they don't run at runtime): feature-engine calculators (`vol_regime`, `earnings_decay`,
-  `cross_asset`), strategy (`decay_monitor`, `cost_filter`, `adaptive_weights`), risk-mgmt
-  (`adaptive_sizing`, `regime_allocator`), ml-pipeline (`drift_detector`), backtest
-  (`continuous_validation`).
+- Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
+  feature-engine (`earnings_decay`, `cross_asset`), strategy (`decay_monitor`, `cost_filter`,
+  `adaptive_weights`), risk-mgmt (`adaptive_sizing`, `regime_allocator`), ml-pipeline
+  (`drift_detector`), backtest (`continuous_validation`). (`vol_regime` is now wired into feature-engine.)
 - `market-data` is now **functionally implemented** (Direction #1 done): Yahoo + Alpha Vantage
   fetchers, async storage (SQLAlchemy/asyncpg, idempotent upsert), Redis cache (in-memory fallback),
   `MarketDataUpdatedEvent` publishing over **NATS JetStream** (msg-id dedup), wired through FastAPI
   lifespan. 28 tests green; verified end-to-end (fetch → store → read) incl. a lifespan smoke with
   all backends down.
+- `feature-engine` is now **functionally implemented** (Direction #2 done): Tier-1 feature
+  computation from OHLCV (numpy, reusing the `vol_regime` calculator), HTTP query to market-data,
+  NATS **JetStream** subscriber on `market_data.updated` → compute → publish `FeaturesReadyEvent`,
+  FastAPI routes (`POST /compute/{symbol}`, `GET /features/{symbol}`, `GET /features`). 61 tests green;
+  verified end-to-end on a live nats-server (event in → features computed → `FeaturesReadyEvent` out).
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
    (NATS **JetStream**, `Nats-Msg-Id` dedup). Next refinements (deferred, non-blocking): bulk
    `ON CONFLICT` insert instead of per-row merge, a scheduled/periodic fetch job.
-2. **Wire the orphaned components** into their services (API endpoints + NATS publishers/subscribers)
-   so the already-tested logic runs.
+2. ⏳ **IN PROGRESS — Wire the orphaned components** into their services (API endpoints + NATS
+   pub/sub). ✅ feature-engine done. Remaining: strategy, risk-mgmt, ml-pipeline, backtest.
 3. **Build serwisy 10–13** (fundamental-data, macro-data, company-classifier, signal-aggregator)
    against the now-existing shared contracts. When `signal-aggregator` exists, move
    `adaptive_weights.py` + `cost_filter.py` there from `strategy/` (their spec home — framework_supplement B3/B4).
@@ -51,6 +55,7 @@ landed before the Week-2 foundation).
 
 **Known issues / tech debt** (propose a fix when you touch the area):
 - [P1] Orphaned components: tested but unreachable at runtime — wire incrementally (Direction #2).
+  feature-engine done; strategy / risk-mgmt / ml-pipeline / backtest remain.
 - [P2] `adaptive_weights.py` / `cost_filter.py` sit in `strategy/` but belong in `signal-aggregator/` (not created yet).
 - [P2] No `docs/ml_integration_plan.md`; serwisy 10–13 reference it conceptually. Initial contracts now in code — write the doc before deep ML work.
 - [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
@@ -90,10 +95,19 @@ landed before the Week-2 foundation).
   `MARKET_DATA` stream, published, deduplicated a re-published `Nats-Msg-Id` (duplicate kept seq=1,
   stream count stayed 2), and a pull consumer read both messages back. Docker-based run still blocked
   by the Trusted egress (cloudfront blob host 403) — see the `[env]` note for the fix.
+- 2026-06-25 — Added `scripts/verify-jetstream.py` + `make verify-jetstream` (spawns an isolated
+  `nats-server -js`, runs the real publisher round-trip incl. dedup; `--url` for a running NATS).
+- 2026-06-25 — Direction #2 (feature-engine wired): `compute_feature_vector` (Tier-1 numpy features +
+  `vol_regime` reuse), `HttpMarketDataClient` (queries market-data over HTTP), JetStream
+  `MarketDataSubscriber` on `market_data.updated` → compute → publish `FeaturesReadyEvent`,
+  `FeatureStore`, FastAPI routes, lifespan with graceful degradation. +11 tests (61 green); ruff +
+  mypy clean. Verified live on a local `nats-server`: published `MarketDataUpdatedEvent` → subscriber
+  computed 11 features → `FeaturesReadyEvent` landed in the `FEATURES` stream.
 
-**Next:** Direction #2 — wire an orphaned component into its service (suggest starting with
-feature-engine: expose calculators via an endpoint + subscribe to `MarketDataUpdatedEvent`,
-publish `FeaturesReadyEvent`).
+**Next:** Continue Direction #2 — wire the next orphaned component. Suggested: **risk-mgmt**
+(`adaptive_sizing` + `regime_allocator`) consuming `SignalGeneratedEvent` / portfolio state and
+passing signals through `RiskEnvelope`; or **strategy** (`decay_monitor`) subscribing to
+`FeaturesReadyEvent` to emit `SignalGeneratedEvent`.
 
 ## Architecture rules (non-negotiable)
 
