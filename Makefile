@@ -1,4 +1,4 @@
-.PHONY: up down build test lint logs seed help \
+.PHONY: up down build test lint logs seed help verify-jetstream \
         helm-install helm-template helm-diff
 
 # .env leży w root projektu; compose file w infrastructure/ —
@@ -49,6 +49,9 @@ seed:        ## Załaduj dane testowe
 
 setup:       ## Skonfiguruj środowisko deweloperskie
 	bash scripts/setup-dev.sh
+
+verify-jetstream:  ## Sprawdź NATS JetStream end-to-end (spawnuje izolowany nats-server)
+	python scripts/verify-jetstream.py
 
 # ============================================================
 # Kubernetes / Helm
