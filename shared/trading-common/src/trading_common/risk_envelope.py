@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from trading_common.schemas import TradingSignal
+from trading_common.schemas import Signal, TradingSignal
 
 
 @dataclass
@@ -45,7 +45,9 @@ class RiskEnvelope:
     2. Daily loss
     3. Signal confidence
     4. Portfolio exposure
-    5. Risk per trade (requires stop_loss)
+    5. Sector correlation
+    6. Order requires stop_loss (BUY/SELL; HOLD exempt)
+    7. Risk-per-trade sizing
     """
 
     def __init__(self, limits: RiskLimits | None = None) -> None:
@@ -97,7 +99,11 @@ class RiskEnvelope:
                     f"_positions_limit_{self.limits.max_correlated_positions}"
                 )
 
-        # 6. Risk per trade (only when stop_loss is provided)
+        # 6. Orders must carry a stop_loss (HOLD places no order, so it is exempt).
+        if signal.signal in (Signal.BUY, Signal.SELL) and signal.stop_loss is None:
+            return False, "missing_stop_loss"
+
+        # 7. Risk per trade (only when stop_loss is provided)
         if signal.stop_loss is not None and portfolio_value > 0:
             risk_per_share = abs(signal.price - signal.stop_loss)
             if risk_per_share > 0:

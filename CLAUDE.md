@@ -28,16 +28,17 @@ landed before the Week-2 foundation).
   set incl. ML/AI extension, `RiskEnvelope`.
 - All 9 service skeletons: `/health` `/ready` `/metrics` green.
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
-  feature-engine (`earnings_decay`, `cross_asset`), strategy (`decay_monitor`, `cost_filter`,
-  `adaptive_weights`), risk-mgmt (`adaptive_sizing`, `regime_allocator`), ml-pipeline
-  (`drift_detector`), backtest (`continuous_validation`). (`vol_regime` is now wired into feature-engine.)
+  feature-engine (`vol_regime`, `earnings_decay`, `cross_asset`), strategy (`decay_monitor`,
+  `cost_filter`, `adaptive_weights`), risk-mgmt (`adaptive_sizing`, `regime_allocator`), ml-pipeline
+  (`drift_detector`), backtest (`continuous_validation`). (`vol_regime` is VIX/market-wide — it belongs
+  in the macro/regime context, NOT applied to single-symbol realized vol in feature-engine.)
 - `market-data` is now **functionally implemented** (Direction #1 done): Yahoo + Alpha Vantage
   fetchers, async storage (SQLAlchemy/asyncpg, idempotent upsert), Redis cache (in-memory fallback),
   `MarketDataUpdatedEvent` publishing over **NATS JetStream** (msg-id dedup), wired through FastAPI
   lifespan. 28 tests green; verified end-to-end (fetch → store → read) incl. a lifespan smoke with
   all backends down.
 - `feature-engine` is now **functionally implemented** (Direction #2 done): Tier-1 feature
-  computation from OHLCV (numpy, reusing the `vol_regime` calculator), HTTP query to market-data,
+  computation from OHLCV (numpy; raw per-symbol values), HTTP query to market-data,
   NATS **JetStream** subscriber on `market_data.updated` → compute → publish `FeaturesReadyEvent`,
   FastAPI routes (`POST /compute/{symbol}`, `GET /features/{symbol}`, `GET /features`). 61 tests green;
   verified end-to-end on a live nats-server (event in → features computed → `FeaturesReadyEvent` out).
@@ -56,6 +57,12 @@ landed before the Week-2 foundation).
 **Known issues / tech debt** (propose a fix when you touch the area):
 - [P1] Orphaned components: tested but unreachable at runtime — wire incrementally (Direction #2).
   feature-engine done; strategy / risk-mgmt / ml-pipeline / backtest remain.
+- [P1] Cross-sectional ranking missing: feature-engine emits **raw** per-symbol features, but the
+  rule is cross-sectional percentile rank (López de Prado). Needs a universe-level stage (batch or a
+  second pass over `FeaturesReadyEvent`s) emitting rank-transformed vectors before strategy/ML use.
+- [P2] Robustness gaps to revisit when wiring more services: NATS subscriber has no `max_deliver`/DLQ
+  (a failing fetch redelivers forever); `/ready` is a stub (doesn't check NATS/DB/Redis); feature
+  store is in-memory + push consumer (single-replica only — use Redis + pull/queue for HA).
 - [P2] `adaptive_weights.py` / `cost_filter.py` sit in `strategy/` but belong in `signal-aggregator/` (not created yet).
 - [P2] No `docs/ml_integration_plan.md`; serwisy 10–13 reference it conceptually. Initial contracts now in code — write the doc before deep ML work.
 - [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
@@ -103,6 +110,13 @@ landed before the Week-2 foundation).
   `FeatureStore`, FastAPI routes, lifespan with graceful degradation. +11 tests (61 green); ruff +
   mypy clean. Verified live on a local `nats-server`: published `MarketDataUpdatedEvent` → subscriber
   computed 11 features → `FeaturesReadyEvent` landed in the `FEATURES` stream.
+- 2026-06-25 — Logic-review hardening (whole-system pass): (A1) `TradingSignal` now enforces
+  `stop_loss` for BUY/SELL via a `model_validator`, and `RiskEnvelope` rejects orders missing
+  `stop_loss` (`missing_stop_loss`, defense-in-depth) — closes the "no order without stop_loss" rule.
+  (B1) Documented the intentional 5% drawdown deadband in adaptive sizing (code unchanged).
+  (C1) Un-wired the VIX-calibrated `vol_regime` from per-symbol feature computation (it conflated
+  implied vs realized vol); kept `realized_vol_20` as a plain feature. shared 130 + feature-engine 61
+  green; ruff + mypy (incl. --strict) clean. Logged cross-sectional ranking + robustness gaps above.
 
 **Next:** Continue Direction #2 — wire the next orphaned component. Suggested: **risk-mgmt**
 (`adaptive_sizing` + `regime_allocator`) consuming `SignalGeneratedEvent` / portfolio state and
@@ -313,7 +327,7 @@ Before ml-pipeline-svc is ready, use Claude to seed training data:
 - Drawdown > 15% → flatten all positions, require human restart
 - Every strategy MUST have walk-forward OOS validation before activation
 - No strategy goes live without backtested Sharpe > 0.5 on OOS data
-- Position sizing is drawdown-adaptive: scales linearly from 2% risk at DD=0% to 0% at DD=15%
+- Position sizing is drawdown-adaptive: full 2% risk until DD=5% (deadband), then scales linearly to 0% at DD=15%
 - Regime-aware allocation: CRISIS → max 15% equity exposure, CONTRACTION → max 35%
 
 ## Monitoring requirements (every service)

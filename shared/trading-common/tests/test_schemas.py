@@ -86,8 +86,22 @@ class TestTradingSignal:
             "confidence": 0.75,
             "price": 153.0,
             "timestamp": datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+            "stop_loss": 145.0,
         }
         return {**defaults, **kwargs}
+
+    def test_buy_without_stop_loss_raises(self):
+        with pytest.raises(ValueError, match="stop_loss is required"):
+            TradingSignal(**self.make_signal(signal=Signal.BUY, stop_loss=None))
+
+    def test_sell_without_stop_loss_raises(self):
+        with pytest.raises(ValueError, match="stop_loss is required"):
+            TradingSignal(**self.make_signal(signal=Signal.SELL, stop_loss=None))
+
+    def test_hold_without_stop_loss_allowed(self):
+        sig = TradingSignal(**self.make_signal(signal=Signal.HOLD, stop_loss=None))
+        assert sig.signal == Signal.HOLD
+        assert sig.stop_loss is None
 
     def test_valid_signal(self):
         sig = TradingSignal(**self.make_signal())

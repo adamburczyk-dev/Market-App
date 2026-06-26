@@ -11,12 +11,13 @@ from trading_common.schemas import Signal, TradingSignal
 def make_signal(
     confidence: float = 0.80,
     price: float = 150.0,
-    stop_loss: float | None = None,
+    stop_loss: float | None = 50.0,
+    signal: Signal = Signal.BUY,
 ) -> TradingSignal:
     return TradingSignal(
         symbol="AAPL",
         strategy="test",
-        signal=Signal.BUY,
+        signal=signal,
         confidence=confidence,
         price=price,
         timestamp=datetime.now(UTC),
@@ -137,11 +138,29 @@ class TestRiskEnvelopeApproved:
         assert approved is True
         assert reason == "approved"
 
-    def test_approved_without_stop_loss(self):
-        """Risk-per-trade check is skipped when stop_loss is None."""
+    def test_hold_without_stop_loss_approved(self):
+        """HOLD places no order, so it is exempt from the stop_loss requirement."""
         envelope = make_envelope()
-        approved, reason = envelope.check_signal(make_signal(stop_loss=None), **SAFE_CONTEXT)
+        approved, _ = envelope.check_signal(
+            make_signal(signal=Signal.HOLD, stop_loss=None), **SAFE_CONTEXT
+        )
         assert approved is True
+
+    def test_envelope_rejects_order_without_stop_loss(self):
+        """Defense-in-depth: a force-constructed BUY without stop_loss is rejected."""
+        envelope = make_envelope()
+        signal = TradingSignal.model_construct(
+            symbol="AAPL",
+            strategy="test",
+            signal=Signal.BUY,
+            confidence=0.80,
+            price=150.0,
+            timestamp=datetime.now(UTC),
+            stop_loss=None,
+        )
+        approved, reason = envelope.check_signal(signal, **SAFE_CONTEXT)
+        assert approved is False
+        assert reason == "missing_stop_loss"
 
     def test_approved_at_confidence_exactly_at_threshold(self):
         """min_confidence=0.55, signal.confidence=0.55 → approved (< not <=)."""

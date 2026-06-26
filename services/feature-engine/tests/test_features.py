@@ -21,14 +21,13 @@ def test_full_feature_vector():
         "sma_50",
         "rsi_14",
         "realized_vol_20",
-        "vol_exposure_scalar",
         "volume_ratio",
         "momentum_20",
     ):
         assert key in fv.features, f"missing feature {key}"
-    # RSI w [0, 100], exposure scalar dodatni
+    # RSI w [0, 100], realized vol dodatni
     assert 0.0 <= fv.features["rsi_14"] <= 100.0
-    assert fv.features["vol_exposure_scalar"] > 0
+    assert fv.features["realized_vol_20"] > 0
 
 
 def test_short_series_yields_partial_vector():

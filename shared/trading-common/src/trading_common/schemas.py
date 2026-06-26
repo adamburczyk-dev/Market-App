@@ -61,6 +61,16 @@ class TradingSignal(BaseModel):
     take_profit: float | None = Field(default=None, gt=0)
     metadata: dict = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def require_stop_loss_for_orders(self) -> Self:
+        """Risk rule (non-negotiable): no order (BUY/SELL) without a stop_loss.
+
+        HOLD is exempt — it places no order.
+        """
+        if self.signal in (Signal.BUY, Signal.SELL) and self.stop_loss is None:
+            raise ValueError("stop_loss is required for BUY/SELL signals")
+        return self
+
 
 class PortfolioMetrics(BaseModel):
     timestamp: datetime

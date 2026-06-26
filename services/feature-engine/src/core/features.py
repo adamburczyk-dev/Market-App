@@ -1,16 +1,17 @@
 """Tier-1 technical feature computation from OHLCV bars.
 
-Pure numpy (no pandas). Reuses the framework-supplement vol_regime calculator
-to derive a volatility-based exposure scalar — wiring previously-orphaned logic
-into the runtime feature pipeline.
+Pure numpy (no pandas). Produces raw per-symbol features; cross-sectional
+percentile ranking (López de Prado) is a separate universe-level stage.
+
+Note: the vol_regime calculator (VIX-based) is intentionally NOT applied here —
+it expects market-wide implied vol, not single-symbol realized vol. It belongs
+in the macro/regime context. `realized_vol_20` is exposed as a plain feature.
 """
 
 import math
 
 import numpy as np
 from trading_common.schemas import FeatureVector, OHLCVBar
-
-from src.core.calculators.vol_regime import exposure_scalar
 
 _TRADING_DAYS = 252
 
@@ -63,8 +64,6 @@ def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
         daily_returns = np.diff(closes[-21:]) / closes[-21:-1]
         realized_vol = float(np.std(daily_returns, ddof=1) * math.sqrt(_TRADING_DAYS))
         feats["realized_vol_20"] = realized_vol
-        # vol_regime calculator expects VIX-like points (~15-40) → scale to percent.
-        feats["vol_exposure_scalar"] = exposure_scalar(realized_vol * 100.0)
         avg_volume = volumes[-20:].mean()
         if avg_volume > 0:
             feats["volume_ratio"] = float(volumes[-1] / avg_volume)
