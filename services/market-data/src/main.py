@@ -5,6 +5,7 @@ import nats
 import redis.asyncio as aredis
 import structlog
 from fastapi import FastAPI
+from sqlalchemy import text
 
 from src.api import router as api_router
 from src.config import settings
@@ -58,6 +59,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     fetcher = build_default_fetcher(settings)
     app.state.service = MarketDataService(fetcher, repository, cache, publisher)
+
+    async def _readiness() -> tuple[bool, dict[str, bool]]:
+        checks: dict[str, bool] = {}
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            checks["database"] = True
+        except Exception:  # noqa: BLE001
+            checks["database"] = False
+        checks["redis"] = False
+        if redis_client is not None:
+            with suppress(Exception):
+                await redis_client.ping()
+                checks["redis"] = True
+        checks["nats"] = nats_client is not None and nats_client.is_connected
+        # Database is the hard requirement; redis/nats degrade gracefully.
+        return checks["database"], checks
+
+    app.state.readiness_check = _readiness
 
     yield
 

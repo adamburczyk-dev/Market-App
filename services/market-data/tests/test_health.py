@@ -46,3 +46,37 @@ async def test_ohlcv_without_service_returns_503(client: AsyncClient):
     """Endpoint wymagający serwisu zwraca 503, gdy serwis nie jest gotowy."""
     response = await client.get("/api/v1/market-data/ohlcv/AAPL")
     assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_ready_503_when_database_down(client: AsyncClient):
+    from src.main import app
+
+    async def checker():
+        return False, {"database": False, "redis": True, "nats": True}
+
+    app.state.readiness_check = checker
+    try:
+        resp = await client.get("/ready")
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["status"] == "not_ready"
+        assert body["checks"]["database"] is False
+    finally:
+        delattr(app.state, "readiness_check")
+
+
+@pytest.mark.asyncio
+async def test_ready_200_with_checks_when_healthy(client: AsyncClient):
+    from src.main import app
+
+    async def checker():
+        return True, {"database": True, "redis": True, "nats": True}
+
+    app.state.readiness_check = checker
+    try:
+        resp = await client.get("/ready")
+        assert resp.status_code == 200
+        assert resp.json()["checks"]["database"] is True
+    finally:
+        delattr(app.state, "readiness_check")

@@ -62,6 +62,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.warning("Could not subscribe to market-data events", error=str(exc))
             subscriber = None
 
+    async def _readiness() -> tuple[bool, dict[str, bool]]:
+        # feature-engine's core job is consuming market-data events → NATS is required.
+        nats_ok = nats_client is not None and nats_client.is_connected
+        return nats_ok, {"nats": nats_ok}
+
+    app.state.readiness_check = _readiness
+
     yield
 
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
