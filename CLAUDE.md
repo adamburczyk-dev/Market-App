@@ -60,9 +60,10 @@ landed before the Week-2 foundation).
 - [P1 ✅ done] Cross-sectional ranking: feature-engine exposes universe-level percentile ranks via
   `GET /ranked` (+ `/ranked/{symbol}`) using `cross_sectional_rank`. Raw vectors still feed the store;
   strategy/ML must consume the **ranked** vectors. (Snapshot = latest-per-symbol; align timestamps later.)
-- [P2] Robustness gaps to revisit when wiring more services: NATS subscriber has no `max_deliver`/DLQ
-  (a failing fetch redelivers forever); `/ready` is a stub (doesn't check NATS/DB/Redis); feature
-  store is in-memory + push consumer (single-replica only — use Redis + pull/queue for HA).
+- [P2 ✅ mostly done] Robustness: subscriber has `max_deliver` + poison-`term`/transient-`nak` (D1);
+  `/ready` checks deps — market-data gates on DB, feature-engine on NATS (D2); FeatureStore is
+  Redis-backed with in-memory fallback via an async store interface (D3). Still open: the **push**
+  consumer doesn't load-balance — use a pull / queue-group consumer for true multi-replica HA.
 - [P2] `adaptive_weights.py` / `cost_filter.py` sit in `strategy/` but belong in `signal-aggregator/` (not created yet).
 - [P2] No `docs/ml_integration_plan.md`; serwisy 10–13 reference it conceptually. Initial contracts now in code — write the doc before deep ML work.
 - [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
@@ -121,13 +122,16 @@ landed before the Week-2 foundation).
   tie-aware average-rank percentile in [0,1], per-feature, handles missing keys),
   `FeatureStore.all_for_interval`, service `ranked_universe`/`get_ranked`, and `GET /ranked` +
   `GET /ranked/{symbol}`. +9 tests (feature-engine 70 green); ruff + mypy clean.
+- 2026-06-26 — Closed the open robustness/correctness issues: Wilder RSI (C3); subscriber
+  `max_deliver` + poison-`term`/transient-`nak` (D1); real `/ready` dep checks — market-data on DB,
+  feature-engine on NATS (D2); Redis-backed `FeatureStore` with in-memory fallback (store interface
+  made async) (D3). feature-engine 78 / market-data 30 / shared 130 green; ruff + mypy clean.
+  Live-verified the async event flow on a real `nats-server` (event → compute → `FeaturesReadyEvent`).
 
-**Next:** Finish remaining open issues (robustness: subscriber `max_deliver`/DLQ, real `/ready`,
-Redis feature store; Wilder RSI), then Direction #2 — wire the next orphaned component. Suggested:
-**risk-mgmt**
-(`adaptive_sizing` + `regime_allocator`) consuming `SignalGeneratedEvent` / portfolio state and
-passing signals through `RiskEnvelope`; or **strategy** (`decay_monitor`) subscribing to
-`FeaturesReadyEvent` to emit `SignalGeneratedEvent`.
+**Next:** Open issues closed (only multi-replica HA consumer + Circuit Breaker remain, best done with
+their consumers). Resume Direction #2 — wire the next orphaned component. Suggested: **strategy**
+(`decay_monitor`) subscribing to `FeaturesReadyEvent`, generating a signal, passing it through
+`RiskEnvelope` (now SL-enforcing), and emitting `SignalGeneratedEvent`; add the Circuit Breaker here.
 
 ## Architecture rules (non-negotiable)
 

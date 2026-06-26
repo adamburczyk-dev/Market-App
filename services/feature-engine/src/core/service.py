@@ -36,7 +36,7 @@ class FeatureEngineService:
             return None
 
         fv = compute_feature_vector(bars)
-        self._store.put(fv)
+        await self._store.put(fv)
         await self._publisher.publish(
             FeaturesReadyEvent(
                 symbol=symbol,
@@ -50,22 +50,22 @@ class FeatureEngineService:
         )
         return fv
 
-    def get_features(self, symbol: str, interval: Interval) -> FeatureVector | None:
-        return self._store.get(symbol, interval)
+    async def get_features(self, symbol: str, interval: Interval) -> FeatureVector | None:
+        return await self._store.get(symbol, interval)
 
-    def ranked_universe(self, interval: Interval) -> list[FeatureVector]:
+    async def ranked_universe(self, interval: Interval) -> list[FeatureVector]:
         """Cross-sectional percentile-ranked features for the whole universe."""
-        return cross_sectional_rank(self._store.all_for_interval(interval))
+        return cross_sectional_rank(await self._store.all_for_interval(interval))
 
-    def get_ranked(self, symbol: str, interval: Interval) -> FeatureVector | None:
+    async def get_ranked(self, symbol: str, interval: Interval) -> FeatureVector | None:
         """The given symbol's rank-transformed vector within the current universe."""
-        for fv in self.ranked_universe(interval):
+        for fv in await self.ranked_universe(interval):
             if fv.symbol == symbol:
                 return fv
         return None
 
-    def list_symbols(self) -> list[str]:
-        return self._store.symbols()
+    async def list_symbols(self) -> list[str]:
+        return await self._store.symbols()
 
     async def handle_market_data_event(self, data: bytes) -> None:
         """NATS handler: parse the event and (re)compute features for its symbol."""

@@ -34,7 +34,7 @@ async def get_features(
     service: FeatureEngineService = Depends(get_service),
 ) -> FeatureVector:
     """Return the latest computed features for a symbol."""
-    fv = service.get_features(symbol.upper(), interval)
+    fv = await service.get_features(symbol.upper(), interval)
     if fv is None:
         raise HTTPException(status_code=404, detail="no features computed yet")
     return fv
@@ -46,7 +46,7 @@ async def list_features(request: Request) -> dict:
     service: FeatureEngineService | None = getattr(request.app.state, "service", None)
     if service is None:
         return {"symbols": []}
-    return {"symbols": service.list_symbols()}
+    return {"symbols": await service.list_symbols()}
 
 
 @router.get("/ranked", response_model=list[FeatureVector])
@@ -55,7 +55,7 @@ async def list_ranked(
     service: FeatureEngineService = Depends(get_service),
 ) -> list[FeatureVector]:
     """Cross-sectional percentile-ranked features across the universe (López de Prado)."""
-    return service.ranked_universe(interval)
+    return await service.ranked_universe(interval)
 
 
 @router.get("/ranked/{symbol}", response_model=FeatureVector)
@@ -65,7 +65,7 @@ async def get_ranked(
     service: FeatureEngineService = Depends(get_service),
 ) -> FeatureVector:
     """One symbol's rank-transformed features within the current universe."""
-    fv = service.get_ranked(symbol.upper(), interval)
+    fv = await service.get_ranked(symbol.upper(), interval)
     if fv is None:
         raise HTTPException(status_code=404, detail="no features computed for symbol")
     return fv

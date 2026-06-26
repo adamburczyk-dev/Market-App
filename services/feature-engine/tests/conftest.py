@@ -10,7 +10,7 @@ from trading_common.schemas import Interval, OHLCVBar
 
 from src.api.deps import get_service
 from src.core.service import FeatureEngineService
-from src.core.store import FeatureStore
+from src.core.store import InMemoryFeatureStore
 from src.events.publisher import NullPublisher
 from src.main import app
 
@@ -62,7 +62,7 @@ async def client() -> AsyncIterator[AsyncClient]:
 
 
 def _build_service(market_client) -> FeatureEngineService:  # type: ignore[no-untyped-def]
-    return FeatureEngineService(market_client, FeatureStore(), NullPublisher(), min_bars=20)
+    return FeatureEngineService(market_client, InMemoryFeatureStore(), NullPublisher(), min_bars=20)
 
 
 @pytest.fixture

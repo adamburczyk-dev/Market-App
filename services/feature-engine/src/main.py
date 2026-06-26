@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
 import nats
+import redis.asyncio as aredis
 import structlog
 from fastapi import FastAPI
 
@@ -10,7 +11,7 @@ from src.config import settings
 from src.core.market_data_client import HttpMarketDataClient
 from src.core.observability import setup_observability
 from src.core.service import FeatureEngineService
-from src.core.store import FeatureStore
+from src.core.store import FeatureStore, InMemoryFeatureStore, RedisFeatureStore
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
 from src.events.subscriber import MarketDataSubscriber
 
@@ -22,7 +23,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting service", service=settings.SERVICE_NAME)
 
     client = HttpMarketDataClient(settings.MARKET_DATA_URL)
-    store = FeatureStore()
+
+    store: FeatureStore
+    redis_client = None
+    try:
+        redis_client = aredis.from_url(settings.redis_url, decode_responses=True)
+        await redis_client.ping()
+        store = RedisFeatureStore(redis_client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis unavailable, using in-memory feature store", error=str(exc))
+        store = InMemoryFeatureStore()
+        redis_client = None
 
     publisher: Publisher
     nats_client = None
@@ -77,6 +88,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()
+    if redis_client is not None:
+        with suppress(Exception):
+            await redis_client.aclose()
     await client.aclose()
 
 
