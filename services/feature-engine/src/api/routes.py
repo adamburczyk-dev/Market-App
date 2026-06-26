@@ -47,3 +47,25 @@ async def list_features(request: Request) -> dict:
     if service is None:
         return {"symbols": []}
     return {"symbols": service.list_symbols()}
+
+
+@router.get("/ranked", response_model=list[FeatureVector])
+async def list_ranked(
+    interval: Interval = Interval.D1,
+    service: FeatureEngineService = Depends(get_service),
+) -> list[FeatureVector]:
+    """Cross-sectional percentile-ranked features across the universe (López de Prado)."""
+    return service.ranked_universe(interval)
+
+
+@router.get("/ranked/{symbol}", response_model=FeatureVector)
+async def get_ranked(
+    symbol: str,
+    interval: Interval = Interval.D1,
+    service: FeatureEngineService = Depends(get_service),
+) -> FeatureVector:
+    """One symbol's rank-transformed features within the current universe."""
+    fv = service.get_ranked(symbol.upper(), interval)
+    if fv is None:
+        raise HTTPException(status_code=404, detail="no features computed for symbol")
+    return fv

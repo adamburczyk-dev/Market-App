@@ -21,5 +21,9 @@ class FeatureStore:
     def get(self, symbol: str, interval: Interval) -> FeatureVector | None:
         return self._store.get(_key(symbol, interval))
 
+    def all_for_interval(self, interval: Interval) -> list[FeatureVector]:
+        """Latest FeatureVector for every symbol at the given interval."""
+        return [v for v in self._store.values() if v.interval == interval]
+
     def symbols(self) -> list[str]:
         return sorted({key.split(":", 1)[0] for key in self._store})

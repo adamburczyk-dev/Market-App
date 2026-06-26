@@ -6,6 +6,7 @@ from trading_common.schemas import FeatureVector, Interval
 
 from src.core.features import compute_feature_vector
 from src.core.market_data_client import MarketDataClient
+from src.core.ranking import cross_sectional_rank
 from src.core.store import FeatureStore
 from src.events.publisher import Publisher
 
@@ -51,6 +52,17 @@ class FeatureEngineService:
 
     def get_features(self, symbol: str, interval: Interval) -> FeatureVector | None:
         return self._store.get(symbol, interval)
+
+    def ranked_universe(self, interval: Interval) -> list[FeatureVector]:
+        """Cross-sectional percentile-ranked features for the whole universe."""
+        return cross_sectional_rank(self._store.all_for_interval(interval))
+
+    def get_ranked(self, symbol: str, interval: Interval) -> FeatureVector | None:
+        """The given symbol's rank-transformed vector within the current universe."""
+        for fv in self.ranked_universe(interval):
+            if fv.symbol == symbol:
+                return fv
+        return None
 
     def list_symbols(self) -> list[str]:
         return self._store.symbols()

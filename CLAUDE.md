@@ -57,9 +57,9 @@ landed before the Week-2 foundation).
 **Known issues / tech debt** (propose a fix when you touch the area):
 - [P1] Orphaned components: tested but unreachable at runtime — wire incrementally (Direction #2).
   feature-engine done; strategy / risk-mgmt / ml-pipeline / backtest remain.
-- [P1] Cross-sectional ranking missing: feature-engine emits **raw** per-symbol features, but the
-  rule is cross-sectional percentile rank (López de Prado). Needs a universe-level stage (batch or a
-  second pass over `FeaturesReadyEvent`s) emitting rank-transformed vectors before strategy/ML use.
+- [P1 ✅ done] Cross-sectional ranking: feature-engine exposes universe-level percentile ranks via
+  `GET /ranked` (+ `/ranked/{symbol}`) using `cross_sectional_rank`. Raw vectors still feed the store;
+  strategy/ML must consume the **ranked** vectors. (Snapshot = latest-per-symbol; align timestamps later.)
 - [P2] Robustness gaps to revisit when wiring more services: NATS subscriber has no `max_deliver`/DLQ
   (a failing fetch redelivers forever); `/ready` is a stub (doesn't check NATS/DB/Redis); feature
   store is in-memory + push consumer (single-replica only — use Redis + pull/queue for HA).
@@ -117,8 +117,14 @@ landed before the Week-2 foundation).
   (C1) Un-wired the VIX-calibrated `vol_regime` from per-symbol feature computation (it conflated
   implied vs realized vol); kept `realized_vol_20` as a plain feature. shared 130 + feature-engine 61
   green; ruff + mypy (incl. --strict) clean. Logged cross-sectional ranking + robustness gaps above.
+- 2026-06-25 — Closed [P1] cross-sectional ranking: `core/ranking.py` (`cross_sectional_rank` —
+  tie-aware average-rank percentile in [0,1], per-feature, handles missing keys),
+  `FeatureStore.all_for_interval`, service `ranked_universe`/`get_ranked`, and `GET /ranked` +
+  `GET /ranked/{symbol}`. +9 tests (feature-engine 70 green); ruff + mypy clean.
 
-**Next:** Continue Direction #2 — wire the next orphaned component. Suggested: **risk-mgmt**
+**Next:** Finish remaining open issues (robustness: subscriber `max_deliver`/DLQ, real `/ready`,
+Redis feature store; Wilder RSI), then Direction #2 — wire the next orphaned component. Suggested:
+**risk-mgmt**
 (`adaptive_sizing` + `regime_allocator`) consuming `SignalGeneratedEvent` / portfolio state and
 passing signals through `RiskEnvelope`; or **strategy** (`decay_monitor`) subscribing to
 `FeaturesReadyEvent` to emit `SignalGeneratedEvent`.
