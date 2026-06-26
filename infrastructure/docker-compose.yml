@@ -252,14 +252,30 @@ services:
   #   ports:
   #     - "8005:8000"
 
-  # --- Faza 4 (tydzień 19+) ---
-  # risk-mgmt:
-  #   build:
-  #     context: ..
-  #     dockerfile: services/risk-mgmt/Dockerfile
-  #   container_name: ts-risk-mgmt
-  #   ports:
-  #     - "8006:8000"
+  risk-mgmt:
+    build:
+      context: ..
+      dockerfile: services/risk-mgmt/Dockerfile
+    container_name: ts-risk-mgmt
+    environment:
+      SERVICE_NAME: risk-mgmt
+      NATS_URL: nats://nats:4222
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8006:8000"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.risk-mgmt.rule=PathPrefix(`/api/v1/risk-mgmt`)"
 
   # --- Faza 4 (tydzień 21) ---
   # dashboard:
