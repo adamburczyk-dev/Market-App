@@ -76,6 +76,8 @@ class SignalGeneratedEvent(BaseEvent):
     signal: str  # "BUY" | "SELL" | "HOLD"
     confidence: float
     price: float
+    stop_loss: float | None = None  # carried through so execution can place protective orders
+    take_profit: float | None = None
     metadata: dict = Field(default_factory=dict)
     source_service: str = "strategy"
 

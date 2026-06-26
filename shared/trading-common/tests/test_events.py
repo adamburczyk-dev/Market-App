@@ -97,6 +97,26 @@ class TestSignalGeneratedEvent:
         )
         assert e.metadata == {}
 
+    def test_stop_loss_take_profit_optional(self):
+        e = SignalGeneratedEvent(
+            symbol="AAPL",
+            strategy_name="mom",
+            signal="BUY",
+            confidence=0.8,
+            price=150.0,
+        )
+        assert e.stop_loss is None and e.take_profit is None
+        e2 = SignalGeneratedEvent(
+            symbol="AAPL",
+            strategy_name="mom",
+            signal="BUY",
+            confidence=0.8,
+            price=150.0,
+            stop_loss=142.0,
+            take_profit=166.0,
+        )
+        assert e2.stop_loss == 142.0 and e2.take_profit == 166.0
+
 
 class TestCircuitBreakerTriggeredEvent:
     def test_valid_event_yellow(self):

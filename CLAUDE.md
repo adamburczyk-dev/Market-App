@@ -28,10 +28,10 @@ landed before the Week-2 foundation).
   set incl. ML/AI extension, `RiskEnvelope`.
 - All 9 service skeletons: `/health` `/ready` `/metrics` green.
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
-  feature-engine (`vol_regime`, `earnings_decay`, `cross_asset`), strategy (`decay_monitor`,
-  `cost_filter`, `adaptive_weights`), risk-mgmt (`adaptive_sizing`, `regime_allocator`), ml-pipeline
-  (`drift_detector`), backtest (`continuous_validation`). (`vol_regime` is VIX/market-wide — it belongs
-  in the macro/regime context, NOT applied to single-symbol realized vol in feature-engine.)
+  feature-engine (`vol_regime`, `earnings_decay`, `cross_asset`), strategy (`adaptive_weights` only —
+  `decay_monitor` + `cost_filter` now wired), risk-mgmt (`adaptive_sizing`, `regime_allocator`),
+  ml-pipeline (`drift_detector`), backtest (`continuous_validation`). (`vol_regime` is VIX/market-wide
+  — it belongs in the macro/regime context, NOT applied to single-symbol realized vol in feature-engine.)
 - `market-data` is now **functionally implemented** (Direction #1 done): Yahoo + Alpha Vantage
   fetchers, async storage (SQLAlchemy/asyncpg, idempotent upsert), Redis cache (in-memory fallback),
   `MarketDataUpdatedEvent` publishing over **NATS JetStream** (msg-id dedup), wired through FastAPI
@@ -40,15 +40,22 @@ landed before the Week-2 foundation).
 - `feature-engine` is now **functionally implemented** (Direction #2 done): Tier-1 feature
   computation from OHLCV (numpy; raw per-symbol values), HTTP query to market-data,
   NATS **JetStream** subscriber on `market_data.updated` → compute → publish `FeaturesReadyEvent`,
-  FastAPI routes (`POST /compute/{symbol}`, `GET /features/{symbol}`, `GET /features`). 61 tests green;
-  verified end-to-end on a live nats-server (event in → features computed → `FeaturesReadyEvent` out).
+  FastAPI routes (`POST /compute/{symbol}`, `GET /features/{symbol}`, `GET /features`,
+  `GET /ranked`). 78 tests green; verified end-to-end on a live nats-server.
+- `strategy` is now **functionally implemented** (Direction #2): JetStream subscriber on
+  `features.ready` → fetch ranked+raw features from feature-engine (HTTP) → **momentum-on-ranks**
+  rule → `TradingSignal` (vol-agnostic % stop) → **`RiskEnvelope`** (SL-enforcing; step-7 sizing
+  treated as advisory) → **`CostAwareFilter`** → publish `SignalGeneratedEvent` (now carries
+  `stop_loss`/`take_profit`). `StrategyDecayMonitor` gates output (inactive → suppress; `POST /decay`
+  re-evaluates and emits `StrategyStatusChangedEvent`). 86 tests green; live-verified the full chain
+  (FeaturesReady → BUY → RiskEnvelope → SignalGenerated in the SIGNALS stream).
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
    (NATS **JetStream**, `Nats-Msg-Id` dedup). Next refinements (deferred, non-blocking): bulk
    `ON CONFLICT` insert instead of per-row merge, a scheduled/periodic fetch job.
 2. ⏳ **IN PROGRESS — Wire the orphaned components** into their services (API endpoints + NATS
-   pub/sub). ✅ feature-engine done. Remaining: strategy, risk-mgmt, ml-pipeline, backtest.
+   pub/sub). ✅ feature-engine, strategy done. Remaining: risk-mgmt, ml-pipeline, backtest.
 3. **Build serwisy 10–13** (fundamental-data, macro-data, company-classifier, signal-aggregator)
    against the now-existing shared contracts. When `signal-aggregator` exists, move
    `adaptive_weights.py` + `cost_filter.py` there from `strategy/` (their spec home — framework_supplement B3/B4).
@@ -56,7 +63,16 @@ landed before the Week-2 foundation).
 
 **Known issues / tech debt** (propose a fix when you touch the area):
 - [P1] Orphaned components: tested but unreachable at runtime — wire incrementally (Direction #2).
-  feature-engine done; strategy / risk-mgmt / ml-pipeline / backtest remain.
+  feature-engine + strategy done; risk-mgmt / ml-pipeline / backtest remain.
+- [P1] `RiskEnvelope` step-7 (risk-per-trade) **rejects** instead of **sizing down**: with 2% max
+  single-loss and 5% max position, any stop tighter than 40% is rejected. strategy treats that one
+  reason (`position_size_exceeds_limit_after_risk_sizing`) as advisory and still emits the signal.
+  When wiring **risk-mgmt**, change step-7 to cap/size-down (via `adaptive_sizing`) so it gates on
+  real risk, not on the strategy not specifying size. (Changing it now would alter encoded tests.)
+- [P2] `SignalGeneratedEvent` carries `stop_loss`/`take_profit` (added for execution) but not the
+  full `TradingSignal`; revisit if execution needs more (e.g. order qty after sizing).
+- [P3] strategy's `RiskEnvelope` portfolio state is a static placeholder (config `PORTFOLIO_VALUE`,
+  flat 0% DD/exposure/daily-loss) until risk-mgmt/execution expose real portfolio state.
 - [P1 ✅ done] Cross-sectional ranking: feature-engine exposes universe-level percentile ranks via
   `GET /ranked` (+ `/ranked/{symbol}`) using `cross_sectional_rank`. Raw vectors still feed the store;
   strategy/ML must consume the **ranked** vectors. (Snapshot = latest-per-symbol; align timestamps later.)
@@ -127,11 +143,19 @@ landed before the Week-2 foundation).
   feature-engine on NATS (D2); Redis-backed `FeatureStore` with in-memory fallback (store interface
   made async) (D3). feature-engine 78 / market-data 30 / shared 130 green; ruff + mypy clean.
   Live-verified the async event flow on a real `nats-server` (event → compute → `FeaturesReadyEvent`).
+- 2026-06-26 — Direction #2 (strategy wired): extended `SignalGeneratedEvent` with
+  `stop_loss`/`take_profit` (contracts-first); built strategy — `FeaturesSubscriber` on
+  `features.ready`, `HttpFeatureClient` (queries feature-engine), **momentum-on-ranks** rule,
+  `StrategyService` (signal → `RiskEnvelope` → `CostAwareFilter` → publish), `StrategyHealthTracker`
+  (decay gate + `StrategyStatusChangedEvent`), routes (`/status`, `/evaluate/{symbol}`, `/decay`),
+  JetStream publisher, lifespan, real `/ready`. RiskEnvelope step-7 treated as advisory (logged P1).
+  +20 tests (strategy 86); shared 131; ruff + mypy clean. Live-verified the chain on a real
+  `nats-server` (FeaturesReady → BUY → RiskEnvelope → `SignalGeneratedEvent`).
 
-**Next:** Open issues closed (only multi-replica HA consumer + Circuit Breaker remain, best done with
-their consumers). Resume Direction #2 — wire the next orphaned component. Suggested: **strategy**
-(`decay_monitor`) subscribing to `FeaturesReadyEvent`, generating a signal, passing it through
-`RiskEnvelope` (now SL-enforcing), and emitting `SignalGeneratedEvent`; add the Circuit Breaker here.
+**Next:** Resume Direction #2 — wire **risk-mgmt** (`adaptive_sizing` + `regime_allocator`):
+subscribe to `SignalGeneratedEvent`, size positions (fixing RiskEnvelope step-7 to size-down),
+apply regime exposure caps, and add the **Circuit Breaker** (armed 24/7, `CIRCUIT_BREAKER_TRIGGERED`
+consumed by all order-generating services). Then ml-pipeline / backtest.
 
 ## Architecture rules (non-negotiable)
 

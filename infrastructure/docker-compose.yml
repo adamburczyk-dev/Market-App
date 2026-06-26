@@ -196,11 +196,14 @@ services:
       NATS_URL: nats://nats:4222
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      FEATURE_ENGINE_URL: http://feature-engine:8000
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     ports:
       - "8003:8000"
     depends_on:
       nats:
+        condition: service_healthy
+      feature-engine:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
