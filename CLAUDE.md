@@ -18,8 +18,9 @@ via NATS JetStream (events) and HTTP (request/response).
 > If a fresh analysis surfaces new bugs or improvement ideas, **propose them here and to the user** —
 > do not silently proceed.
 
-**Phase:** 1 — Foundation. **Reality check: there is a priority inversion** (Week-19+ framework work
-landed before the Week-2 foundation).
+**Phase:** 1 — Foundation. The earlier priority inversion is **resolved**: the foundation was built
+and the framework components wired into a working **end-to-end paper-trading loop** (market-data →
+feature-engine → strategy → risk-mgmt → execution → portfolio feedback). 6 of 9 core services run.
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
 - `shared/trading-common`: 126 tests green, `ruff` + `mypy --strict` clean. Contracts present:
@@ -57,6 +58,12 @@ landed before the Week-2 foundation).
   `CircuitBreakerTriggeredEvent` and blocks new orders when tripped. In-memory `PortfolioState`
   (updatable via `POST /portfolio`); routes `/portfolio`, `/circuit-breaker`, `/signal`. 84 tests
   green; live-verified (SignalGenerated → sized OrderRequested; breaker RED halts new orders).
+- `execution` is now **functionally implemented** (paper trading — **closes the loop**): JetStream
+  subscriber on `order.requested` → `PaperBroker` simulates the fill → publish `OrderFilledEvent` →
+  push portfolio metrics (equity/exposure/drawdown/daily-loss) back to risk-mgmt over HTTP
+  (`POST /portfolio`), so fills drive sizing + the circuit breaker. In-memory broker (cash/positions,
+  peak-equity drawdown, mark-to-fill); routes `/portfolio`, `/positions`, `/execute`; real `/ready`.
+  17 tests green; live-verified (OrderRequested → OrderFilled → portfolio fed back).
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -76,8 +83,9 @@ landed before the Week-2 foundation).
   risk-mgmt (`PositionSizer`: drawdown-adaptive risk budget + regime cap + 5% position cap → size-down).
 - [P2] `OrderRequestedEvent` (risk→execution) carries symbol/side/qty/price/SL/TP + strategy_name;
   revisit if execution needs more (e.g. order type, TIF).
-- [P3] Portfolio state is in-memory `PortfolioState` in risk-mgmt (updatable via `POST /portfolio`),
-  not yet fed by execution; circuit-breaker auto-clears (a real system needs manual reset out of BLACK).
+- [P3] Portfolio state is in-memory `PortfolioState` in risk-mgmt, now fed by execution (paper fills
+  → `POST /portfolio`). Both are single-instance/in-memory (no persistence); circuit-breaker
+  auto-clears (a real system needs manual reset out of BLACK).
 - [P3] strategy still risk-checks against its own static portfolio placeholder; once execution feeds
   risk-mgmt's `PortfolioState`, strategy should query it (or risk-mgmt becomes the sole gate).
 - [P1 ✅ done] Cross-sectional ranking: feature-engine exposes universe-level percentile ranks via
@@ -167,11 +175,19 @@ landed before the Week-2 foundation).
   orders when tripped; in-memory `PortfolioState` + routes `/portfolio`, `/circuit-breaker`, `/signal`;
   real `/ready`. +27 tests (risk-mgmt 84); ruff + mypy clean. Added risk-mgmt to docker-compose.
   Live-verified on a real `nats-server` (SignalGenerated → sized OrderRequested; RED breaker halts).
+- 2026-06-26 — **Loop closed** — execution (paper trading) wired: `OrderSubscriber` on
+  `order.requested` → `PaperBroker` fills → publish `OrderFilledEvent` → `HttpRiskClient` pushes
+  portfolio metrics to risk-mgmt `POST /portfolio` (fills now drive sizing + circuit breaker).
+  Routes `/portfolio`, `/positions`, `/execute`; real `/ready`; added to docker-compose (port 8007).
+  +13 tests (execution 17); ruff + mypy clean. Live-verified on a real `nats-server`
+  (OrderRequested → OrderFilled → portfolio fed back). End-to-end loop now runs:
+  market-data → feature-engine → strategy → risk-mgmt → execution → portfolio feedback.
 
-**Next:** The minimal trading loop is now market-data → feature-engine → strategy → risk-mgmt
-(→ `OrderRequestedEvent`). Wire **execution** (paper trading: consume `OrderRequestedEvent`, simulate
-fills, emit `OrderFilledEvent`, feed portfolio state back to risk-mgmt) to close the loop; or
-continue Direction #2 with ml-pipeline / backtest.
+**Next:** The minimal paper-trading loop is complete. Options: (a) **harden the loop** — persist
+portfolio/positions, real marks (subscribe execution to `market_data.updated`), strategy querying
+risk-mgmt's live portfolio instead of its placeholder; (b) continue Direction #2 — **ml-pipeline**
+(`drift_detector`) / **backtest** (`continuous_validation`); (c) **notification** consuming
+`CircuitBreakerTriggeredEvent`/`OrderFilledEvent` for alerts; (d) **dashboard** over the HTTP APIs.
 
 ## Architecture rules (non-negotiable)
 

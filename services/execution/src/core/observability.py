@@ -2,6 +2,7 @@
 
 import structlog
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 
@@ -25,6 +26,17 @@ def setup_observability(app: FastAPI, service_name: str) -> None:
         return {"status": "healthy", "service": service_name}
 
     @app.get("/ready", tags=["ops"])
-    async def readiness() -> dict:
-        # TODO: sprawdź zależności (DB, Redis, NATS)
-        return {"status": "ready", "service": service_name}
+    async def readiness() -> JSONResponse:
+        # main.py may register app.state.readiness_check: () -> (ready, checks).
+        check = getattr(app.state, "readiness_check", None)
+        if check is None:
+            return JSONResponse({"status": "ready", "service": service_name})
+        ready, checks = await check()
+        return JSONResponse(
+            status_code=200 if ready else 503,
+            content={
+                "status": "ready" if ready else "not_ready",
+                "service": service_name,
+                "checks": checks,
+            },
+        )
