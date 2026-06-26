@@ -3,8 +3,14 @@
 import uuid
 
 import structlog
-from trading_common.events import OrderFilledEvent, OrderRequestedEvent
+from trading_common.events import (
+    MarketDataUpdatedEvent,
+    OrderFilledEvent,
+    OrderRequestedEvent,
+)
+from trading_common.schemas import Interval
 
+from src.core.market_data_client import MarketDataClient
 from src.core.paper_broker import PaperBroker
 from src.core.risk_client import RiskClient
 from src.events.publisher import Publisher
@@ -13,10 +19,17 @@ logger = structlog.get_logger()
 
 
 class ExecutionService:
-    def __init__(self, broker: PaperBroker, publisher: Publisher, risk_client: RiskClient) -> None:
+    def __init__(
+        self,
+        broker: PaperBroker,
+        publisher: Publisher,
+        risk_client: RiskClient,
+        market_client: MarketDataClient | None = None,
+    ) -> None:
         self._broker = broker
         self._publisher = publisher
         self._risk_client = risk_client
+        self._market_client = market_client
 
     @property
     def broker(self) -> PaperBroker:
@@ -46,3 +59,18 @@ class ExecutionService:
             price=fill.price,
         )
         return event
+
+    async def handle_market_data_event(self, data: bytes) -> None:
+        event = MarketDataUpdatedEvent.model_validate_json(data)
+        await self.mark_position(event.symbol, Interval(event.interval))
+
+    async def mark_position(self, symbol: str, interval: Interval) -> None:
+        """Re-mark a held position to the latest market price; push portfolio if changed."""
+        if self._market_client is None or symbol not in self._broker.positions():
+            return
+        close = await self._market_client.latest_close(symbol, interval)
+        if close is None:
+            return
+        self._broker.mark(symbol, close)
+        await self._risk_client.push_portfolio(self._broker.metrics())
+        logger.info("Re-marked position", symbol=symbol, price=close)

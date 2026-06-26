@@ -7,7 +7,7 @@ from trading_common.schemas import Interval
 from src.core.service import PortfolioSnapshot
 from src.events.publisher import NullPublisher
 
-from .conftest import FakeFeatureClient, build_service, buy_client
+from .conftest import FakeFeatureClient, FakePortfolioClient, build_service, buy_client
 
 
 @pytest.mark.asyncio
@@ -109,3 +109,25 @@ async def test_handle_features_ready_event_triggers_signal():
     await service.handle_features_ready_event(event.model_dump_json().encode())
     assert len(publisher.published) == 1
     assert publisher.published[0].symbol == "AAPL"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_live_portfolio_drawdown_blocks_signal():
+    publisher = NullPublisher()
+    breach = {"value": 100_000.0, "exposure_pct": 0.0, "drawdown_pct": 0.20, "daily_loss_pct": 0.0}
+    service = build_service(
+        buy_client(), publisher=publisher, portfolio_client=FakePortfolioClient(breach)
+    )
+    assert await service.evaluate_symbol("AAPL", Interval.D1) is None
+    assert publisher.published == []
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_placeholder_when_portfolio_unavailable():
+    publisher = NullPublisher()
+    service = build_service(
+        buy_client(), publisher=publisher, portfolio_client=FakePortfolioClient(None)
+    )
+    # client returns None → fall back to the (healthy) placeholder → signal still emitted
+    assert await service.evaluate_symbol("AAPL", Interval.D1) is not None
+    assert len(publisher.published) == 1

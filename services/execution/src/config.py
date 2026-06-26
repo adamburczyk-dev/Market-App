@@ -11,6 +11,8 @@ class Settings(BaseSettings):
 
     # Push portfolio state back to risk-mgmt after fills (HTTP)
     RISK_MGMT_URL: str = "http://risk-mgmt:8000"
+    # Query latest prices to mark open positions (HTTP)
+    MARKET_DATA_URL: str = "http://market-data:8000"
 
     # NATS JetStream — ORDERS stream (consume order.requested, publish order.filled)
     NATS_ORDERS_STREAM: str = "ORDERS"
@@ -18,6 +20,11 @@ class Settings(BaseSettings):
     NATS_SOURCE_SUBJECT: str = "order.requested"
     NATS_DURABLE: str = "execution"
     NATS_MAX_DELIVER: int = 5
+
+    # Subscribe to market-data updates to re-mark open positions
+    NATS_MARKET_STREAM: str = "MARKET_DATA"
+    NATS_MARKET_SUBJECT: str = "market_data.updated"
+    NATS_MARKET_DURABLE: str = "execution-marks"
 
     # Paper broker
     INITIAL_CASH: float = 100_000.0

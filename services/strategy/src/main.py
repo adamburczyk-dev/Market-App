@@ -13,6 +13,7 @@ from src.core.feature_client import HttpFeatureClient
 from src.core.health import StrategyHealthTracker
 from src.core.momentum import MomentumParams
 from src.core.observability import setup_observability
+from src.core.portfolio_client import HttpPortfolioClient
 from src.core.service import PortfolioSnapshot, StrategyService
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
 from src.events.subscriber import FeaturesSubscriber
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting service", service=settings.SERVICE_NAME)
 
     client = HttpFeatureClient(settings.FEATURE_ENGINE_URL)
+    portfolio_client = HttpPortfolioClient(settings.RISK_MGMT_URL)
     health = StrategyHealthTracker(settings.STRATEGY_NAME)
 
     publisher: Publisher
@@ -64,6 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         take_profit_rr=settings.TAKE_PROFIT_RR,
         expected_edge_bps=settings.EXPECTED_EDGE_BPS,
         market_cap_tier=settings.MARKET_CAP_TIER,
+        portfolio_client=portfolio_client,
     )
     app.state.service = service
 
@@ -97,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         with suppress(Exception):
             await nats_client.drain()
     await client.aclose()
+    await portfolio_client.aclose()
 
 
 app = FastAPI(

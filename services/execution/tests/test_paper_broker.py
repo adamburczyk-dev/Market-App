@@ -44,3 +44,19 @@ def test_slippage_moves_fill_price():
     sell = broker.fill("o2", "MSFT", "SELL", 1, 100.0)
     assert buy.price == 100.1  # BUY pays up
     assert sell.price == 99.9  # SELL receives less
+
+
+def test_mark_updates_unrealized_value():
+    broker = PaperBroker(initial_cash=100_000.0)
+    broker.fill("o1", "AAPL", "BUY", 50, 100.0)  # equity 100k
+    broker.mark("AAPL", 90.0)  # price drops -> unrealized loss
+    assert broker.positions()["AAPL"]["last_price"] == 90.0
+    assert broker.equity == 99_500.0  # 95k cash + 50*90
+    assert round(broker.metrics()["drawdown_pct"], 4) == 0.005
+
+
+def test_mark_ignores_unheld_symbol():
+    broker = PaperBroker(initial_cash=100_000.0)
+    broker.mark("AAPL", 50.0)
+    assert broker.positions() == {}
+    assert broker.equity == 100_000.0

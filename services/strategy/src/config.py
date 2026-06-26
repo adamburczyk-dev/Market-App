@@ -11,6 +11,8 @@ class Settings(BaseSettings):
 
     # Where to query computed features (HTTP — events in, queries over HTTP)
     FEATURE_ENGINE_URL: str = "http://feature-engine:8000"
+    # Where to read live portfolio state for RiskEnvelope (HTTP; falls back to placeholder)
+    RISK_MGMT_URL: str = "http://risk-mgmt:8000"
 
     # NATS JetStream — source (features.ready) + own stream (signals)
     NATS_SOURCE_STREAM: str = "FEATURES"

@@ -56,6 +56,7 @@ def build_service(
     portfolio=None,
     expected_edge_bps: float = 200.0,
     name: str = "momentum_rank",
+    portfolio_client=None,
 ) -> StrategyService:
     return StrategyService(
         client,
@@ -67,7 +68,16 @@ def build_service(
         portfolio or PortfolioSnapshot(),
         strategy_name=name,
         expected_edge_bps=expected_edge_bps,
+        portfolio_client=portfolio_client,
     )
+
+
+class FakePortfolioClient:
+    def __init__(self, data: dict | None) -> None:
+        self.data = data
+
+    async def get_portfolio(self) -> dict | None:
+        return self.data
 
 
 def buy_client() -> FakeFeatureClient:

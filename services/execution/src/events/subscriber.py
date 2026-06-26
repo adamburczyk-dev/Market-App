@@ -1,5 +1,6 @@
-"""Subscribe to OrderRequestedEvent from JetStream and dispatch to a handler.
+"""Durable JetStream push subscription that dispatches messages to a handler.
 
+Used for both order.requested (fills) and market_data.updated (re-marks).
 Poison-message safe: malformed payloads are terminated; transient failures are
 NAK'd and redelivered up to ``max_deliver`` times.
 """
@@ -17,9 +18,7 @@ logger = structlog.get_logger()
 Handler = Callable[[bytes], Awaitable[None]]
 
 
-class OrderSubscriber:
-    """Durable push subscription to the order.requested subject."""
-
+class EventSubscriber:
     def __init__(
         self,
         js: JetStreamContext,
@@ -43,7 +42,7 @@ class OrderSubscriber:
             manual_ack=True,
             config=ConsumerConfig(max_deliver=self._max_deliver),
         )
-        logger.info("Subscribed to order events", subject=self._subject, durable=self._durable)
+        logger.info("Subscribed", subject=self._subject, durable=self._durable)
 
     async def _on_message(self, msg) -> None:  # type: ignore[no-untyped-def]
         try:

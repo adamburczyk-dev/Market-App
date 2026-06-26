@@ -83,11 +83,11 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   risk-mgmt (`PositionSizer`: drawdown-adaptive risk budget + regime cap + 5% position cap → size-down).
 - [P2] `OrderRequestedEvent` (risk→execution) carries symbol/side/qty/price/SL/TP + strategy_name;
   revisit if execution needs more (e.g. order type, TIF).
-- [P3] Portfolio state is in-memory `PortfolioState` in risk-mgmt, now fed by execution (paper fills
-  → `POST /portfolio`). Both are single-instance/in-memory (no persistence); circuit-breaker
-  auto-clears (a real system needs manual reset out of BLACK).
-- [P3] strategy still risk-checks against its own static portfolio placeholder; once execution feeds
-  risk-mgmt's `PortfolioState`, strategy should query it (or risk-mgmt becomes the sole gate).
+- [P3] Portfolio state is in-memory `PortfolioState` in risk-mgmt, fed by execution (fills **and
+  live marks** → `POST /portfolio`). Both are single-instance/in-memory (**no persistence** — the
+  main remaining hardening); circuit-breaker auto-clears (a real system needs manual reset out of BLACK).
+- [P3 ✅ done] strategy now queries risk-mgmt's **live** portfolio (`GET /portfolio`) for the
+  RiskEnvelope gate, falling back to its static placeholder only when risk-mgmt is unreachable.
 - [P1 ✅ done] Cross-sectional ranking: feature-engine exposes universe-level percentile ranks via
   `GET /ranked` (+ `/ranked/{symbol}`) using `cross_sectional_rank`. Raw vectors still feed the store;
   strategy/ML must consume the **ranked** vectors. (Snapshot = latest-per-symbol; align timestamps later.)
@@ -182,12 +182,18 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   +13 tests (execution 17); ruff + mypy clean. Live-verified on a real `nats-server`
   (OrderRequested → OrderFilled → portfolio fed back). End-to-end loop now runs:
   market-data → feature-engine → strategy → risk-mgmt → execution → portfolio feedback.
+- 2026-06-26 — Loop hardening (made the risk feedback real): (1) **execution real marks** — a second
+  subscriber on `market_data.updated` re-marks held positions via `HttpMarketDataClient` (latest
+  close) → recomputes portfolio → pushes to risk-mgmt, so the circuit breaker reacts to **unrealized**
+  market moves, not just realized fills; `EventSubscriber` generalized for both subjects. (2)
+  **strategy live portfolio** — `HttpPortfolioClient` reads risk-mgmt `GET /portfolio` for the
+  RiskEnvelope gate (falls back to placeholder if unreachable). +6 tests (execution 21, strategy 88);
+  ruff + mypy clean. compose env wired (strategy→RISK_MGMT_URL, execution→MARKET_DATA_URL).
 
-**Next:** The minimal paper-trading loop is complete. Options: (a) **harden the loop** — persist
-portfolio/positions, real marks (subscribe execution to `market_data.updated`), strategy querying
-risk-mgmt's live portfolio instead of its placeholder; (b) continue Direction #2 — **ml-pipeline**
-(`drift_detector`) / **backtest** (`continuous_validation`); (c) **notification** consuming
-`CircuitBreakerTriggeredEvent`/`OrderFilledEvent` for alerts; (d) **dashboard** over the HTTP APIs.
+**Next:** Remaining loop hardening: **persistence** (portfolio/positions/features survive restarts —
+Redis or DB). Or continue Direction #2 — **ml-pipeline** (`drift_detector`) / **backtest**
+(`continuous_validation`); or **notification** (alerts from `CircuitBreakerTriggeredEvent`/
+`OrderFilledEvent`); or **dashboard** over the HTTP APIs.
 
 ## Architecture rules (non-negotiable)
 

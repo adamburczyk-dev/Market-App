@@ -197,6 +197,7 @@ services:
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
       FEATURE_ENGINE_URL: http://feature-engine:8000
+      RISK_MGMT_URL: http://risk-mgmt:8000
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     ports:
       - "8003:8000"
@@ -297,6 +298,7 @@ services:
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
       RISK_MGMT_URL: http://risk-mgmt:8000
+      MARKET_DATA_URL: http://market-data:8000
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     ports:
       - "8007:8000"
@@ -304,6 +306,8 @@ services:
       nats:
         condition: service_healthy
       risk-mgmt:
+        condition: service_healthy
+      market-data:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

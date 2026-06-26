@@ -54,6 +54,14 @@ class PaperBroker:
         slip = self.slippage_bps / 10_000.0
         return price * (1 + slip) if side == "BUY" else price * (1 - slip)
 
+    def mark(self, symbol: str, price: float) -> None:
+        """Re-mark an open position to a new market price (unrealized P&L)."""
+        pos = self._positions.get(symbol)
+        if pos is None or pos.quantity == 0:
+            return
+        pos.last_price = price
+        self._peak_equity = max(self._peak_equity, self.equity)
+
     @property
     def cash(self) -> float:
         return self._cash

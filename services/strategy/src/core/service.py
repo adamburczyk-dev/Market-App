@@ -16,6 +16,7 @@ from src.core.cost_filter import CostAwareFilter
 from src.core.feature_client import FeatureClient
 from src.core.health import StrategyHealthTracker
 from src.core.momentum import MomentumParams, generate_signal
+from src.core.portfolio_client import PortfolioClient
 from src.events.publisher import Publisher
 
 logger = structlog.get_logger()
@@ -46,6 +47,7 @@ class StrategyService:
         take_profit_rr: float = 2.0,
         expected_edge_bps: float = 200.0,
         market_cap_tier: str = "large",
+        portfolio_client: PortfolioClient | None = None,
     ) -> None:
         self._client = client
         self._publisher = publisher
@@ -54,6 +56,7 @@ class StrategyService:
         self._cost = cost_filter
         self._params = params
         self._portfolio = portfolio
+        self._portfolio_client = portfolio_client
         self._name = strategy_name
         self._stop_pct = stop_loss_pct
         self._tp_rr = take_profit_rr
@@ -106,12 +109,13 @@ class StrategyService:
             take_profit=take_profit,
         )
 
+        portfolio = await self._current_portfolio()
         approved, reason = self._risk.check_signal(
             trading_signal,
-            portfolio_value=self._portfolio.value,
-            current_exposure_pct=self._portfolio.exposure_pct,
-            current_drawdown_pct=self._portfolio.drawdown_pct,
-            daily_loss_pct=self._portfolio.daily_loss_pct,
+            portfolio_value=portfolio.value,
+            current_exposure_pct=portfolio.exposure_pct,
+            current_drawdown_pct=portfolio.drawdown_pct,
+            daily_loss_pct=portfolio.daily_loss_pct,
             sector_positions={},
         )
         if not approved:
@@ -144,6 +148,20 @@ class StrategyService:
         await self._publisher.publish(event)
         logger.info("Signal published", symbol=symbol, signal=signal.value, confidence=confidence)
         return event
+
+    async def _current_portfolio(self) -> PortfolioSnapshot:
+        """Live portfolio from risk-mgmt; falls back to the static placeholder."""
+        if self._portfolio_client is None:
+            return self._portfolio
+        data = await self._portfolio_client.get_portfolio()
+        if data is None:
+            return self._portfolio
+        return PortfolioSnapshot(
+            value=data.get("value", self._portfolio.value),
+            exposure_pct=data.get("exposure_pct", 0.0),
+            drawdown_pct=data.get("drawdown_pct", 0.0),
+            daily_loss_pct=data.get("daily_loss_pct", 0.0),
+        )
 
     def _protective_levels(self, signal: Signal, price: float) -> tuple[float, float]:
         distance = price * self._stop_pct
