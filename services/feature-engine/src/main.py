@@ -55,6 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 settings.NATS_SOURCE_SUBJECT,
                 settings.NATS_DURABLE,
                 service.handle_market_data_event,
+                max_deliver=settings.NATS_MAX_DELIVER,
             )
             await subscriber.start()
         except Exception as exc:  # noqa: BLE001

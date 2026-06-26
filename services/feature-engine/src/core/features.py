@@ -17,12 +17,21 @@ _TRADING_DAYS = 252
 
 
 def _rsi(closes: np.ndarray, period: int = 14) -> float:
-    diff = np.diff(closes[-(period + 1) :])
-    gains = diff[diff > 0].sum() / period
-    losses = -diff[diff < 0].sum() / period
-    if losses == 0:
-        return 100.0 if gains > 0 else 50.0
-    rs = gains / losses
+    """RSI with Wilder's smoothing over all available history (textbook RSI)."""
+    deltas = np.diff(closes)
+    if len(deltas) < period:
+        return 50.0
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    # Seed with a simple average of the first `period`, then Wilder-smooth the rest.
+    avg_gain = float(gains[:period].mean())
+    avg_loss = float(losses[:period].mean())
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + float(gains[i])) / period
+        avg_loss = (avg_loss * (period - 1) + float(losses[i])) / period
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
     return float(100.0 - 100.0 / (1.0 + rs))
 
 

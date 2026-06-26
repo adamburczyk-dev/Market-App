@@ -1,10 +1,17 @@
-"""Subscribe to MarketDataUpdatedEvent from JetStream and dispatch to a handler."""
+"""Subscribe to MarketDataUpdatedEvent from JetStream and dispatch to a handler.
+
+Poison-message safe: a malformed payload is terminated (no redelivery), a
+transient failure (e.g. market-data temporarily down) is NAK'd and redelivered
+up to ``max_deliver`` times.
+"""
 
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
 import structlog
 from nats.js import JetStreamContext
+from nats.js.api import ConsumerConfig
+from pydantic import ValidationError
 
 logger = structlog.get_logger()
 
@@ -20,11 +27,13 @@ class MarketDataSubscriber:
         subject: str,
         durable: str,
         handler: Handler,
+        max_deliver: int = 5,
     ) -> None:
         self._js = js
         self._subject = subject
         self._durable = durable
         self._handler = handler
+        self._max_deliver = max_deliver
         self._sub: JetStreamContext.PushSubscription | None = None
 
     async def start(self) -> None:
@@ -33,6 +42,7 @@ class MarketDataSubscriber:
             durable=self._durable,
             cb=self._on_message,
             manual_ack=True,
+            config=ConsumerConfig(max_deliver=self._max_deliver),
         )
         logger.info(
             "Subscribed to market-data events", subject=self._subject, durable=self._durable
@@ -42,8 +52,15 @@ class MarketDataSubscriber:
         try:
             await self._handler(msg.data)
             await msg.ack()
-        except Exception as exc:  # noqa: BLE001 - log and leave unacked for redelivery
-            logger.error("Failed to handle market-data event", error=str(exc))
+        except (ValidationError, ValueError) as exc:
+            # Malformed/undecodable event — redelivery won't help. Drop it.
+            logger.error("Poison message, terminating", error=str(exc))
+            with suppress(Exception):
+                await msg.term()
+        except Exception as exc:  # noqa: BLE001 - transient; redeliver up to max_deliver
+            logger.warning("Transient error, will redeliver", error=str(exc))
+            with suppress(Exception):
+                await msg.nak()
 
     async def stop(self) -> None:
         if self._sub is not None:

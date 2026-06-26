@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     NATS_SOURCE_STREAM: str = "MARKET_DATA"
     NATS_SOURCE_SUBJECT: str = "market_data.updated"
     NATS_DURABLE: str = "feature-engine"
+    NATS_MAX_DELIVER: int = 5
     NATS_FEATURES_STREAM: str = "FEATURES"
     NATS_FEATURES_SUBJECTS: str = "features.>"
 
