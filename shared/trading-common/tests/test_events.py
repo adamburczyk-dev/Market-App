@@ -16,6 +16,7 @@ from trading_common.events import (
     ModelRetrainedEvent,
     ModelTrainedEvent,
     OrderRejectedEvent,
+    OrderRequestedEvent,
     RegimeChangedEvent,
     SentimentUpdatedEvent,
     SignalAggregatedEvent,
@@ -372,7 +373,15 @@ class TestEventTypes:
         assert EventType.SIGNAL_AGGREGATED == "signal.aggregated"
 
     def test_event_type_count(self):
-        assert len(EventType) == 21
+        assert len(EventType) == 22
+
+    def test_order_requested_event(self):
+        e = OrderRequestedEvent(
+            symbol="AAPL", side="BUY", quantity=10.0, price=100.0, strategy_name="momentum_rank"
+        )
+        assert e.subject() == "order.requested"
+        assert e.source_service == "risk-mgmt"
+        assert e.side == "BUY"
 
 
 class TestMlExtensionEvents:

@@ -20,11 +20,6 @@ from src.events.publisher import Publisher
 
 logger = structlog.get_logger()
 
-# RiskEnvelope step-7 rejects when the risk-budgeted size exceeds the position
-# cap. That is a *sizing* concern (risk-mgmt sizes positions down) rather than a
-# hard risk violation, so at signal-generation time we treat it as advisory.
-_SIZING_REASON = "position_size_exceeds_limit_after_risk_sizing"
-
 
 @dataclass
 class PortfolioSnapshot:
@@ -119,7 +114,7 @@ class StrategyService:
             daily_loss_pct=self._portfolio.daily_loss_pct,
             sector_positions={},
         )
-        if not approved and reason != _SIZING_REASON:
+        if not approved:
             logger.info("Signal rejected by RiskEnvelope", symbol=symbol, reason=reason)
             return None
 

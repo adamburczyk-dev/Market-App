@@ -14,6 +14,7 @@ class EventType(StrEnum):
     MARKET_DATA_UPDATED = "market_data.updated"
     FEATURES_COMPUTED = "features.computed"
     SIGNAL_GENERATED = "signal.generated"
+    ORDER_REQUESTED = "order.requested"
     ORDER_SUBMITTED = "order.submitted"
     ORDER_FILLED = "order.filled"
     ORDER_REJECTED = "order.rejected"
@@ -80,6 +81,20 @@ class SignalGeneratedEvent(BaseEvent):
     take_profit: float | None = None
     metadata: dict = Field(default_factory=dict)
     source_service: str = "strategy"
+
+
+class OrderRequestedEvent(BaseEvent):
+    """Risk-approved, sized order request — risk-mgmt → execution."""
+
+    event_type: EventType = EventType.ORDER_REQUESTED
+    symbol: str
+    side: str  # "BUY" | "SELL"
+    quantity: float
+    price: float
+    strategy_name: str
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    source_service: str = "risk-mgmt"
 
 
 class OrderSubmittedEvent(BaseEvent):

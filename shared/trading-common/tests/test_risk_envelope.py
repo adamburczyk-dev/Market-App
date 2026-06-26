@@ -263,50 +263,25 @@ class TestRiskEnvelopeRejectExposure:
         assert "exposure" in reason
 
 
-class TestRiskEnvelopeRejectRiskPerTrade:
-    def test_reject_position_size_after_risk_sizing(self):
-        """
-        With very tight stop ($1 below entry on $150 stock),
-        risk sizing allows large position that exceeds 5% limit.
-        max_risk = 100k * 0.02 = $2000
-        max_shares = 2000 / 1.0 = 2000
-        position_value = 2000 * 150 = $300,000 → 300% of portfolio → reject
-        """
+class TestRiskEnvelopeDoesNotSize:
+    """The envelope is a pure gate — it never rejects on position size.
+
+    Sizing (drawdown-adaptive, regime-aware) is risk-mgmt's job; a tight stop
+    that would imply a large risk-budgeted position is NOT rejected here.
+    """
+
+    def test_tight_stop_is_approved(self):
         envelope = make_envelope()
         approved, reason = envelope.check_signal(
             make_signal(price=150.0, stop_loss=149.0), **SAFE_CONTEXT
         )
-        assert approved is False
-        assert "position_size" in reason
-
-    def test_approve_position_size_within_limits(self):
-        """
-        With wide stop ($30 below entry on $150 stock),
-        max_shares = 2000 / 30 = 66
-        position_value = 66 * 150 = $9,900 → 9.9% of portfolio
-        But wait, 9.9% > 5% → reject. Let's use even wider stop.
-        stop at $100 → risk_per_share = 50
-        max_shares = 2000 / 50 = 40
-        position_value = 40 * 150 = $6,000 → 6% → still > 5% → reject
-
-        Actually let's check: the condition is:
-        position_value / portfolio_value > max_position_pct
-        6000 / 100000 = 0.06 > 0.05 → reject
-
-        With stop at $50: risk = 100, shares = 20, value = 3000, 3% → approve
-        """
-        envelope = make_envelope()
-        approved, reason = envelope.check_signal(
-            make_signal(price=150.0, stop_loss=50.0), **SAFE_CONTEXT
-        )
         assert approved is True
         assert reason == "approved"
 
-    def test_zero_risk_per_share_skips_check(self):
-        """entry_price == stop_loss → risk_per_share = 0 → skip."""
+    def test_wide_stop_is_approved(self):
         envelope = make_envelope()
-        approved, reason = envelope.check_signal(
-            make_signal(price=150.0, stop_loss=150.0), **SAFE_CONTEXT
+        approved, _ = envelope.check_signal(
+            make_signal(price=150.0, stop_loss=50.0), **SAFE_CONTEXT
         )
         assert approved is True
 

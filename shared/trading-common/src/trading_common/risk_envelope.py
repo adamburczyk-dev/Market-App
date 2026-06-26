@@ -40,6 +40,9 @@ class RiskEnvelope:
     Pre-trade gate. Every signal-generating service MUST call check_signal()
     before publishing SignalGeneratedEvent.
 
+    This is a pure risk *gate* — it does NOT size positions. Position sizing
+    (drawdown-adaptive, regime-aware) is risk-mgmt's job (`adaptive_sizing`).
+
     Check order (first failure wins):
     1. Portfolio drawdown
     2. Daily loss
@@ -47,7 +50,6 @@ class RiskEnvelope:
     4. Portfolio exposure
     5. Sector correlation
     6. Order requires stop_loss (BUY/SELL; HOLD exempt)
-    7. Risk-per-trade sizing
     """
 
     def __init__(self, limits: RiskLimits | None = None) -> None:
@@ -102,15 +104,5 @@ class RiskEnvelope:
         # 6. Orders must carry a stop_loss (HOLD places no order, so it is exempt).
         if signal.signal in (Signal.BUY, Signal.SELL) and signal.stop_loss is None:
             return False, "missing_stop_loss"
-
-        # 7. Risk per trade (only when stop_loss is provided)
-        if signal.stop_loss is not None and portfolio_value > 0:
-            risk_per_share = abs(signal.price - signal.stop_loss)
-            if risk_per_share > 0:
-                max_risk_amount = portfolio_value * self.limits.max_single_loss_pct
-                max_shares = max_risk_amount / risk_per_share
-                position_value = max_shares * signal.price
-                if position_value / portfolio_value > self.limits.max_position_pct:
-                    return False, "position_size_exceeds_limit_after_risk_sizing"
 
         return True, "approved"
