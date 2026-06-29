@@ -21,7 +21,8 @@ via NATS JetStream (events) and HTTP (request/response).
 **Phase:** 1 — Foundation. The earlier priority inversion is **resolved**: the foundation was built
 and the framework components wired into a working **end-to-end paper-trading loop** (market-data →
 feature-engine → strategy → risk-mgmt → execution → portfolio feedback) plus backtest + ml-pipeline
-monitoring. 7 of 9 core services functionally implemented (notification + dashboard remain skeletons).
+monitoring and notification alerting. 8 of 9 core services functionally implemented (dashboard remains
+a skeleton).
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
 - `shared/trading-common`: 134 tests green, `ruff` + `mypy --strict` clean. Contracts present:
@@ -91,6 +92,17 @@ monitoring. 7 of 9 core services functionally implemented (notification + dashbo
   `POST /models/{id}/drift`, `GET /models`; real `/ready` (NATS). publisher + `ensure_stream(ML,
   ["ml.>"])`. 35 tests green; ruff + mypy clean; live-verified on a real `nats-server`
   (`ml.drift_detected` lands in the `ML` stream and reads back).
+- `notification` is now **functionally implemented** (closes the monitoring loop — first multi-stream
+  consumer): durable `EventSubscriber`s on the 4 alert-worthy events across their streams —
+  `CircuitBreakerTriggeredEvent` (RISK), `OrderFilledEvent` (ORDERS), `StrategyRevalidatedEvent`
+  (BACKTEST), `ModelDriftDetectedEvent` (ML). `core/alerts.py` maps each event → `Alert`
+  (severity-graded); `NotificationService.dispatch` applies a min-severity gate, keeps a recent-alerts
+  ring buffer, and fans out to channels with per-channel failure isolation. `core/channels.py`:
+  `LogChannel` (always on), `SlackChannel`/`TelegramChannel` (HTTP, built only when configured — log-only
+  otherwise). Routes `GET /channels`, `GET /alerts/recent`, `POST /test-alert`; real `/ready` (NATS);
+  `ensure_stream` for all 4 source streams (start-order independent). 28 tests green; ruff + format +
+  mypy clean; live-verified on a real `nats-server` (all 4 events → 4 correctly-graded alerts). Email/SMTP
+  channel + a scheduler-driven digest are follow-ups.
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -257,18 +269,26 @@ monitoring. 7 of 9 core services functionally implemented (notification + dashbo
   ["ml.>"])`. pyproject: bugbear immutable-calls. compose: ml-pipeline uncommented (port 8005).
   ml-pipeline 35 tests (was a skeleton); ruff + format + mypy clean; all suites green (527 total).
   Live-verified on a real `nats-server` (`ml.drift_detected` lands in the `ML` stream and reads back).
+- 2026-06-29 — **notification** wired (monitoring loop closed; first multi-stream consumer): durable
+  `EventSubscriber`s on `risk.circuit_breaker`, `order.filled`, `backtest.strategy_revalidated`,
+  `ml.drift_detected` (each on its owning stream, `ensure_stream` so start-order independent).
+  `core/alerts.py` (event → severity-graded `Alert`), `core/service.py` (`NotificationService`:
+  min-severity gate, recent-alerts ring buffer, fan-out with per-channel failure isolation),
+  `core/channels.py` (`LogChannel` always-on; `SlackChannel`/`TelegramChannel` HTTP, built only when
+  configured), `events/subscriber.py` (reused poison-safe subscriber + `ensure_stream`). Routes
+  `GET /channels`, `GET /alerts/recent`, `POST /test-alert`; real `/ready` (NATS); pyproject httpx +
+  bugbear. compose: notification uncommented (port 8008, Slack/Telegram env passthrough). notification
+  28 tests (was a skeleton); ruff + format + mypy clean; all suites green (555 total). Live-verified on
+  a real `nats-server` (all 4 events → 4 correctly-graded alerts via the real subscribers).
 
-**Next:** Direction #2 (wire orphaned components) is **complete** — 7 of 9 core services functionally
-implemented, running the end-to-end loop + monitoring (notification + dashboard remain skeletons).
-Options: **Direction #3** — serwisy 10–13 (fundamental-data,
-macro-data, company-classifier, signal-aggregator) against existing shared contracts; or
-**notification** (alerts from `CircuitBreakerTriggeredEvent`/`OrderFilledEvent`/
-`StrategyRevalidatedEvent`/`ModelDriftDetectedEvent`); or a **dashboard** over the HTTP APIs. Open
-follow-ups: scheduled triggers (backtest weekly Saturday revalidation; ml-pipeline daily drift check —
-no scheduler wired yet, both are request-driven); cross-sectional portfolio backtest matching
-strategy's universe ranks; MLflow-backed model registry (replacing the in-memory one); ml-pipeline
-model **training/inference** (PyTorch) — only drift detection is wired so far. Deeper persistence
-hardening (event-log/DB, multi-instance) remains optional.
+**Next:** Only **dashboard** remains a skeleton (8 of 9 core services functional). Options: **dashboard**
+over the HTTP APIs (portfolio/positions/recent-alerts/drift/backtest — Streamlit or React); or
+**Direction #3** — serwisy 10–13 (fundamental-data, macro-data, company-classifier, signal-aggregator)
+against existing shared contracts. Open follow-ups: scheduled triggers (backtest weekly Saturday
+revalidation; ml-pipeline daily drift check — both request-driven, no scheduler wired); notification
+email/SMTP channel; cross-sectional portfolio backtest matching strategy's universe ranks; MLflow-backed
+model registry; ml-pipeline model **training/inference** (PyTorch) — only drift detection is wired so
+far. Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
 
 ## Architecture rules (non-negotiable)
 

@@ -343,13 +343,34 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.execution.rule=PathPrefix(`/api/v1/execution`)"
 
-  # notification:
-  #   build:
-  #     context: ..
-  #     dockerfile: services/notification/Dockerfile
-  #   container_name: ts-notification
-  #   ports:
-  #     - "8008:8000"
+  notification:
+    build:
+      context: ..
+      dockerfile: services/notification/Dockerfile
+    container_name: ts-notification
+    environment:
+      SERVICE_NAME: notification
+      NATS_URL: nats://nats:4222
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      MIN_SEVERITY: ${MIN_SEVERITY:-info}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8008:8000"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.notification.rule=PathPrefix(`/api/v1/notification`)"
 
 volumes:
   postgres_data:
