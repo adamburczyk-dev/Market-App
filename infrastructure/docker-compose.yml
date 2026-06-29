@@ -249,14 +249,30 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.backtest.rule=PathPrefix(`/api/v1/backtest`)"
 
-  # --- Faza 3 (tydzień 13+) ---
-  # ml-pipeline:
-  #   build:
-  #     context: ..
-  #     dockerfile: services/ml-pipeline/Dockerfile
-  #   container_name: ts-ml-pipeline
-  #   ports:
-  #     - "8005:8000"
+  ml-pipeline:
+    build:
+      context: ..
+      dockerfile: services/ml-pipeline/Dockerfile
+    container_name: ts-ml-pipeline
+    environment:
+      SERVICE_NAME: ml-pipeline
+      NATS_URL: nats://nats:4222
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8005:8000"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ml-pipeline.rule=PathPrefix(`/api/v1/ml-pipeline`)"
 
   risk-mgmt:
     build:

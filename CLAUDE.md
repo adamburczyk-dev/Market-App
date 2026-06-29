@@ -20,7 +20,8 @@ via NATS JetStream (events) and HTTP (request/response).
 
 **Phase:** 1 — Foundation. The earlier priority inversion is **resolved**: the foundation was built
 and the framework components wired into a working **end-to-end paper-trading loop** (market-data →
-feature-engine → strategy → risk-mgmt → execution → portfolio feedback). 7 of 9 core services run.
+feature-engine → strategy → risk-mgmt → execution → portfolio feedback) plus backtest + ml-pipeline
+monitoring. 7 of 9 core services functionally implemented (notification + dashboard remain skeletons).
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
 - `shared/trading-common`: 134 tests green, `ruff` + `mypy --strict` clean. Contracts present:
@@ -29,10 +30,11 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`.
 - All 9 service skeletons: `/health` `/ready` `/metrics` green.
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
-  feature-engine (`vol_regime`, `earnings_decay`, `cross_asset`), strategy (`adaptive_weights` only),
-  ml-pipeline (`drift_detector`). (`decay_monitor`+`cost_filter`
-  now wired into strategy; `adaptive_sizing`+`regime_allocator` now wired into risk-mgmt; `vol_regime`
-  is VIX/market-wide — it belongs in the macro/regime context, not single-symbol realized vol.)
+  feature-engine (`earnings_decay`, `cross_asset`), strategy (`adaptive_weights` only — belongs in
+  signal-aggregator). (`decay_monitor`+`cost_filter` now wired into strategy;
+  `adaptive_sizing`+`regime_allocator` now wired into risk-mgmt; `continuous_validation` wired into
+  backtest; `drift_detector` wired into ml-pipeline; `vol_regime` is VIX/market-wide — it belongs in
+  the macro/regime context, not single-symbol realized vol.)
 - `market-data` is now **functionally implemented** (Direction #1 done): Yahoo + Alpha Vantage
   fetchers, async storage (SQLAlchemy/asyncpg, idempotent upsert), Redis cache (in-memory fallback),
   `MarketDataUpdatedEvent` publishing over **NATS JetStream** (msg-id dedup), wired through FastAPI
@@ -79,21 +81,34 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   status). Routes `POST /run`, `POST /revalidate`; real `/ready` gates on market-data. 39 tests green;
   ruff + mypy clean; live-verified on a real `nats-server` (both events land in the `BACKTEST` stream
   and read back).
+- `ml-pipeline` is now **functionally implemented** (Direction #2 — **last orphaned component**):
+  wires `drift_detector` (`DriftDetector`: PSI + KS prediction-shift + rolling-Sharpe/accuracy decay)
+  into the runtime. `ModelRegistry` (in-memory baseline store — placeholder for MLflow) holds each
+  model's reference feature distributions + baseline Sharpe; `MLPipelineService.check_drift` computes
+  per-feature PSI vs the baseline → `DriftReport` → publishes `ModelDriftDetectedEvent` only when
+  actionable (drift_type feature_drift/performance_decay/accuracy_decay/prediction_shift; severity
+  critical on retrain, warning on investigate). Routes `POST /models/{id}/baseline`,
+  `POST /models/{id}/drift`, `GET /models`; real `/ready` (NATS). publisher + `ensure_stream(ML,
+  ["ml.>"])`. 35 tests green; ruff + mypy clean; live-verified on a real `nats-server`
+  (`ml.drift_detected` lands in the `ML` stream and reads back).
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
    (NATS **JetStream**, `Nats-Msg-Id` dedup). Next refinements (deferred, non-blocking): bulk
    `ON CONFLICT` insert instead of per-row merge, a scheduled/periodic fetch job.
-2. ⏳ **IN PROGRESS — Wire the orphaned components** into their services (API endpoints + NATS
-   pub/sub). ✅ feature-engine, strategy, risk-mgmt, backtest done. Remaining: ml-pipeline.
+2. ✅ **DONE — Wire the orphaned components** into their services (API endpoints + NATS
+   pub/sub). feature-engine, strategy, risk-mgmt, backtest, ml-pipeline all wired. (Leftover specs —
+   feature-engine `earnings_decay`/`cross_asset`, strategy `adaptive_weights` — belong in later
+   services, not the 7 core runtime paths; tracked under tech debt.)
 3. **Build serwisy 10–13** (fundamental-data, macro-data, company-classifier, signal-aggregator)
    against the now-existing shared contracts. When `signal-aggregator` exists, move
    `adaptive_weights.py` + `cost_filter.py` there from `strategy/` (their spec home — framework_supplement B3/B4).
 4. **Contracts-first** always: extend `shared/trading-common` before adding any cross-service type.
 
 **Known issues / tech debt** (propose a fix when you touch the area):
-- [P1] Orphaned components: tested but unreachable at runtime — wire incrementally (Direction #2).
-  feature-engine + strategy + risk-mgmt + backtest done; **ml-pipeline (`drift_detector`) is the last**.
+- [P1 ✅ done] Orphaned components wired (Direction #2 complete): feature-engine + strategy +
+  risk-mgmt + backtest + ml-pipeline. Leftover specs (`earnings_decay`, `cross_asset`,
+  `adaptive_weights`) belong in later services (signal-aggregator / macro), not the core runtime.
 - [P1 ✅ done] `RiskEnvelope` step-7 removed — the envelope is now a pure gate; **sizing** lives in
   risk-mgmt (`PositionSizer`: drawdown-adaptive risk budget + regime cap + 5% position cap → size-down).
 - [P2] `OrderRequestedEvent` (risk→execution) carries symbol/side/qty/price/SL/TP + strategy_name;
@@ -232,14 +247,28 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   MARKET_DATA_URL + depends_on nats/market-data. backtest 39 tests (was a skeleton); ruff + format +
   mypy clean. Live-verified on a real `nats-server` (both events land in the `BACKTEST` stream and
   read back; real OOS Sharpe ≈ 2.25 → "active").
+- 2026-06-29 — Direction #2 (**ml-pipeline** wired — **last orphaned component; Direction #2 COMPLETE**):
+  wired `drift_detector` (`DriftDetector`: PSI + KS prediction-shift + rolling-Sharpe/accuracy decay)
+  into the runtime. `core/registry.py` (`ModelBaseline` + in-memory `ModelRegistry`, placeholder for
+  MLflow); `core/service.py` (`MLPipelineService.register_baseline` / `check_drift` → per-feature PSI
+  vs baseline → `DriftReport` → publish `ModelDriftDetectedEvent` only when actionable, mapping
+  drift_type + severity); `events/publisher.py`, routes (`POST /models/{id}/baseline`,
+  `POST /models/{id}/drift`, `GET /models`), real `/ready` (NATS), lifespan + `ensure_stream(ML,
+  ["ml.>"])`. pyproject: bugbear immutable-calls. compose: ml-pipeline uncommented (port 8005).
+  ml-pipeline 35 tests (was a skeleton); ruff + format + mypy clean; all suites green (527 total).
+  Live-verified on a real `nats-server` (`ml.drift_detected` lands in the `ML` stream and reads back).
 
-**Next:** Direction #2 has **one component left — ml-pipeline (`drift_detector`)**: daily PSI + rolling
-Sharpe drift check → `ModelDriftDetectedEvent`, mirroring how backtest revalidation feeds strategy.
-Then serwisy 10–13 (Direction #3), or **notification** (alerts from `CircuitBreakerTriggeredEvent`/
-`OrderFilledEvent`/`StrategyRevalidatedEvent`), or a **dashboard** over the HTTP APIs. Open follow-ups
-for backtest: a scheduled weekly revalidation trigger (Saturday, per monitoring reqs) and a
-cross-sectional portfolio backtest matching strategy's universe ranks (current engine is single-symbol
-time-series momentum). Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
+**Next:** Direction #2 (wire orphaned components) is **complete** — 7 of 9 core services functionally
+implemented, running the end-to-end loop + monitoring (notification + dashboard remain skeletons).
+Options: **Direction #3** — serwisy 10–13 (fundamental-data,
+macro-data, company-classifier, signal-aggregator) against existing shared contracts; or
+**notification** (alerts from `CircuitBreakerTriggeredEvent`/`OrderFilledEvent`/
+`StrategyRevalidatedEvent`/`ModelDriftDetectedEvent`); or a **dashboard** over the HTTP APIs. Open
+follow-ups: scheduled triggers (backtest weekly Saturday revalidation; ml-pipeline daily drift check —
+no scheduler wired yet, both are request-driven); cross-sectional portfolio backtest matching
+strategy's universe ranks; MLflow-backed model registry (replacing the in-memory one); ml-pipeline
+model **training/inference** (PyTorch) — only drift detection is wired so far. Deeper persistence
+hardening (event-log/DB, multi-instance) remains optional.
 
 ## Architecture rules (non-negotiable)
 

@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str | None = None
     NATS_URL: str = "nats://localhost:4222"
 
+    # NATS JetStream — ml-pipeline publishes drift/retrain/training events
+    NATS_ML_STREAM: str = "ML"
+    NATS_ML_SUBJECTS: str = "ml.>"
+
     @property
     def redis_url(self) -> str:
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
