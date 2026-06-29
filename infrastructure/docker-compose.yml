@@ -229,11 +229,16 @@ services:
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
       NATS_URL: nats://nats:4222
+      MARKET_DATA_URL: http://market-data:8000
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     ports:
       - "8004:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      market-data:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

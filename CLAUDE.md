@@ -20,17 +20,17 @@ via NATS JetStream (events) and HTTP (request/response).
 
 **Phase:** 1 — Foundation. The earlier priority inversion is **resolved**: the foundation was built
 and the framework components wired into a working **end-to-end paper-trading loop** (market-data →
-feature-engine → strategy → risk-mgmt → execution → portfolio feedback). 6 of 9 core services run.
+feature-engine → strategy → risk-mgmt → execution → portfolio feedback). 7 of 9 core services run.
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
-- `shared/trading-common`: 126 tests green, `ruff` + `mypy --strict` clean. Contracts present:
+- `shared/trading-common`: 134 tests green, `ruff` + `mypy --strict` clean. Contracts present:
   `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
-  set incl. ML/AI extension, `RiskEnvelope`.
+  set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`.
 - All 9 service skeletons: `/health` `/ready` `/metrics` green.
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
   feature-engine (`vol_regime`, `earnings_decay`, `cross_asset`), strategy (`adaptive_weights` only),
-  ml-pipeline (`drift_detector`), backtest (`continuous_validation`). (`decay_monitor`+`cost_filter`
+  ml-pipeline (`drift_detector`). (`decay_monitor`+`cost_filter`
   now wired into strategy; `adaptive_sizing`+`regime_allocator` now wired into risk-mgmt; `vol_regime`
   is VIX/market-wide — it belongs in the macro/regime context, not single-symbol realized vol.)
 - `market-data` is now **functionally implemented** (Direction #1 done): Yahoo + Alpha Vantage
@@ -69,13 +69,23 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   every fill/mark; `NullBrokerRepository` fallback) — `restore()` reloads cash/positions on startup.
   Routes `/portfolio`, `/positions`, `/execute`; real `/ready`. 30 tests green; live-verified
   (OrderRequested → OrderFilled → portfolio fed back; broker cash/positions survive a restart via real Redis).
+- `backtest` is now **functionally implemented** (Direction #2): wires the orphaned
+  `continuous_validation` (`ContinuousWalkForward`, abstract) to a real **momentum backtest engine**
+  (`core/engine.py`: numpy time-series long/flat momentum, no look-ahead, per-turn costs →
+  Sharpe/maxDD/return/trades; `start_index` measures the OOS tail with IS warm-up). `EngineWalkForward`
+  implements `_run_backtest` over the trailing OOS window; `BacktestService` pulls OHLCV from
+  market-data (HTTP) → runs backtest/revalidation → publishes `BacktestCompletedEvent` and the new
+  `StrategyRevalidatedEvent` (backtest **recommends** active/probation/deactivate; strategy **owns** the
+  status). Routes `POST /run`, `POST /revalidate`; real `/ready` gates on market-data. 39 tests green;
+  ruff + mypy clean; live-verified on a real `nats-server` (both events land in the `BACKTEST` stream
+  and read back).
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
    (NATS **JetStream**, `Nats-Msg-Id` dedup). Next refinements (deferred, non-blocking): bulk
    `ON CONFLICT` insert instead of per-row merge, a scheduled/periodic fetch job.
 2. ⏳ **IN PROGRESS — Wire the orphaned components** into their services (API endpoints + NATS
-   pub/sub). ✅ feature-engine, strategy, risk-mgmt done. Remaining: ml-pipeline, backtest.
+   pub/sub). ✅ feature-engine, strategy, risk-mgmt, backtest done. Remaining: ml-pipeline.
 3. **Build serwisy 10–13** (fundamental-data, macro-data, company-classifier, signal-aggregator)
    against the now-existing shared contracts. When `signal-aggregator` exists, move
    `adaptive_weights.py` + `cost_filter.py` there from `strategy/` (their spec home — framework_supplement B3/B4).
@@ -83,7 +93,7 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
 
 **Known issues / tech debt** (propose a fix when you touch the area):
 - [P1] Orphaned components: tested but unreachable at runtime — wire incrementally (Direction #2).
-  feature-engine + strategy + risk-mgmt done; ml-pipeline / backtest remain.
+  feature-engine + strategy + risk-mgmt + backtest done; **ml-pipeline (`drift_detector`) is the last**.
 - [P1 ✅ done] `RiskEnvelope` step-7 removed — the envelope is now a pure gate; **sizing** lives in
   risk-mgmt (`PositionSizer`: drawdown-adaptive risk budget + regime cap + 5% position cap → size-down).
 - [P2] `OrderRequestedEvent` (risk→execution) carries symbol/side/qty/price/SL/TP + strategy_name;
@@ -209,11 +219,27 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   ruff + format + mypy clean. **Live-verified against a real Redis**: tripped breaker re-derived
   after a simulated restart (risk-mgmt); broker cash/positions carried over (execution). Lifespan
   smoke confirms graceful degradation with NATS+Redis both down (Null* fallback, clean shutdown).
+- 2026-06-29 — Direction #2 (**backtest** wired): contracts-first — added `STRATEGY_REVALIDATED`
+  (`backtest.strategy_revalidated`) + `StrategyRevalidatedEvent` to trading-common (+3 tests, shared
+  134; also typed 3 pre-existing bare-`dict` metadata/metrics fields → `dict[str, Any]` to restore
+  `mypy --strict` clean). Built the backtest service around the orphaned `ContinuousWalkForward`:
+  `core/engine.py` (vectorized momentum long/flat backtest — no look-ahead, entry-aligned per-turn
+  costs, Sharpe/maxDD/return/trades, `start_index` for OOS-only scoring), `core/walk_forward.py`
+  (`EngineWalkForward` implements `_run_backtest` on the trailing OOS window), `HttpMarketDataClient`,
+  `BacktestService` (run/revalidate → publish `BacktestCompletedEvent` / `StrategyRevalidatedEvent`),
+  publisher + `ensure_stream(BACKTEST, ["backtest.>"])`, routes (`POST /run`, `POST /revalidate`),
+  real `/ready` (gates on market-data), lifespan. pyproject: numpy + httpx + bugbear. compose:
+  MARKET_DATA_URL + depends_on nats/market-data. backtest 39 tests (was a skeleton); ruff + format +
+  mypy clean. Live-verified on a real `nats-server` (both events land in the `BACKTEST` stream and
+  read back; real OOS Sharpe ≈ 2.25 → "active").
 
-**Next:** Persistence done for risk-mgmt + execution. Continue Direction #2 — **ml-pipeline**
-(`drift_detector`) / **backtest** (`continuous_validation`); or **notification** (alerts from
-`CircuitBreakerTriggeredEvent`/`OrderFilledEvent`); or **dashboard** over the HTTP APIs. Deeper
-persistence hardening (event-log/DB instead of last-write snapshot, multi-instance) remains optional.
+**Next:** Direction #2 has **one component left — ml-pipeline (`drift_detector`)**: daily PSI + rolling
+Sharpe drift check → `ModelDriftDetectedEvent`, mirroring how backtest revalidation feeds strategy.
+Then serwisy 10–13 (Direction #3), or **notification** (alerts from `CircuitBreakerTriggeredEvent`/
+`OrderFilledEvent`/`StrategyRevalidatedEvent`), or a **dashboard** over the HTTP APIs. Open follow-ups
+for backtest: a scheduled weekly revalidation trigger (Saturday, per monitoring reqs) and a
+cross-sectional portfolio backtest matching strategy's universe ranks (current engine is single-symbol
+time-series momentum). Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
 
 ## Architecture rules (non-negotiable)
 

@@ -5,6 +5,7 @@ Każdy event musi dziedziczyć z BaseEvent.
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -25,6 +26,7 @@ class EventType(StrEnum):
     MODEL_RETRAINED = "ml.model_retrained"
     ALERT_TRIGGERED = "alert.triggered"
     BACKTEST_COMPLETED = "backtest.completed"
+    STRATEGY_REVALIDATED = "backtest.strategy_revalidated"
     STRATEGY_STATUS_CHANGED = "strategy.status_changed"
     # ML/AI extension (serwisy 10-13)
     FUNDAMENTALS_UPDATED = "fundamentals.updated"
@@ -79,7 +81,7 @@ class SignalGeneratedEvent(BaseEvent):
     price: float
     stop_loss: float | None = None  # carried through so execution can place protective orders
     take_profit: float | None = None
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     source_service: str = "strategy"
 
 
@@ -134,6 +136,25 @@ class BacktestCompletedEvent(BaseEvent):
     source_service: str = "backtest"
 
 
+class StrategyRevalidatedEvent(BaseEvent):
+    """Walk-forward revalidation outcome — backtest → strategy.
+
+    Backtest *recommends* a status from the OOS Sharpe degradation; the strategy
+    service owns the actual status change. ``recommended_status`` is one of
+    "active" | "probation" | "deactivate".
+    """
+
+    event_type: EventType = EventType.STRATEGY_REVALIDATED
+    strategy_name: str
+    original_oos_sharpe: float
+    current_oos_sharpe: float
+    degradation_pct: float
+    recommended_status: str
+    oos_window_days: int
+    is_window_days: int
+    source_service: str = "backtest"
+
+
 class AlertTriggeredEvent(BaseEvent):
     event_type: EventType = EventType.ALERT_TRIGGERED
     alert_type: str
@@ -184,7 +205,7 @@ class ModelTrainedEvent(BaseEvent):
     model_id: str
     model_type: str
     training_duration_s: float
-    metrics: dict = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
     source_service: str = "ml-pipeline"
 
 

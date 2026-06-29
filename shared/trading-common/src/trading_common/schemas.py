@@ -5,7 +5,7 @@ Każdy serwis importuje: from trading_common.schemas import OHLCVBar
 
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -59,7 +59,7 @@ class TradingSignal(BaseModel):
     timestamp: datetime
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def require_stop_loss_for_orders(self) -> Self:

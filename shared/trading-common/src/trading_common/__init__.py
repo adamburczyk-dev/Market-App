@@ -16,6 +16,7 @@ from trading_common.events import (
     OrderSubmittedEvent,
     RiskLimitBreachedEvent,
     SignalGeneratedEvent,
+    StrategyRevalidatedEvent,
     StrategyStatusChangedEvent,
 )
 from trading_common.risk_envelope import RiskEnvelope, RiskLimits
@@ -49,6 +50,7 @@ __all__ = [
     "RiskLimitBreachedEvent",
     "Signal",
     "SignalGeneratedEvent",
+    "StrategyRevalidatedEvent",
     "StrategyStatusChangedEvent",
     "TradingSignal",
 ]

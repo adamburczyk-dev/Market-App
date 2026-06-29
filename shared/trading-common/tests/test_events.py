@@ -21,6 +21,7 @@ from trading_common.events import (
     SentimentUpdatedEvent,
     SignalAggregatedEvent,
     SignalGeneratedEvent,
+    StrategyRevalidatedEvent,
     StrategyStatusChangedEvent,
 )
 
@@ -296,6 +297,37 @@ class TestStrategyStatusChangedEvent:
         assert restored.sharpe_90d == e.sharpe_90d
 
 
+class TestStrategyRevalidatedEvent:
+    def make(self, **kwargs):
+        defaults = {
+            "strategy_name": "momentum_rank",
+            "original_oos_sharpe": 1.0,
+            "current_oos_sharpe": 0.55,
+            "degradation_pct": 0.45,
+            "recommended_status": "probation",
+            "oos_window_days": 126,
+            "is_window_days": 252,
+        }
+        return StrategyRevalidatedEvent(**{**defaults, **kwargs})
+
+    def test_valid_event(self):
+        e = self.make()
+        assert e.strategy_name == "momentum_rank"
+        assert e.recommended_status == "probation"
+        assert e.event_type == EventType.STRATEGY_REVALIDATED
+        assert e.source_service == "backtest"
+
+    def test_subject(self):
+        assert self.make().subject() == "backtest.strategy_revalidated"
+
+    def test_serialization_roundtrip(self):
+        e = self.make(recommended_status="deactivate", current_oos_sharpe=-0.2)
+        restored = StrategyRevalidatedEvent.model_validate(e.model_dump())
+        assert restored.recommended_status == "deactivate"
+        assert restored.current_oos_sharpe == -0.2
+        assert restored.degradation_pct == e.degradation_pct
+
+
 class TestOrderRejectedEvent:
     def test_valid_event(self):
         e = OrderRejectedEvent(
@@ -373,7 +405,7 @@ class TestEventTypes:
         assert EventType.SIGNAL_AGGREGATED == "signal.aggregated"
 
     def test_event_type_count(self):
-        assert len(EventType) == 22
+        assert len(EventType) == 23
 
     def test_order_requested_event(self):
         e = OrderRequestedEvent(
