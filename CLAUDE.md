@@ -55,15 +55,20 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   `regime_allocator` exposure/sector caps + 5% position cap → size-down) → publish
   **`OrderRequestedEvent`** (new contract, risk→execution). **Circuit Breaker** armed 24/7
   (`CircuitBreaker`: YELLOW dd>8% / RED daily-loss>5% halt / BLACK dd>15% flatten) → publishes
-  `CircuitBreakerTriggeredEvent` and blocks new orders when tripped. In-memory `PortfolioState`
-  (updatable via `POST /portfolio`); routes `/portfolio`, `/circuit-breaker`, `/signal`. 84 tests
-  green; live-verified (SignalGenerated → sized OrderRequested; breaker RED halts new orders).
+  `CircuitBreakerTriggeredEvent` and blocks new orders when tripped. `PortfolioState`
+  (updatable via `POST /portfolio`) is now **Redis-persisted** (`RedisStateRepository` snapshot on
+  every update; `NullStateRepository` fallback) — on startup `restore()` reloads the snapshot and
+  **re-derives** the breaker level, so a tripped halt survives a restart. Routes `/portfolio`,
+  `/circuit-breaker`, `/signal`. 93 tests green; live-verified (SignalGenerated → sized
+  OrderRequested; breaker RED halts new orders; tripped breaker survives a restart via real Redis).
 - `execution` is now **functionally implemented** (paper trading — **closes the loop**): JetStream
   subscriber on `order.requested` → `PaperBroker` simulates the fill → publish `OrderFilledEvent` →
   push portfolio metrics (equity/exposure/drawdown/daily-loss) back to risk-mgmt over HTTP
-  (`POST /portfolio`), so fills drive sizing + the circuit breaker. In-memory broker (cash/positions,
-  peak-equity drawdown, mark-to-fill); routes `/portfolio`, `/positions`, `/execute`; real `/ready`.
-  17 tests green; live-verified (OrderRequested → OrderFilled → portfolio fed back).
+  (`POST /portfolio`), so fills drive sizing + the circuit breaker. `PaperBroker` (cash/positions,
+  peak-equity drawdown, mark-to-fill) is now **Redis-persisted** (`RedisBrokerRepository` snapshot on
+  every fill/mark; `NullBrokerRepository` fallback) — `restore()` reloads cash/positions on startup.
+  Routes `/portfolio`, `/positions`, `/execute`; real `/ready`. 30 tests green; live-verified
+  (OrderRequested → OrderFilled → portfolio fed back; broker cash/positions survive a restart via real Redis).
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -83,9 +88,12 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   risk-mgmt (`PositionSizer`: drawdown-adaptive risk budget + regime cap + 5% position cap → size-down).
 - [P2] `OrderRequestedEvent` (risk→execution) carries symbol/side/qty/price/SL/TP + strategy_name;
   revisit if execution needs more (e.g. order type, TIF).
-- [P3] Portfolio state is in-memory `PortfolioState` in risk-mgmt, fed by execution (fills **and
-  live marks** → `POST /portfolio`). Both are single-instance/in-memory (**no persistence** — the
-  main remaining hardening); circuit-breaker auto-clears (a real system needs manual reset out of BLACK).
+- [P3 ✅ mostly done] Portfolio state (`PortfolioState` in risk-mgmt) and broker state (`PaperBroker`
+  in execution) are now **Redis-persisted** (snapshot on every mutation; `restore()` on startup;
+  Null*-Repository fallback when Redis is down). Both still single-instance (snapshot, not an event
+  log) and the circuit-breaker auto-clears (a real system needs manual reset out of BLACK).
+  feature-engine's `FeatureStore` is likewise Redis-backed (in-memory fallback) but **without**
+  startup restore — features recompute from market-data, so cold-start loss is acceptable.
 - [P3 ✅ done] strategy now queries risk-mgmt's **live** portfolio (`GET /portfolio`) for the
   RiskEnvelope gate, falling back to its static placeholder only when risk-mgmt is unreachable.
 - [P1 ✅ done] Cross-sectional ranking: feature-engine exposes universe-level percentile ranks via
@@ -189,11 +197,23 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback).
   **strategy live portfolio** — `HttpPortfolioClient` reads risk-mgmt `GET /portfolio` for the
   RiskEnvelope gate (falls back to placeholder if unreachable). +6 tests (execution 21, strategy 88);
   ruff + mypy clean. compose env wired (strategy→RISK_MGMT_URL, execution→MARKET_DATA_URL).
+- 2026-06-29 — **Persistence** (state survives restarts): risk-mgmt `PortfolioState` and execution
+  `PaperBroker` now snapshot to **Redis** on every mutation and `restore()` on startup, with a
+  `Null*Repository` fallback when Redis is down. risk-mgmt: `core/repository.py`
+  (`StateRepository`/`Null`/`Redis`), `service.restore()` re-derives the breaker level from the
+  restored drawdown/daily-loss (a tripped halt survives a restart), `save()` after every
+  `update_portfolio`. execution: `PaperBroker.snapshot()`/`restore()`, `core/repository.py`
+  (`BrokerRepository`/`Null`/`Redis`), `service.restore()`, `save()` after every fill/mark. main.py
+  for both builds a Redis client (ping → `Redis*Repository`, else `Null*`) and `aclose()`s it on
+  shutdown; compose `depends_on: redis` added for both. +9 tests each (risk-mgmt 93, execution 30);
+  ruff + format + mypy clean. **Live-verified against a real Redis**: tripped breaker re-derived
+  after a simulated restart (risk-mgmt); broker cash/positions carried over (execution). Lifespan
+  smoke confirms graceful degradation with NATS+Redis both down (Null* fallback, clean shutdown).
 
-**Next:** Remaining loop hardening: **persistence** (portfolio/positions/features survive restarts —
-Redis or DB). Or continue Direction #2 — **ml-pipeline** (`drift_detector`) / **backtest**
-(`continuous_validation`); or **notification** (alerts from `CircuitBreakerTriggeredEvent`/
-`OrderFilledEvent`); or **dashboard** over the HTTP APIs.
+**Next:** Persistence done for risk-mgmt + execution. Continue Direction #2 — **ml-pipeline**
+(`drift_detector`) / **backtest** (`continuous_validation`); or **notification** (alerts from
+`CircuitBreakerTriggeredEvent`/`OrderFilledEvent`); or **dashboard** over the HTTP APIs. Deeper
+persistence hardening (event-log/DB instead of last-write snapshot, multi-instance) remains optional.
 
 ## Architecture rules (non-negotiable)
 

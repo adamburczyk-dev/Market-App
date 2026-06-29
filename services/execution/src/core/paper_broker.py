@@ -103,3 +103,25 @@ class PaperBroker:
             for symbol, p in self._positions.items()
             if p.quantity != 0
         }
+
+    def snapshot(self) -> dict:
+        """Serializable broker state for persistence (cash, positions, equity highs)."""
+        return {
+            "cash": self._cash,
+            "peak_equity": self._peak_equity,
+            "day_start_equity": self._day_start_equity,
+            "positions": {
+                symbol: {"quantity": p.quantity, "last_price": p.last_price}
+                for symbol, p in self._positions.items()
+            },
+        }
+
+    def restore(self, snapshot: dict) -> None:
+        """Re-apply a persisted snapshot (overwrites current in-memory state)."""
+        self._cash = snapshot["cash"]
+        self._peak_equity = snapshot["peak_equity"]
+        self._day_start_equity = snapshot["day_start_equity"]
+        self._positions = {
+            symbol: Position(quantity=p["quantity"], last_price=p["last_price"])
+            for symbol, p in snapshot.get("positions", {}).items()
+        }

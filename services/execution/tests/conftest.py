@@ -12,11 +12,14 @@ from src.core.service import ExecutionService
 from src.events.publisher import NullPublisher
 
 
-def build_service(publisher=None, risk_client=None):  # type: ignore[no-untyped-def]
+def build_service(  # type: ignore[no-untyped-def]
+    publisher=None, risk_client=None, broker=None, repository=None
+):
     return ExecutionService(
-        PaperBroker(),
+        broker or PaperBroker(),
         publisher or NullPublisher(),
         risk_client or NullRiskClient(),
+        repository=repository,
     )
 
 

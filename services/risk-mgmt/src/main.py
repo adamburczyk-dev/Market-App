@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
 import nats
+import redis.asyncio as aredis
 import structlog
 from fastapi import FastAPI
 
@@ -10,6 +11,7 @@ from src.config import settings
 from src.core.circuit_breaker import CircuitBreaker
 from src.core.observability import setup_observability
 from src.core.portfolio import PortfolioState
+from src.core.repository import NullStateRepository, RedisStateRepository, StateRepository
 from src.core.service import RiskMgmtService
 from src.core.sizing import PositionSizer
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
@@ -35,6 +37,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     portfolio = PortfolioState(value=settings.PORTFOLIO_VALUE)
 
+    repository: StateRepository
+    redis_client = None
+    try:
+        redis_client = aredis.from_url(settings.redis_url, decode_responses=True)
+        await redis_client.ping()
+        repository = RedisStateRepository(redis_client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis unavailable, portfolio state not persisted", error=str(exc))
+        repository = NullStateRepository()
+        redis_client = None
+
     publisher: Publisher
     nats_client = None
     subscriber: SignalSubscriber | None = None
@@ -50,7 +63,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         publisher = NullPublisher()
         nats_client = None
 
-    service = RiskMgmtService(publisher, sizer, breaker, portfolio)
+    service = RiskMgmtService(publisher, sizer, breaker, portfolio, repository)
+    await service.restore()
     app.state.service = service
 
     if nats_client is not None:
@@ -82,6 +96,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()
+    if redis_client is not None:
+        with suppress(Exception):
+            await redis_client.aclose()
 
 
 app = FastAPI(

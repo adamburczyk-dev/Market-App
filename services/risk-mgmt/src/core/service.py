@@ -9,6 +9,7 @@ from trading_common.events import (
 
 from src.core.circuit_breaker import CircuitBreaker
 from src.core.portfolio import PortfolioState
+from src.core.repository import NullStateRepository, StateRepository
 from src.core.sizing import PositionSizer
 from src.events.publisher import Publisher
 
@@ -22,11 +23,28 @@ class RiskMgmtService:
         sizer: PositionSizer,
         breaker: CircuitBreaker,
         portfolio: PortfolioState,
+        repository: StateRepository | None = None,
     ) -> None:
         self._publisher = publisher
         self._sizer = sizer
         self._breaker = breaker
         self._portfolio = portfolio
+        self._repository = repository or NullStateRepository()
+
+    async def restore(self) -> None:
+        """Load persisted portfolio state and re-derive the circuit-breaker level."""
+        snapshot = await self._repository.load()
+        if snapshot is None:
+            return
+        self._portfolio.update(
+            value=snapshot.get("value"),
+            exposure_pct=snapshot.get("exposure_pct"),
+            drawdown_pct=snapshot.get("drawdown_pct"),
+            daily_loss_pct=snapshot.get("daily_loss_pct"),
+            regime=snapshot.get("regime"),
+        )
+        self._breaker.evaluate(self._portfolio.drawdown_pct, self._portfolio.daily_loss_pct)
+        logger.info("Restored portfolio", level=self._breaker.level, **self._portfolio.as_dict())
 
     @property
     def portfolio(self) -> PortfolioState:
@@ -86,6 +104,7 @@ class RiskMgmtService:
         result = self._breaker.evaluate(
             self._portfolio.drawdown_pct, self._portfolio.daily_loss_pct
         )
+        await self._repository.save(self._portfolio.as_dict())
         if result.changed and result.level is not None:
             event = CircuitBreakerTriggeredEvent(
                 level=result.level,

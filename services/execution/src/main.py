@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
 import nats
+import redis.asyncio as aredis
 import structlog
 from fastapi import FastAPI
 
@@ -10,6 +11,7 @@ from src.config import settings
 from src.core.market_data_client import HttpMarketDataClient
 from src.core.observability import setup_observability
 from src.core.paper_broker import PaperBroker
+from src.core.repository import BrokerRepository, NullBrokerRepository, RedisBrokerRepository
 from src.core.risk_client import HttpRiskClient
 from src.core.service import ExecutionService
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
@@ -26,6 +28,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     risk_client = HttpRiskClient(settings.RISK_MGMT_URL)
     market_client = HttpMarketDataClient(settings.MARKET_DATA_URL)
 
+    repository: BrokerRepository
+    redis_client = None
+    try:
+        redis_client = aredis.from_url(settings.redis_url, decode_responses=True)
+        await redis_client.ping()
+        repository = RedisBrokerRepository(redis_client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis unavailable, broker state not persisted", error=str(exc))
+        repository = NullBrokerRepository()
+        redis_client = None
+
     publisher: Publisher
     nats_client = None
     subscribers: list[EventSubscriber] = []
@@ -40,7 +53,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         publisher = NullPublisher()
         nats_client = None
 
-    service = ExecutionService(broker, publisher, risk_client, market_client)
+    service = ExecutionService(broker, publisher, risk_client, market_client, repository)
+    await service.restore()
     app.state.service = service
 
     if nats_client is not None:
@@ -82,6 +96,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()
+    if redis_client is not None:
+        with suppress(Exception):
+            await redis_client.aclose()
     await risk_client.aclose()
     await market_client.aclose()
 

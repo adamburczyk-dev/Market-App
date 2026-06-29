@@ -13,12 +13,13 @@ from src.core.sizing import PositionSizer
 from src.events.publisher import NullPublisher
 
 
-def build_service(publisher=None, portfolio=None):  # type: ignore[no-untyped-def]
+def build_service(publisher=None, portfolio=None, repository=None):  # type: ignore[no-untyped-def]
     return RiskMgmtService(
         publisher or NullPublisher(),
         PositionSizer(),
         CircuitBreaker(),
         portfolio or PortfolioState(),
+        repository,
     )
 
 

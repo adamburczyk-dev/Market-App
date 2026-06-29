@@ -12,6 +12,7 @@ from trading_common.schemas import Interval
 
 from src.core.market_data_client import MarketDataClient
 from src.core.paper_broker import PaperBroker
+from src.core.repository import BrokerRepository, NullBrokerRepository
 from src.core.risk_client import RiskClient
 from src.events.publisher import Publisher
 
@@ -25,15 +26,29 @@ class ExecutionService:
         publisher: Publisher,
         risk_client: RiskClient,
         market_client: MarketDataClient | None = None,
+        repository: BrokerRepository | None = None,
     ) -> None:
         self._broker = broker
         self._publisher = publisher
         self._risk_client = risk_client
         self._market_client = market_client
+        self._repository = repository or NullBrokerRepository()
 
     @property
     def broker(self) -> PaperBroker:
         return self._broker
+
+    async def restore(self) -> None:
+        """Load persisted broker state (cash / positions) on startup."""
+        snapshot = await self._repository.load()
+        if snapshot is None:
+            return
+        self._broker.restore(snapshot)
+        logger.info(
+            "Restored broker",
+            equity=self._broker.equity,
+            positions=self._broker.positions(),
+        )
 
     async def handle_order_event(self, data: bytes) -> None:
         order = OrderRequestedEvent.model_validate_json(data)
@@ -50,6 +65,7 @@ class ExecutionService:
             filled_price=fill.price,
         )
         await self._publisher.publish(event)
+        await self._repository.save(self._broker.snapshot())
         await self._risk_client.push_portfolio(self._broker.metrics())
         logger.info(
             "Order filled",
@@ -72,5 +88,6 @@ class ExecutionService:
         if close is None:
             return
         self._broker.mark(symbol, close)
+        await self._repository.save(self._broker.snapshot())
         await self._risk_client.push_portfolio(self._broker.metrics())
         logger.info("Re-marked position", symbol=symbol, price=close)
