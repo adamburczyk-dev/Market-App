@@ -21,15 +21,15 @@ via NATS JetStream (events) and HTTP (request/response).
 **Phase:** 1 — Foundation. The earlier priority inversion is **resolved**: the foundation was built
 and the framework components wired into a working **end-to-end paper-trading loop** (market-data →
 feature-engine → strategy → risk-mgmt → execution → portfolio feedback) plus backtest + ml-pipeline
-monitoring and notification alerting. 8 of 9 core services functionally implemented (dashboard remains
-a skeleton).
+monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All 9 core services are
+now functionally implemented** (no skeletons left).
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
 - `shared/trading-common`: 134 tests green, `ruff` + `mypy --strict` clean. Contracts present:
   `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
   set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`.
-- All 9 service skeletons: `/health` `/ready` `/metrics` green.
+- All 9 core services functionally implemented (`/health` `/ready` `/metrics` green; no skeletons left).
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
   feature-engine (`earnings_decay`, `cross_asset`), strategy (`adaptive_weights` only — belongs in
   signal-aggregator). (`decay_monitor`+`cost_filter` now wired into strategy;
@@ -103,6 +103,17 @@ a skeleton).
   `ensure_stream` for all 4 source streams (start-order independent). 28 tests green; ruff + format +
   mypy clean; live-verified on a real `nats-server` (all 4 events → 4 correctly-graded alerts). Email/SMTP
   channel + a scheduler-driven digest are follow-ups.
+- `dashboard` is now **functionally implemented** (last skeleton — all 9 core services done): a
+  **backend-for-frontend** (FastAPI, not Streamlit — keeps `/health` `/ready` `/metrics` + structlog +
+  the standard skeleton). `HttpDashboardSource` fans out read-only GETs to risk-mgmt (`/portfolio`,
+  `/circuit-breaker`), execution (`/portfolio`, `/positions`), notification (`/alerts/recent`),
+  ml-pipeline (`/models`); `DashboardService.overview` gathers them concurrently and is **partial-tolerant**
+  (a down upstream → `sources[name]="unavailable"`, the rest still renders). Routes `GET /overview`
+  (aggregated JSON) + `GET /ui` (self-contained HTML page, vanilla-JS poll, no build step); `GET /`
+  redirects to the UI. real `/ready` reports per-source reachability (always 200 — the BFF tolerates
+  missing upstreams). 18 tests green; ruff + format + mypy clean; **live-verified** against real
+  risk-mgmt + execution (uvicorn): the real `HttpDashboardSource` aggregated their live state over HTTP
+  while notification + ml-pipeline (down) showed "unavailable".
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -280,15 +291,28 @@ a skeleton).
   bugbear. compose: notification uncommented (port 8008, Slack/Telegram env passthrough). notification
   28 tests (was a skeleton); ruff + format + mypy clean; all suites green (555 total). Live-verified on
   a real `nats-server` (all 4 events → 4 correctly-graded alerts via the real subscribers).
+- 2026-06-30 — **dashboard** wired (**last skeleton — all 9 core services now functional**): built as a
+  FastAPI **backend-for-frontend** (not Streamlit, to keep the `/health` `/ready` `/metrics` + structlog
+  conventions). `core/clients.py` (`HttpDashboardSource`: read-only GETs to risk-mgmt / execution /
+  notification / ml-pipeline, each degrading to `None` on failure), `core/service.py`
+  (`DashboardService.overview` — concurrent `asyncio.gather`, partial-tolerant, per-source status map),
+  `api/ui.py` (self-contained HTML/CSS/JS page, no build step), routes `GET /overview` + `GET /ui` + root
+  redirect, real `/ready` (per-source reachability, always 200). pyproject httpx + bugbear + per-file
+  E501 ignore for the HTML string. compose: dashboard uncommented (8501→8000, depends_on risk-mgmt +
+  execution). dashboard 18 tests (was a skeleton); ruff + format + mypy clean; all suites green (573
+  total). **Live-verified** against real risk-mgmt + execution (uvicorn + a real `nats-server`): the real
+  `HttpDashboardSource` aggregated their live state over HTTP (portfolio dd 0.04, AAPL 50@100) while the
+  two down services correctly showed "unavailable".
 
-**Next:** Only **dashboard** remains a skeleton (8 of 9 core services functional). Options: **dashboard**
-over the HTTP APIs (portfolio/positions/recent-alerts/drift/backtest — Streamlit or React); or
-**Direction #3** — serwisy 10–13 (fundamental-data, macro-data, company-classifier, signal-aggregator)
-against existing shared contracts. Open follow-ups: scheduled triggers (backtest weekly Saturday
-revalidation; ml-pipeline daily drift check — both request-driven, no scheduler wired); notification
-email/SMTP channel; cross-sectional portfolio backtest matching strategy's universe ranks; MLflow-backed
-model registry; ml-pipeline model **training/inference** (PyTorch) — only drift detection is wired so
-far. Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
+**Next:** All 9 core services are functional — the full loop + monitoring + alerting + dashboard run.
+Natural next step is **Direction #3** — serwisy 10–13 (fundamental-data, macro-data, company-classifier,
+signal-aggregator) against the existing shared contracts; when `signal-aggregator` lands, move
+`adaptive_weights.py` + `cost_filter.py` there from `strategy/`. Open follow-ups (non-blocking):
+scheduled triggers (backtest weekly Saturday revalidation; ml-pipeline daily drift check — both
+request-driven, no scheduler wired); notification email/SMTP channel; cross-sectional portfolio backtest
+matching strategy's universe ranks; MLflow-backed model registry; ml-pipeline model **training/inference**
+(PyTorch) — only drift detection is wired so far; dashboard auth + richer panels (backtest results,
+drift history). Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
 
 ## Architecture rules (non-negotiable)
 

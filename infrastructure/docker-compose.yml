@@ -301,14 +301,31 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.risk-mgmt.rule=PathPrefix(`/api/v1/risk-mgmt`)"
 
-  # --- Faza 4 (tydzień 21) ---
-  # dashboard:
-  #   build:
-  #     context: ..
-  #     dockerfile: services/dashboard/Dockerfile
-  #   container_name: ts-dashboard
-  #   ports:
-  #     - "8501:8501"
+  dashboard:
+    build:
+      context: ..
+      dockerfile: services/dashboard/Dockerfile
+    container_name: ts-dashboard
+    environment:
+      SERVICE_NAME: dashboard
+      RISK_MGMT_URL: http://risk-mgmt:8000
+      EXECUTION_URL: http://execution:8000
+      NOTIFICATION_URL: http://notification:8000
+      ML_PIPELINE_URL: http://ml-pipeline:8000
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8501:8000"
+    depends_on:
+      - risk-mgmt
+      - execution
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=PathPrefix(`/api/v1/dashboard`)"
 
   execution:
     build:
