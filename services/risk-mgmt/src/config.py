@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     NATS_ORDERS_SUBJECTS: str = "order.>"
     NATS_RISK_STREAM: str = "RISK"
     NATS_RISK_SUBJECTS: str = "risk.>"
+    # Consume macro regime changes → drive regime-aware exposure caps
+    NATS_MACRO_STREAM: str = "MACRO"
+    NATS_MACRO_SUBJECT: str = "macro.regime_changed"
+    NATS_MACRO_DURABLE: str = "risk-mgmt-regime"
 
     # Position sizing (drawdown-adaptive)
     BASE_RISK_PER_TRADE: float = 0.02

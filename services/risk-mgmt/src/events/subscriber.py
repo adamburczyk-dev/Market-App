@@ -1,7 +1,8 @@
-"""Subscribe to SignalGeneratedEvent from JetStream and dispatch to a handler.
+"""Durable JetStream push subscription that dispatches messages to a handler.
 
-Poison-message safe: malformed payloads are terminated; transient failures are
-NAK'd and redelivered up to ``max_deliver`` times.
+Used for both signal.generated (sizing) and macro.regime_changed (regime-driven
+exposure caps). Poison-message safe: malformed payloads are terminated; transient
+failures are NAK'd and redelivered up to ``max_deliver`` times.
 """
 
 from collections.abc import Awaitable, Callable
@@ -17,8 +18,8 @@ logger = structlog.get_logger()
 Handler = Callable[[bytes], Awaitable[None]]
 
 
-class SignalSubscriber:
-    """Durable push subscription to the signal.generated subject."""
+class EventSubscriber:
+    """Durable push subscription to a single subject."""
 
     def __init__(
         self,
@@ -43,7 +44,7 @@ class SignalSubscriber:
             manual_ack=True,
             config=ConsumerConfig(max_deliver=self._max_deliver),
         )
-        logger.info("Subscribed to signal events", subject=self._subject, durable=self._durable)
+        logger.info("Subscribed", subject=self._subject, durable=self._durable)
 
     async def _on_message(self, msg) -> None:  # type: ignore[no-untyped-def]
         try:

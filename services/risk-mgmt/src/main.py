@@ -15,7 +15,7 @@ from src.core.repository import NullStateRepository, RedisStateRepository, State
 from src.core.service import RiskMgmtService
 from src.core.sizing import PositionSizer
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
-from src.events.subscriber import SignalSubscriber
+from src.events.subscriber import EventSubscriber
 
 logger = structlog.get_logger()
 
@@ -50,13 +50,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     publisher: Publisher
     nats_client = None
-    subscriber: SignalSubscriber | None = None
+    subscribers: list[EventSubscriber] = []
     try:
         nats_client = await nats.connect(settings.NATS_URL)
         js = nats_client.jetstream()
         await ensure_stream(js, settings.NATS_ORDERS_STREAM, [settings.NATS_ORDERS_SUBJECTS])
         await ensure_stream(js, settings.NATS_RISK_STREAM, [settings.NATS_RISK_SUBJECTS])
         await ensure_stream(js, settings.NATS_SOURCE_STREAM, ["signal.>"])
+        # Consume macro regime changes (stream owned by macro-data) — ensure so
+        # subscription is start-order independent.
+        await ensure_stream(js, settings.NATS_MACRO_STREAM, ["macro.>"])
         publisher = NatsPublisher(js)
     except Exception as exc:  # noqa: BLE001
         logger.warning("NATS/JetStream unavailable, events disabled", error=str(exc))
@@ -69,20 +72,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if nats_client is not None:
         try:
-            subscriber = SignalSubscriber(
+            signal_sub = EventSubscriber(
                 nats_client.jetstream(),
                 settings.NATS_SOURCE_SUBJECT,
                 settings.NATS_DURABLE,
                 service.handle_signal_event,
                 max_deliver=settings.NATS_MAX_DELIVER,
             )
-            await subscriber.start()
+            await signal_sub.start()
+            regime_sub = EventSubscriber(
+                nats_client.jetstream(),
+                settings.NATS_MACRO_SUBJECT,
+                settings.NATS_MACRO_DURABLE,
+                service.handle_regime_changed_event,
+                max_deliver=settings.NATS_MAX_DELIVER,
+            )
+            await regime_sub.start()
+            subscribers = [signal_sub, regime_sub]
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not subscribe to signal events", error=str(exc))
-            subscriber = None
+            logger.warning("Could not subscribe to events", error=str(exc))
+            subscribers = []
 
     async def _readiness() -> tuple[bool, dict[str, bool]]:
-        # risk-mgmt reacts to signal events → NATS is required.
+        # risk-mgmt reacts to signal + regime events → NATS is required.
         nats_ok = nats_client is not None and nats_client.is_connected
         return nats_ok, {"nats": nats_ok}
 
@@ -91,8 +103,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
-    if subscriber is not None:
-        await subscriber.stop()
+    for sub in subscribers:
+        await sub.stop()
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()

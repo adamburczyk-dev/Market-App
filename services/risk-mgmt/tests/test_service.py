@@ -81,3 +81,51 @@ async def test_handle_signal_event_publishes_order():
     await service.handle_signal_event(signal().model_dump_json().encode())
     assert len(publisher.published) == 1
     assert publisher.published[0].event_type == EventType.ORDER_REQUESTED
+
+
+def regime_event(old: str = "expansion", new: str = "crisis"):  # type: ignore[no-untyped-def]
+    from trading_common.events import RegimeChangedEvent
+
+    return RegimeChangedEvent(old_regime=old, new_regime=new)
+
+
+@pytest.mark.asyncio
+async def test_handle_regime_changed_updates_portfolio():
+    service = build_service()
+    await service.handle_regime_changed_event(regime_event().model_dump_json().encode())
+    assert service.portfolio.regime == "crisis"
+
+
+@pytest.mark.asyncio
+async def test_regime_change_alone_does_not_trip_breaker():
+    from src.events.publisher import NullPublisher
+
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    await service.handle_regime_changed_event(regime_event().model_dump_json().encode())
+    # regime doesn't affect drawdown/daily-loss → breaker stays untripped, no event
+    assert service.breaker.is_tripped is False
+    assert not any(e.event_type == EventType.CIRCUIT_BREAKER_TRIGGERED for e in publisher.published)
+
+
+@pytest.mark.asyncio
+async def test_regime_change_persists_state():
+    from .test_repository import FakeRepository
+
+    repo = FakeRepository()
+    service = build_service(repository=repo)
+    payload = regime_event(new="contraction").model_dump_json().encode()
+    await service.handle_regime_changed_event(payload)
+    assert repo.saved[-1]["regime"] == "contraction"
+
+
+@pytest.mark.asyncio
+async def test_crisis_regime_tightens_exposure_cap():
+    # After a crisis regime change, the regime allocator caps equity at 15% →
+    # a fresh BUY that would exceed it is blocked by sizing.
+    service = build_service(portfolio=PortfolioState(exposure_pct=0.30, regime="expansion"))
+    # expansion allows 90% → order goes through
+    assert await service.process_signal(signal()) is not None
+    await service.handle_regime_changed_event(regime_event(new="crisis").model_dump_json().encode())
+    # crisis caps at 15%, current exposure 30% already exceeds → blocked
+    assert await service.process_signal(signal()) is None

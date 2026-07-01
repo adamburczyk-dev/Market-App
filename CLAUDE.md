@@ -61,9 +61,12 @@ now functionally implemented** (no skeletons left).
   `CircuitBreakerTriggeredEvent` and blocks new orders when tripped. `PortfolioState`
   (updatable via `POST /portfolio`) is now **Redis-persisted** (`RedisStateRepository` snapshot on
   every update; `NullStateRepository` fallback) — on startup `restore()` reloads the snapshot and
-  **re-derives** the breaker level, so a tripped halt survives a restart. Routes `/portfolio`,
-  `/circuit-breaker`, `/signal`. 93 tests green; live-verified (SignalGenerated → sized
-  OrderRequested; breaker RED halts new orders; tripped breaker survives a restart via real Redis).
+  **re-derives** the breaker level, so a tripped halt survives a restart. Also subscribes to
+  **`RegimeChangedEvent`** (`macro.regime_changed`, from macro-data) → `update_portfolio(regime)` so the
+  macro regime auto-drives the RegimeAllocator exposure caps (no manual push needed). Routes `/portfolio`,
+  `/circuit-breaker`, `/signal`. 97 tests green; live-verified (SignalGenerated → sized OrderRequested;
+  breaker RED halts new orders; tripped breaker survives a restart via real Redis; a real
+  `macro.regime_changed` event flips the regime → tightens the cap).
 - `execution` is now **functionally implemented** (paper trading — **closes the loop**): JetStream
   subscriber on `order.requested` → `PaperBroker` simulates the fill → publish `OrderFilledEvent` →
   push portfolio metrics (equity/exposure/drawdown/daily-loss) back to risk-mgmt over HTTP
@@ -333,13 +336,20 @@ now functionally implemented** (no skeletons left).
   ruff + format + mypy clean; all suites green (614 total). Live-verified on a real `nats-server`
   (expansion→crisis → 2×`macro.updated` + 1×`macro.regime_changed` in `MACRO`). Regime keys already
   match risk-mgmt's RegimeAllocator, so the output is drop-in for regime-aware exposure caps.
+- 2026-07-01 — **macro→risk loop closed**: risk-mgmt now **subscribes to `RegimeChangedEvent`**
+  (`macro.regime_changed`). Renamed the generic `SignalSubscriber` → `EventSubscriber` (reused for both
+  `signal.generated` and `macro.regime_changed`); `service.handle_regime_changed_event` →
+  `update_portfolio(regime=new_regime)` (persists; a regime change alone never trips the breaker since
+  it doesn't touch drawdown/daily-loss); main.py `ensure_stream(MACRO)` + a second durable subscriber;
+  config `NATS_MACRO_*`. So macro-data's regime now auto-drives the RegimeAllocator exposure caps (no
+  manual `POST /portfolio`). +4 tests (risk-mgmt 97); ruff + format + mypy clean; all suites green (618
+  total). Live-verified on a real `nats-server`: a published `macro.regime_changed` (expansion→crisis)
+  flips risk-mgmt's regime → crisis cap 15% blocks an over-exposed BUY.
 
 **Next:** Direction #3 continues — remaining serwisy 10–13: **fundamental-data** (SEC EDGAR 10-Q/10-K +
 Piotroski F-Score → `FundamentalsUpdatedEvent`), **company-classifier** (profile → model-stack routing →
 `CompanyClassifiedEvent`), **signal-aggregator** (combines ML + rules + macro regime → `SignalAggregatedEvent`;
-when it lands, move `adaptive_weights.py` + `cost_filter.py` there from `strategy/`). A natural small
-follow-up: have **risk-mgmt subscribe to `RegimeChangedEvent`** so macro-data's regime drives the
-exposure caps automatically (today it must be pushed via `POST /portfolio`). Other open follow-ups
+when it lands, move `adaptive_weights.py` + `cost_filter.py` there from `strategy/`). Open follow-ups
 (non-blocking): a generic Helm Deployment template for the 10 untemplated services; scheduled triggers
 (backtest weekly revalidation; ml-pipeline daily drift; macro-data periodic refresh); notification
 email/SMTP; MLflow registry; ml-pipeline training/inference (PyTorch); `docs/ml_integration_plan.md`

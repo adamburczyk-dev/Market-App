@@ -4,6 +4,7 @@ import structlog
 from trading_common.events import (
     CircuitBreakerTriggeredEvent,
     OrderRequestedEvent,
+    RegimeChangedEvent,
     SignalGeneratedEvent,
 )
 
@@ -57,6 +58,12 @@ class RiskMgmtService:
     async def handle_signal_event(self, data: bytes) -> None:
         signal = SignalGeneratedEvent.model_validate_json(data)
         await self.process_signal(signal)
+
+    async def handle_regime_changed_event(self, data: bytes) -> None:
+        """Apply a macro regime change → drives regime-aware exposure caps."""
+        event = RegimeChangedEvent.model_validate_json(data)
+        await self.update_portfolio(regime=event.new_regime)
+        logger.info("Applied regime change", old=event.old_regime, new=event.new_regime)
 
     async def process_signal(self, signal: SignalGeneratedEvent) -> OrderRequestedEvent | None:
         """Size a signal into a risk-approved order, or block it."""
