@@ -391,6 +391,32 @@ services:
 
   # ==================== ML/AI EXTENSION (serwisy 10-13) ====================
 
+  fundamental-data:
+    build:
+      context: ..
+      dockerfile: services/fundamental-data/Dockerfile
+    container_name: ts-fundamental-data
+    environment:
+      SERVICE_NAME: fundamental-data
+      NATS_URL: nats://nats:4222
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8009:8000"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fundamental-data.rule=PathPrefix(`/api/v1/fundamental-data`)"
+
   macro-data:
     build:
       context: ..

@@ -127,8 +127,21 @@ now functionally implemented** (no skeletons left).
   `GET /regime`, `POST /refresh`; real `/ready` (NATS); publisher + `ensure_stream(MACRO, ["macro.>"])`.
   New service scaffold (Dockerfile, pyproject, compose port 8010, Helm values entry). 41 tests; ruff +
   format + mypy clean; live-verified on a real `nats-server` (expansion→crisis → 2×`macro.updated` +
-  1×`macro.regime_changed` in the `MACRO` stream). Regime output is ready for risk-mgmt to consume
-  (`POST /portfolio` regime, or a future `RegimeChangedEvent` subscriber).
+  1×`macro.regime_changed` in the `MACRO` stream). **risk-mgmt now subscribes to `RegimeChangedEvent`**,
+  so the regime auto-drives the exposure caps (macro→risk loop closed).
+- `fundamental-data` (**serwis 9 — Direction #3, built from scratch**): SEC EDGAR annual fundamentals +
+  (partial) Piotroski F-Score. `core/piotroski.py` (`compute_f_score` — 7 of the classic 9 signals
+  computable from the `FinancialStatements` contract: 3 current-period profitability + 4 trend signals;
+  current-ratio Δ and share-issuance omitted, documented, until the schema carries balance-sheet detail;
+  each signal fails conservatively on missing/degenerate inputs), `core/edgar_client.py` (`EdgarClient` —
+  ticker→CIK via company_tickers.json, XBRL `companyconcept` per us-gaap tag → annual `FinancialStatements`;
+  disabled + [] when no `SEC_USER_AGENT`), `core/service.py` (`FundamentalDataService.refresh` from EDGAR /
+  `ingest` posted statements → score → store latest-per-symbol → publish `FundamentalsUpdatedEvent`).
+  Routes `GET /fundamentals[/{symbol}]`, `POST /refresh/{symbol}`, `POST /statements`; real `/ready` (NATS);
+  publisher + `ensure_stream(FUNDAMENTALS, ["fundamentals.>"])`. Full scaffold (compose port 8009, Helm
+  `fundamentalData` values entry). 27 tests; ruff + format + mypy clean; live-verified on a real
+  `nats-server` (ingest → `fundamentals.updated` in the `FUNDAMENTALS` stream; F-score 7/7 on an
+  improving firm).
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -139,8 +152,8 @@ now functionally implemented** (no skeletons left).
    feature-engine `earnings_decay`/`cross_asset`, strategy `adaptive_weights` — belong in later
    services, not the 7 core runtime paths; tracked under tech debt.)
 3. ⏳ **IN PROGRESS — Build serwisy 10–13** (fundamental-data, macro-data, company-classifier,
-   signal-aggregator) against the now-existing shared contracts. ✅ **macro-data done** (serwis 10 —
-   first Direction #3 service). Remaining: fundamental-data, company-classifier, signal-aggregator.
+   signal-aggregator) against the now-existing shared contracts. ✅ **macro-data** (serwis 10) +
+   **fundamental-data** (serwis 9) done. Remaining: company-classifier, signal-aggregator.
    When `signal-aggregator` exists, move `adaptive_weights.py` + `cost_filter.py` there from
    `strategy/` (their spec home — framework_supplement B3/B4).
 4. **Contracts-first** always: extend `shared/trading-common` before adding any cross-service type.
@@ -173,9 +186,9 @@ now functionally implemented** (no skeletons left).
 - [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
 - [P3] `infrastructure/terraform/` is referenced in README but absent (planned).
 - [P2] Helm chart lags: `values.yaml` lists every service but `templates/` has a deployment only for
-  `market-data`. The other 10 services (incl. macro-data) have values entries but **no Deployment
-  template** — a generic templated `Deployment`/`Service`/`HPA` ranging over the services map is the
-  fix. Pre-existing (predates macro-data); flagged since the rule requires Helm↔compose sync.
+  `market-data`. The other 11 services (incl. macro-data + fundamental-data) have values entries but
+  **no Deployment template** — a generic templated `Deployment`/`Service`/`HPA` ranging over the
+  services map is the fix. Pre-existing; flagged since the rule requires Helm↔compose sync.
 - [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
 - [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
 - [env] Docker CLI + daemon are available (start `dockerd` as root if the socket is missing). Under
@@ -345,15 +358,29 @@ now functionally implemented** (no skeletons left).
   manual `POST /portfolio`). +4 tests (risk-mgmt 97); ruff + format + mypy clean; all suites green (618
   total). Live-verified on a real `nats-server`: a published `macro.regime_changed` (expansion→crisis)
   flips risk-mgmt's regime → crisis cap 15% blocks an over-exposed BUY.
+- 2026-07-01 — Direction #3 (**fundamental-data** — serwis 9, built from scratch): SEC EDGAR annual
+  fundamentals + (partial) Piotroski F-Score. `core/piotroski.py` (`compute_f_score` — the 7 of 9
+  classic signals computable from `FinancialStatements`; current-ratio Δ + share-issuance omitted &
+  documented; conservative on missing inputs), `core/edgar_client.py` (`EdgarClient` ticker→CIK +
+  XBRL `companyconcept` → annual statements; disabled without `SEC_USER_AGENT`), `core/service.py`
+  (`refresh` from EDGAR / `ingest` posted statements → score → store → publish
+  `FundamentalsUpdatedEvent`), routes (`GET /fundamentals[/{symbol}]`, `POST /refresh/{symbol}`,
+  `POST /statements`), real `/ready`, publisher + `ensure_stream(FUNDAMENTALS)`, full scaffold
+  (Dockerfile, pyproject, compose port 8009, Helm `fundamentalData`). 27 tests; ruff + format + mypy
+  clean; all suites green (645 total). Live-verified on a real `nats-server` (ingest →
+  `fundamentals.updated` in `FUNDAMENTALS`; F-score 7/7 on an improving firm). EDGAR live-fetch path is
+  unit-tested via httpx MockTransport (SEC needs a `User-Agent` + isn't reachable from the sandbox).
 
-**Next:** Direction #3 continues — remaining serwisy 10–13: **fundamental-data** (SEC EDGAR 10-Q/10-K +
-Piotroski F-Score → `FundamentalsUpdatedEvent`), **company-classifier** (profile → model-stack routing →
-`CompanyClassifiedEvent`), **signal-aggregator** (combines ML + rules + macro regime → `SignalAggregatedEvent`;
-when it lands, move `adaptive_weights.py` + `cost_filter.py` there from `strategy/`). Open follow-ups
-(non-blocking): a generic Helm Deployment template for the 10 untemplated services; scheduled triggers
-(backtest weekly revalidation; ml-pipeline daily drift; macro-data periodic refresh); notification
-email/SMTP; MLflow registry; ml-pipeline training/inference (PyTorch); `docs/ml_integration_plan.md`
-before deep ML work. Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
+**Next:** Direction #3 continues — remaining serwisy: **company-classifier** (serwis 11 — `CompanyProfile`
+→ style/model-stack routing → `CompanyClassifiedEvent`) and **signal-aggregator** (serwis 12 — combines
+ML + rules + macro regime → `SignalAggregatedEvent`; when it lands, move `adaptive_weights.py` +
+`cost_filter.py` there from `strategy/`). A natural follow-up: have **feature-engine (or a Tier-2/3 layer)
+consume `FundamentalsUpdatedEvent`** so the F-score feeds ML features. Open follow-ups (non-blocking): a
+generic Helm Deployment template for the 11 untemplated services; extend `FinancialStatements` with
+current assets/liabilities + shares → full 9-signal Piotroski; scheduled triggers (backtest weekly
+revalidation; ml-pipeline daily drift; macro/fundamentals periodic refresh); notification email/SMTP;
+MLflow registry; ml-pipeline training/inference (PyTorch); `docs/ml_integration_plan.md` before deep ML
+work. Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
 
 ## Architecture rules (non-negotiable)
 
