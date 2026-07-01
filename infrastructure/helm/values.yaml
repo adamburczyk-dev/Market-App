@@ -116,6 +116,25 @@ dashboard:
     tag: latest
   port: 8501
 
+# ==================== ML/AI EXTENSION (serwisy 10-13) ====================
+
+macroData:
+  enabled: false   # Włącz gdy gotowy klucz FRED_API_KEY
+  replicaCount: 1
+  image:
+    name: macro-data
+    tag: latest
+  port: 8000
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  env:
+    LOG_LEVEL: INFO
+
 # ==================== INFRASTRUCTURE ====================
 
 postgres:

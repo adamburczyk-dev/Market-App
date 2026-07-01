@@ -114,6 +114,18 @@ now functionally implemented** (no skeletons left).
   missing upstreams). 18 tests green; ruff + format + mypy clean; **live-verified** against real
   risk-mgmt + execution (uvicorn): the real `HttpDashboardSource` aggregated their live state over HTTP
   while notification + ml-pipeline (down) showed "unavailable".
+- `macro-data` (**serwis 10 — first Direction #3 service, built from scratch**): FRED macro indicators
+  + rule-based market-regime detection. `core/regime.py` (`classify_regime` — severity-ordered rules on
+  yield-curve inversion / BAA credit spread / PMI → the 5 `MacroRegime` values risk-mgmt's
+  RegimeAllocator already consumes; tolerant of missing inputs), `core/fred_client.py` (`FredClient` —
+  httpx fetch of T10Y2Y/BAA10Y/UNRATE/FEDFUNDS, disabled + None when no `FRED_API_KEY`),
+  `core/service.py` (`MacroDataService.refresh` — merge FRED + manual overrides → classify → publish
+  `MacroUpdatedEvent` always + `RegimeChangedEvent` only on a real transition). Routes `GET /snapshot`,
+  `GET /regime`, `POST /refresh`; real `/ready` (NATS); publisher + `ensure_stream(MACRO, ["macro.>"])`.
+  New service scaffold (Dockerfile, pyproject, compose port 8010, Helm values entry). 41 tests; ruff +
+  format + mypy clean; live-verified on a real `nats-server` (expansion→crisis → 2×`macro.updated` +
+  1×`macro.regime_changed` in the `MACRO` stream). Regime output is ready for risk-mgmt to consume
+  (`POST /portfolio` regime, or a future `RegimeChangedEvent` subscriber).
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -123,9 +135,11 @@ now functionally implemented** (no skeletons left).
    pub/sub). feature-engine, strategy, risk-mgmt, backtest, ml-pipeline all wired. (Leftover specs —
    feature-engine `earnings_decay`/`cross_asset`, strategy `adaptive_weights` — belong in later
    services, not the 7 core runtime paths; tracked under tech debt.)
-3. **Build serwisy 10–13** (fundamental-data, macro-data, company-classifier, signal-aggregator)
-   against the now-existing shared contracts. When `signal-aggregator` exists, move
-   `adaptive_weights.py` + `cost_filter.py` there from `strategy/` (their spec home — framework_supplement B3/B4).
+3. ⏳ **IN PROGRESS — Build serwisy 10–13** (fundamental-data, macro-data, company-classifier,
+   signal-aggregator) against the now-existing shared contracts. ✅ **macro-data done** (serwis 10 —
+   first Direction #3 service). Remaining: fundamental-data, company-classifier, signal-aggregator.
+   When `signal-aggregator` exists, move `adaptive_weights.py` + `cost_filter.py` there from
+   `strategy/` (their spec home — framework_supplement B3/B4).
 4. **Contracts-first** always: extend `shared/trading-common` before adding any cross-service type.
 
 **Known issues / tech debt** (propose a fix when you touch the area):
@@ -155,6 +169,10 @@ now functionally implemented** (no skeletons left).
 - [P2] No `docs/ml_integration_plan.md`; serwisy 10–13 reference it conceptually. Initial contracts now in code — write the doc before deep ML work.
 - [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
 - [P3] `infrastructure/terraform/` is referenced in README but absent (planned).
+- [P2] Helm chart lags: `values.yaml` lists every service but `templates/` has a deployment only for
+  `market-data`. The other 10 services (incl. macro-data) have values entries but **no Deployment
+  template** — a generic templated `Deployment`/`Service`/`HPA` ranging over the services map is the
+  fix. Pre-existing (predates macro-data); flagged since the rule requires Helm↔compose sync.
 - [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
 - [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
 - [env] Docker CLI + daemon are available (start `dockerd` as root if the socket is missing). Under
@@ -303,16 +321,29 @@ now functionally implemented** (no skeletons left).
   total). **Live-verified** against real risk-mgmt + execution (uvicorn + a real `nats-server`): the real
   `HttpDashboardSource` aggregated their live state over HTTP (portfolio dd 0.04, AAPL 50@100) while the
   two down services correctly showed "unavailable".
+- 2026-06-30 — **Direction #3 started — `macro-data` (serwis 10) built from scratch**: first new service
+  (not a skeleton wiring). `core/regime.py` (`classify_regime` — severity-ordered rules on yield-curve
+  inversion / BAA credit spread / PMI → the 5 `MacroRegime` values, missing-input tolerant),
+  `core/fred_client.py` (`FredClient` httpx fetch of T10Y2Y/BAA10Y/UNRATE/FEDFUNDS; disabled→None with
+  no `FRED_API_KEY`), `core/service.py` (`MacroDataService.refresh` — FRED + manual overrides →
+  classify → publish `MacroUpdatedEvent` always + `RegimeChangedEvent` on a real transition; overrides
+  are non-None-only so a None doesn't clobber a fetched value), publisher + `ensure_stream(MACRO)`,
+  routes (`GET /snapshot`, `GET /regime`, `POST /refresh`), real `/ready`, full scaffold (Dockerfile,
+  pyproject, observability, compose port 8010, Helm `macroData` values entry). macro-data 41 tests;
+  ruff + format + mypy clean; all suites green (614 total). Live-verified on a real `nats-server`
+  (expansion→crisis → 2×`macro.updated` + 1×`macro.regime_changed` in `MACRO`). Regime keys already
+  match risk-mgmt's RegimeAllocator, so the output is drop-in for regime-aware exposure caps.
 
-**Next:** All 9 core services are functional — the full loop + monitoring + alerting + dashboard run.
-Natural next step is **Direction #3** — serwisy 10–13 (fundamental-data, macro-data, company-classifier,
-signal-aggregator) against the existing shared contracts; when `signal-aggregator` lands, move
-`adaptive_weights.py` + `cost_filter.py` there from `strategy/`. Open follow-ups (non-blocking):
-scheduled triggers (backtest weekly Saturday revalidation; ml-pipeline daily drift check — both
-request-driven, no scheduler wired); notification email/SMTP channel; cross-sectional portfolio backtest
-matching strategy's universe ranks; MLflow-backed model registry; ml-pipeline model **training/inference**
-(PyTorch) — only drift detection is wired so far; dashboard auth + richer panels (backtest results,
-drift history). Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
+**Next:** Direction #3 continues — remaining serwisy 10–13: **fundamental-data** (SEC EDGAR 10-Q/10-K +
+Piotroski F-Score → `FundamentalsUpdatedEvent`), **company-classifier** (profile → model-stack routing →
+`CompanyClassifiedEvent`), **signal-aggregator** (combines ML + rules + macro regime → `SignalAggregatedEvent`;
+when it lands, move `adaptive_weights.py` + `cost_filter.py` there from `strategy/`). A natural small
+follow-up: have **risk-mgmt subscribe to `RegimeChangedEvent`** so macro-data's regime drives the
+exposure caps automatically (today it must be pushed via `POST /portfolio`). Other open follow-ups
+(non-blocking): a generic Helm Deployment template for the 10 untemplated services; scheduled triggers
+(backtest weekly revalidation; ml-pipeline daily drift; macro-data periodic refresh); notification
+email/SMTP; MLflow registry; ml-pipeline training/inference (PyTorch); `docs/ml_integration_plan.md`
+before deep ML work. Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
 
 ## Architecture rules (non-negotiable)
 

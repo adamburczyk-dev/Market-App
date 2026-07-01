@@ -389,6 +389,34 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.notification.rule=PathPrefix(`/api/v1/notification`)"
 
+  # ==================== ML/AI EXTENSION (serwisy 10-13) ====================
+
+  macro-data:
+    build:
+      context: ..
+      dockerfile: services/macro-data/Dockerfile
+    container_name: ts-macro-data
+    environment:
+      SERVICE_NAME: macro-data
+      NATS_URL: nats://nats:4222
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8010:8000"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.macro-data.rule=PathPrefix(`/api/v1/macro-data`)"
+
 volumes:
   postgres_data:
   redis_data:
