@@ -443,6 +443,31 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.macro-data.rule=PathPrefix(`/api/v1/macro-data`)"
 
+  company-classifier:
+    build:
+      context: ..
+      dockerfile: services/company-classifier/Dockerfile
+    container_name: ts-company-classifier
+    environment:
+      SERVICE_NAME: company-classifier
+      NATS_URL: nats://nats:4222
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    ports:
+      - "8011:8000"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.company-classifier.rule=PathPrefix(`/api/v1/company-classifier`)"
+
 volumes:
   postgres_data:
   redis_data:

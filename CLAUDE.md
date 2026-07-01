@@ -142,6 +142,16 @@ now functionally implemented** (no skeletons left).
   `fundamentalData` values entry). 27 tests; ruff + format + mypy clean; live-verified on a real
   `nats-server` (ingest → `fundamentals.updated` in the `FUNDAMENTALS` stream; F-score 7/7 on an
   improving firm).
+- `company-classifier` (**serwis 11 — Direction #3, built from scratch**): `CompanyProfile` → investment
+  style + model-stack routing (pure compute, no external API). `core/classifier.py` (`classify` — style
+  scored from valuation/growth metrics: growth signals (rev/earnings growth, rich P/E, no dividend) vs
+  value signals (cheap P/E & P/B, dividend); with no metrics falls back to a **sector prior**, then blend.
+  `cap_tier` mega/large/mid/small/micro; `route_model_stack(style, tier)` → e.g. `growth_largecap_v1`),
+  `core/service.py` (`CompanyClassifierService.classify` — enriches the profile with style + model_stack +
+  `as_of`, stores latest-per-symbol, publishes `CompanyClassifiedEvent`). Routes `GET /companies[/{symbol}]`,
+  `POST /classify`; real `/ready` (NATS); publisher + `ensure_stream(COMPANY, ["company.>"])`. Full scaffold
+  (compose port 8011, Helm `companyClassifier`). 25 tests; ruff + format + mypy clean; live-verified on a
+  real `nats-server` (classify NVDA → `company.classified` with `growth_largecap_v1` in the `COMPANY` stream).
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -152,8 +162,8 @@ now functionally implemented** (no skeletons left).
    feature-engine `earnings_decay`/`cross_asset`, strategy `adaptive_weights` — belong in later
    services, not the 7 core runtime paths; tracked under tech debt.)
 3. ⏳ **IN PROGRESS — Build serwisy 10–13** (fundamental-data, macro-data, company-classifier,
-   signal-aggregator) against the now-existing shared contracts. ✅ **macro-data** (serwis 10) +
-   **fundamental-data** (serwis 9) done. Remaining: company-classifier, signal-aggregator.
+   signal-aggregator) against the now-existing shared contracts. ✅ **macro-data** (10) +
+   **fundamental-data** (9) + **company-classifier** (11) done. **Only signal-aggregator (12) remains.**
    When `signal-aggregator` exists, move `adaptive_weights.py` + `cost_filter.py` there from
    `strategy/` (their spec home — framework_supplement B3/B4).
 4. **Contracts-first** always: extend `shared/trading-common` before adding any cross-service type.
@@ -186,9 +196,9 @@ now functionally implemented** (no skeletons left).
 - [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
 - [P3] `infrastructure/terraform/` is referenced in README but absent (planned).
 - [P2] Helm chart lags: `values.yaml` lists every service but `templates/` has a deployment only for
-  `market-data`. The other 11 services (incl. macro-data + fundamental-data) have values entries but
-  **no Deployment template** — a generic templated `Deployment`/`Service`/`HPA` ranging over the
-  services map is the fix. Pre-existing; flagged since the rule requires Helm↔compose sync.
+  `market-data`. The other 12 services (incl. macro-data / fundamental-data / company-classifier) have
+  values entries but **no Deployment template** — a generic templated `Deployment`/`Service`/`HPA`
+  ranging over the services map is the fix. Pre-existing; flagged since the rule requires Helm↔compose sync.
 - [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
 - [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
 - [env] Docker CLI + daemon are available (start `dockerd` as root if the socket is missing). Under
@@ -370,13 +380,22 @@ now functionally implemented** (no skeletons left).
   clean; all suites green (645 total). Live-verified on a real `nats-server` (ingest →
   `fundamentals.updated` in `FUNDAMENTALS`; F-score 7/7 on an improving firm). EDGAR live-fetch path is
   unit-tested via httpx MockTransport (SEC needs a `User-Agent` + isn't reachable from the sandbox).
+- 2026-07-01 — Direction #3 (**company-classifier** — serwis 11, built from scratch): `CompanyProfile`
+  → investment style + model-stack routing (pure compute, no external API). `core/classifier.py`
+  (`classify` — growth vs value signal scoring from valuation/growth metrics; sector-prior fallback then
+  blend; `cap_tier` + `route_model_stack(style, tier)` → `{style}_{large|small}cap_v1`), `core/service.py`
+  (`classify` — enrich profile with style/model_stack/as_of, store latest-per-symbol, publish
+  `CompanyClassifiedEvent`), routes (`GET /companies[/{symbol}]`, `POST /classify`), real `/ready`,
+  publisher + `ensure_stream(COMPANY)`, full scaffold (compose port 8011, Helm `companyClassifier`).
+  25 tests; ruff + format + mypy clean; all suites green (670 total). Live-verified on a real
+  `nats-server` (classify NVDA → `company.classified` `growth_largecap_v1` in the `COMPANY` stream).
 
-**Next:** Direction #3 continues — remaining serwisy: **company-classifier** (serwis 11 — `CompanyProfile`
-→ style/model-stack routing → `CompanyClassifiedEvent`) and **signal-aggregator** (serwis 12 — combines
-ML + rules + macro regime → `SignalAggregatedEvent`; when it lands, move `adaptive_weights.py` +
-`cost_filter.py` there from `strategy/`). A natural follow-up: have **feature-engine (or a Tier-2/3 layer)
-consume `FundamentalsUpdatedEvent`** so the F-score feeds ML features. Open follow-ups (non-blocking): a
-generic Helm Deployment template for the 11 untemplated services; extend `FinancialStatements` with
+**Next:** Direction #3 has **one service left — signal-aggregator (serwis 12)**: combine ML + rules-based
++ macro-regime signals → `SignalAggregatedEvent`; when it lands, **move `adaptive_weights.py` +
+`cost_filter.py` there from `strategy/`** (their spec home). That closes the full 13-service architecture.
+A natural follow-up: have **feature-engine (or a Tier-2/3 layer) consume `FundamentalsUpdatedEvent` /
+`CompanyClassifiedEvent`** so fundamentals + style feed ML features. Open follow-ups (non-blocking): a
+generic Helm Deployment template for the 12 untemplated services; extend `FinancialStatements` with
 current assets/liabilities + shares → full 9-signal Piotroski; scheduled triggers (backtest weekly
 revalidation; ml-pipeline daily drift; macro/fundamentals periodic refresh); notification email/SMTP;
 MLflow registry; ml-pipeline training/inference (PyTorch); `docs/ml_integration_plan.md` before deep ML
