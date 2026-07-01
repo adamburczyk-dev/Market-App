@@ -1,6 +1,12 @@
-"""Transaction cost-aware trade filtering."""
+"""Transaction cost-aware trade filtering.
+
+A cross-cutting gate (like ``RiskEnvelope``): every trade signal should clear its
+expected edge against transaction costs before execution. Shared here so any
+signal-producing service (strategy, signal-aggregator) uses one implementation.
+"""
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -46,7 +52,7 @@ class CostAwareFilter:
         expected_return_bps: float,
         holding_period_days: int = 1,
         market_cap_tier: str = "large",
-    ) -> tuple[bool, dict]:
+    ) -> tuple[bool, dict[str, Any]]:
         """
         Check if trade edge justifies costs.
 

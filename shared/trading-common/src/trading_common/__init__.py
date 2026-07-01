@@ -1,5 +1,10 @@
 """trading-common — shared contracts for the trading system."""
 
+from trading_common.cost_filter import (
+    CAP_TIER_MULTIPLIERS,
+    CostAwareFilter,
+    TransactionCosts,
+)
 from trading_common.events import (
     AlertTriggeredEvent,
     BacktestCompletedEvent,
@@ -29,9 +34,11 @@ from trading_common.schemas import (
 )
 
 __all__ = [
+    "CAP_TIER_MULTIPLIERS",
     "AlertTriggeredEvent",
     "BacktestCompletedEvent",
     "BaseEvent",
+    "CostAwareFilter",
     "CircuitBreakerLevel",
     "CircuitBreakerTriggeredEvent",
     "EventType",
@@ -53,4 +60,5 @@ __all__ = [
     "StrategyRevalidatedEvent",
     "StrategyStatusChangedEvent",
     "TradingSignal",
+    "TransactionCosts",
 ]

@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.core.cost_filter import CAP_TIER_MULTIPLIERS, CostAwareFilter, TransactionCosts
+from trading_common.cost_filter import CAP_TIER_MULTIPLIERS, CostAwareFilter, TransactionCosts
 
 
 class TestTransactionCosts:

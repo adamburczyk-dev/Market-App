@@ -21,18 +21,19 @@ via NATS JetStream (events) and HTTP (request/response).
 **Phase:** 1 — Foundation. The earlier priority inversion is **resolved**: the foundation was built
 and the framework components wired into a working **end-to-end paper-trading loop** (market-data →
 feature-engine → strategy → risk-mgmt → execution → portfolio feedback) plus backtest + ml-pipeline
-monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All 9 core services are
-now functionally implemented** (no skeletons left).
+monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All 13 services (9 core +
+4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
-- `shared/trading-common`: 134 tests green, `ruff` + `mypy --strict` clean. Contracts present:
+- `shared/trading-common`: 154 tests green, `ruff` + `mypy --strict` clean. Contracts present:
   `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
-  set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`.
-- All 9 core services functionally implemented (`/health` `/ready` `/metrics` green; no skeletons left).
+  set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`, and the shared
+  **`CostAwareFilter`** (moved out of strategy — a cross-cutting gate like `RiskEnvelope`).
+- All 13 services functionally implemented (`/health` `/ready` `/metrics` green; no skeletons left).
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
-  feature-engine (`earnings_decay`, `cross_asset`), strategy (`adaptive_weights` only — belongs in
-  signal-aggregator). (`decay_monitor`+`cost_filter` now wired into strategy;
+  feature-engine only (`earnings_decay`, `cross_asset`). (`decay_monitor`+`cost_filter` now wired into
+  strategy; `adaptive_weights` moved to signal-aggregator; `cost_filter` moved to trading-common;
   `adaptive_sizing`+`regime_allocator` now wired into risk-mgmt; `continuous_validation` wired into
   backtest; `drift_detector` wired into ml-pipeline; `vol_regime` is VIX/market-wide — it belongs in
   the macro/regime context, not single-symbol realized vol.)
@@ -152,6 +153,18 @@ now functionally implemented** (no skeletons left).
   `POST /classify`; real `/ready` (NATS); publisher + `ensure_stream(COMPANY, ["company.>"])`. Full scaffold
   (compose port 8011, Helm `companyClassifier`). 25 tests; ruff + format + mypy clean; live-verified on a
   real `nats-server` (classify NVDA → `company.classified` with `growth_largecap_v1` in the `COMPANY` stream).
+- `signal-aggregator` (**serwis 12 — Direction #3 finale, built from scratch**): combines multi-source
+  signals (rules/strategy + ML + macro-regime) into one decision. `core/aggregator.py` (`combine` —
+  signed-confidence weighted vote: +conf BUY / −conf SELL / 0 HOLD → threshold → BUY/SELL/HOLD),
+  `core/adaptive_weights.py` (**moved from strategy** — `AdaptiveWeightOptimizer` EWP performance
+  weighting), `core/service.py` (`SignalAggregatorService.aggregate` — optimizer weights renormalized
+  over present sources → `combine` → shared **`CostAwareFilter`** gate (marginal edge → HOLD) → publish
+  `SignalAggregatedEvent`; `record_outcome` adapts weights). Routes `POST /aggregate`, `POST /outcomes`,
+  `GET /weights`; real `/ready` (NATS); publisher + `ensure_stream(SIGNALS, ["signal.>"])`. Full scaffold
+  (compose port 8012, Helm `signalAggregator`). Also **moved `cost_filter` → trading-common** (shared gate,
+  strategy now imports it from there). 49 tests; ruff + format + mypy clean; live-verified on a real
+  `nats-server` (consensus BUY → `signal.aggregated` in the `SIGNALS` stream). **This closes the full
+  13-service architecture.**
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -161,11 +174,9 @@ now functionally implemented** (no skeletons left).
    pub/sub). feature-engine, strategy, risk-mgmt, backtest, ml-pipeline all wired. (Leftover specs —
    feature-engine `earnings_decay`/`cross_asset`, strategy `adaptive_weights` — belong in later
    services, not the 7 core runtime paths; tracked under tech debt.)
-3. ⏳ **IN PROGRESS — Build serwisy 10–13** (fundamental-data, macro-data, company-classifier,
-   signal-aggregator) against the now-existing shared contracts. ✅ **macro-data** (10) +
-   **fundamental-data** (9) + **company-classifier** (11) done. **Only signal-aggregator (12) remains.**
-   When `signal-aggregator` exists, move `adaptive_weights.py` + `cost_filter.py` there from
-   `strategy/` (their spec home — framework_supplement B3/B4).
+3. ✅ **DONE — Build serwisy 10–13**: fundamental-data (9), macro-data (10), company-classifier (11),
+   signal-aggregator (12) all built. `adaptive_weights.py` moved to signal-aggregator, `cost_filter.py`
+   moved to trading-common (shared). **All 13 services now exist and are functional.**
 4. **Contracts-first** always: extend `shared/trading-common` before adding any cross-service type.
 
 **Known issues / tech debt** (propose a fix when you touch the area):
@@ -191,14 +202,16 @@ now functionally implemented** (no skeletons left).
   `/ready` checks deps — market-data gates on DB, feature-engine on NATS (D2); FeatureStore is
   Redis-backed with in-memory fallback via an async store interface (D3). Still open: the **push**
   consumer doesn't load-balance — use a pull / queue-group consumer for true multi-replica HA.
-- [P2] `adaptive_weights.py` / `cost_filter.py` sit in `strategy/` but belong in `signal-aggregator/` (not created yet).
+- [P2 ✅ done] `adaptive_weights.py` moved to `signal-aggregator/`; `cost_filter.py` moved to
+  `trading-common` (a shared cross-cutting gate like `RiskEnvelope`, used by both strategy and
+  signal-aggregator). Neither remains in `strategy/`.
 - [P2] No `docs/ml_integration_plan.md`; serwisy 10–13 reference it conceptually. Initial contracts now in code — write the doc before deep ML work.
 - [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
 - [P3] `infrastructure/terraform/` is referenced in README but absent (planned).
 - [P2] Helm chart lags: `values.yaml` lists every service but `templates/` has a deployment only for
-  `market-data`. The other 12 services (incl. macro-data / fundamental-data / company-classifier) have
-  values entries but **no Deployment template** — a generic templated `Deployment`/`Service`/`HPA`
-  ranging over the services map is the fix. Pre-existing; flagged since the rule requires Helm↔compose sync.
+  `market-data`. The other 13 services have values entries but **no Deployment template** — a generic
+  templated `Deployment`/`Service`/`HPA` ranging over the services map is the fix. Pre-existing;
+  flagged since the rule requires Helm↔compose sync. **This is now the top open infra item.**
 - [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
 - [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
 - [env] Docker CLI + daemon are available (start `dockerd` as root if the socket is missing). Under
@@ -389,17 +402,30 @@ now functionally implemented** (no skeletons left).
   publisher + `ensure_stream(COMPANY)`, full scaffold (compose port 8011, Helm `companyClassifier`).
   25 tests; ruff + format + mypy clean; all suites green (670 total). Live-verified on a real
   `nats-server` (classify NVDA → `company.classified` `growth_largecap_v1` in the `COMPANY` stream).
+- 2026-07-01 — Direction #3 (**signal-aggregator** — serwis 12, **finale; all 13 services now built**):
+  combines rules/strategy + ML + macro-regime signals into one decision. `core/aggregator.py` (`combine`
+  — signed-confidence weighted vote → threshold → BUY/SELL/HOLD), `core/adaptive_weights.py`
+  (**moved from strategy**), `core/service.py` (optimizer weights renormalized over present sources →
+  combine → shared `CostAwareFilter` gate → publish `SignalAggregatedEvent`; `record_outcome` adapts
+  weights), routes (`POST /aggregate`, `POST /outcomes`, `GET /weights`), real `/ready`, publisher +
+  `ensure_stream(SIGNALS)`, full scaffold (compose port 8012, Helm `signalAggregator`). **Refactor:
+  `cost_filter.py` moved strategy → trading-common** (shared gate like `RiskEnvelope`; strategy + shared
+  imports updated; its 20 tests moved to shared). signal-aggregator 49 tests (incl. 22 moved
+  adaptive_weights); strategy 46 (was 88, the 42 moved out); shared 154 (+20). ruff + format + mypy
+  clean; all suites green (697 total). Live-verified on a real `nats-server` (consensus BUY →
+  `signal.aggregated` in the `SIGNALS` stream). **Direction #3 complete — the full 13-service
+  architecture is implemented.**
 
-**Next:** Direction #3 has **one service left — signal-aggregator (serwis 12)**: combine ML + rules-based
-+ macro-regime signals → `SignalAggregatedEvent`; when it lands, **move `adaptive_weights.py` +
-`cost_filter.py` there from `strategy/`** (their spec home). That closes the full 13-service architecture.
-A natural follow-up: have **feature-engine (or a Tier-2/3 layer) consume `FundamentalsUpdatedEvent` /
-`CompanyClassifiedEvent`** so fundamentals + style feed ML features. Open follow-ups (non-blocking): a
-generic Helm Deployment template for the 12 untemplated services; extend `FinancialStatements` with
-current assets/liabilities + shares → full 9-signal Piotroski; scheduled triggers (backtest weekly
-revalidation; ml-pipeline daily drift; macro/fundamentals periodic refresh); notification email/SMTP;
-MLflow registry; ml-pipeline training/inference (PyTorch); `docs/ml_integration_plan.md` before deep ML
-work. Deeper persistence hardening (event-log/DB, multi-instance) remains optional.
+**Next:** All 13 services (9 core + 4 ML/AI extension) are built and functional. The system has no
+skeletons left. Remaining work is **integration + hardening**, not new services: wire signal-aggregator
+as a live multi-stream consumer (subscribe to strategy `signal.generated` + ML + `macro.regime_changed`,
+aggregate per symbol, emit to risk-mgmt) instead of the current request-driven `POST /aggregate`; have
+**feature-engine consume `FundamentalsUpdatedEvent` / `CompanyClassifiedEvent`** so fundamentals + style
+feed ML features; a **generic Helm Deployment template** for the 13 untemplated services (top infra
+item); extend `FinancialStatements` (current assets/liabilities + shares) → full 9-signal Piotroski;
+scheduled triggers (backtest weekly revalidation, ml-pipeline daily drift, macro/fundamentals refresh);
+notification email/SMTP; MLflow registry; ml-pipeline training/inference (PyTorch);
+`docs/ml_integration_plan.md` before deep ML work; deeper persistence (event-log/DB, multi-instance).
 
 ## Architecture rules (non-negotiable)
 

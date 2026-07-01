@@ -6,11 +6,11 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
+from trading_common.cost_filter import CostAwareFilter
 from trading_common.risk_envelope import RiskEnvelope
 from trading_common.schemas import FeatureVector, Interval
 
 from src.api.deps import get_service
-from src.core.cost_filter import CostAwareFilter
 from src.core.health import StrategyHealthTracker
 from src.core.momentum import MomentumParams
 from src.core.service import PortfolioSnapshot, StrategyService

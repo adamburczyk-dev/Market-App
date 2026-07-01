@@ -1,0 +1,72 @@
+"""signal-aggregator HTTP API — combine component signals into one decision."""
+
+import structlog
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+
+from src.api.deps import get_service
+from src.core.aggregator import SignalComponent
+from src.core.service import SignalAggregatorService
+
+logger = structlog.get_logger()
+router = APIRouter()
+
+
+class ComponentBody(BaseModel):
+    source: str
+    signal: str  # "BUY" | "SELL" | "HOLD"
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class AggregateRequest(BaseModel):
+    symbol: str
+    components: list[ComponentBody]
+    expected_return_bps: float | None = None
+    market_cap_tier: str = "large"
+
+
+class OutcomeRequest(BaseModel):
+    source: str
+    daily_return: float
+
+
+@router.get("/status")
+async def status() -> dict:
+    return {"service": "signal-aggregator", "status": "ready"}
+
+
+@router.get("/weights")
+async def weights(service: SignalAggregatorService = Depends(get_service)) -> dict:
+    return {"weights": service.weights()}
+
+
+@router.post("/aggregate")
+async def aggregate(
+    req: AggregateRequest, service: SignalAggregatorService = Depends(get_service)
+) -> dict:
+    """Combine component signals; publishes SignalAggregatedEvent."""
+    components = [SignalComponent(c.source, c.signal, c.confidence) for c in req.components]
+    result = await service.aggregate(
+        req.symbol,
+        components,
+        expected_return_bps=req.expected_return_bps,
+        market_cap_tier=req.market_cap_tier,
+    )
+    return {
+        "symbol": result.symbol,
+        "final_signal": result.final_signal,
+        "confidence": result.confidence,
+        "score": result.score,
+        "components_count": result.components_count,
+        "weights": result.weights,
+        "cost_filtered": result.cost_filtered,
+    }
+
+
+@router.post("/outcomes")
+async def record_outcome(
+    req: OutcomeRequest, service: SignalAggregatorService = Depends(get_service)
+) -> dict:
+    """Record a source's realized daily return → adapts its weight."""
+    service.record_outcome(req.source, req.daily_return)
+    return {"recorded": True, "weights": service.weights()}

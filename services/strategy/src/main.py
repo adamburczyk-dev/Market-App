@@ -4,11 +4,11 @@ from contextlib import asynccontextmanager, suppress
 import nats
 import structlog
 from fastapi import FastAPI
+from trading_common.cost_filter import CostAwareFilter
 from trading_common.risk_envelope import RiskEnvelope
 
 from src.api import router as api_router
 from src.config import settings
-from src.core.cost_filter import CostAwareFilter
 from src.core.feature_client import HttpFeatureClient
 from src.core.health import StrategyHealthTracker
 from src.core.momentum import MomentumParams

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import structlog
+from trading_common.cost_filter import CostAwareFilter
 from trading_common.events import (
     FeaturesReadyEvent,
     SignalGeneratedEvent,
@@ -12,7 +13,6 @@ from trading_common.events import (
 from trading_common.risk_envelope import RiskEnvelope
 from trading_common.schemas import Interval, Signal, TradingSignal
 
-from src.core.cost_filter import CostAwareFilter
 from src.core.feature_client import FeatureClient
 from src.core.health import StrategyHealthTracker
 from src.core.momentum import MomentumParams, generate_signal
