@@ -12,6 +12,7 @@ from src.core.adaptive_weights import AdaptiveWeightOptimizer
 from src.core.observability import setup_observability
 from src.core.service import SignalAggregatorService
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
+from src.events.subscriber import EventSubscriber
 
 logger = structlog.get_logger()
 
@@ -33,6 +34,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         nats_client = await nats.connect(settings.NATS_URL)
         js = nats_client.jetstream()
         await ensure_stream(js, settings.NATS_SIGNALS_STREAM, [settings.NATS_SIGNALS_SUBJECTS])
+        # Ensure the macro stream too so the regime subscription is start-order independent.
+        await ensure_stream(js, settings.NATS_MACRO_STREAM, ["macro.>"])
         publisher = NatsPublisher(js)
     except Exception as exc:  # noqa: BLE001
         logger.warning("NATS/JetStream unavailable, events disabled", error=str(exc))
@@ -48,8 +51,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     app.state.service = service
 
+    subscribers: list[EventSubscriber] = []
+    if nats_client is not None:
+        try:
+            signal_sub = EventSubscriber(
+                nats_client.jetstream(),
+                settings.NATS_SIGNAL_SUBJECT,
+                settings.NATS_SIGNAL_DURABLE,
+                service.handle_signal_generated,
+                max_deliver=settings.NATS_MAX_DELIVER,
+            )
+            await signal_sub.start()
+            regime_sub = EventSubscriber(
+                nats_client.jetstream(),
+                settings.NATS_MACRO_SUBJECT,
+                settings.NATS_MACRO_DURABLE,
+                service.handle_regime_changed,
+                max_deliver=settings.NATS_MAX_DELIVER,
+            )
+            await regime_sub.start()
+            subscribers = [signal_sub, regime_sub]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not subscribe to source events", error=str(exc))
+            subscribers = []
+
     async def _readiness() -> tuple[bool, dict[str, bool]]:
-        # signal-aggregator publishes aggregated signals → NATS is required.
+        # signal-aggregator consumes + publishes signals → NATS is required.
         nats_ok = nats_client is not None and nats_client.is_connected
         return nats_ok, {"nats": nats_ok}
 
@@ -58,6 +85,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
+    for sub in subscribers:
+        await sub.stop()
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()

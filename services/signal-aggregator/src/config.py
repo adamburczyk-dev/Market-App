@@ -12,6 +12,15 @@ class Settings(BaseSettings):
     # NATS JetStream — publishes signal.aggregated (shares the SIGNALS stream / signal.>)
     NATS_SIGNALS_STREAM: str = "SIGNALS"
     NATS_SIGNALS_SUBJECTS: str = "signal.>"
+    NATS_MAX_DELIVER: int = 5
+
+    # Consume strategy (rule-based) signals — the primary per-symbol component
+    NATS_SIGNAL_SUBJECT: str = "signal.generated"
+    NATS_SIGNAL_DURABLE: str = "signal-aggregator-signals"
+    # Consume macro regime changes — the market-wide directional bias
+    NATS_MACRO_STREAM: str = "MACRO"
+    NATS_MACRO_SUBJECT: str = "macro.regime_changed"
+    NATS_MACRO_DURABLE: str = "signal-aggregator-regime"
 
     # Signal sources combined (rules-based + ML + macro regime)
     SIGNAL_SOURCES: str = "strategy,ml,macro"

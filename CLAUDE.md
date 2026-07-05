@@ -162,9 +162,14 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `SignalAggregatedEvent`; `record_outcome` adapts weights). Routes `POST /aggregate`, `POST /outcomes`,
   `GET /weights`; real `/ready` (NATS); publisher + `ensure_stream(SIGNALS, ["signal.>"])`. Full scaffold
   (compose port 8012, Helm `signalAggregator`). Also **moved `cost_filter` → trading-common** (shared gate,
-  strategy now imports it from there). 49 tests; ruff + format + mypy clean; live-verified on a real
-  `nats-server` (consensus BUY → `signal.aggregated` in the `SIGNALS` stream). **This closes the full
-  13-service architecture.**
+  strategy now imports it from there). Now also a **live multi-stream consumer**: durable subscribers on
+  `signal.generated` (buffers the latest per-symbol strategy component) and `macro.regime_changed`
+  (`REGIME_BIAS` → market-wide directional component; a transition re-aggregates every buffered symbol);
+  the event-driven path publishes `signal.aggregated` per update. ⚠️ Currently **advisory**: nothing
+  consumes `signal.aggregated` and the event lacks price/SL/TP, so it cannot drive orders — risk-mgmt
+  still sizes raw `signal.generated` (see Known issues **R1**). 59 tests; ruff + format + mypy clean;
+  live-verified on a real `nats-server` (signal → aggregated BUY; expansion→crisis → re-aggregated HOLD
+  in the `SIGNALS` stream). **This closes the full 13-service architecture.**
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -180,6 +185,36 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4. **Contracts-first** always: extend `shared/trading-common` before adding any cross-service type.
 
 **Known issues / tech debt** (propose a fix when you touch the area):
+- [P1 — 2026-07-05 whole-system review, **awaiting decision**] **R1 Aggregator is advisory, not a gate**:
+  nothing consumes `signal.aggregated`, and the event lacks price/SL/TP so it cannot drive risk-mgmt
+  (which still consumes raw `signal.generated`). Decide: (a) make it the decision node — extend
+  `SignalAggregatedEvent` with price/SL/TP/strategy_name and switch risk-mgmt's subscription
+  (**recommended**); or (b) keep it advisory and document that role.
+- [P1 — 2026-07-05 review] **R2 "Daily loss" never resets**: execution's `day_start_equity` has no daily
+  rollover (and is Redis-persisted) → "daily loss > 5% → halt until next day" behaves as "cumulative loss
+  since first boot > 5% → quasi-permanent halt". Fix: date-tagged day-start, rolled on the first
+  fill/mark of a new day (include the date in the snapshot).
+- [P1 — 2026-07-05 review] **R3 Double fill on redelivery**: `execute()` mutates the broker *before*
+  publish/save; a transient NATS/Redis error → NAK → redelivery → the same order fills twice. Fix:
+  idempotency by order `event_id` (processed-ids set; use event_id as order_id).
+- [P1 — 2026-07-05 review] **R4 Live can short, backtest is long/flat**: SELL-to-open creates negative
+  positions with no short-specific risk logic, while the validating engine is long/flat — OOS results
+  don't validate live behavior. Decide: block SELL-to-open (long-only) or model shorts end-to-end.
+- [P1 — 2026-07-05 review] **R5 SL/TP not enforced post-fill**: stops are enforced contractually
+  (validator + RiskEnvelope + risk-mgmt) but nothing exits a position through its stop at runtime — only
+  an opposite signal or the portfolio circuit breaker. Fix: execution checks SL/TP on each re-mark and
+  generates paper exits (OrderRequested already carries the levels).
+- [P2 — 2026-07-05 review] **R6–R11**: R6 aggregator buffer has no TTL (strategy is silent on HOLD →
+  stale BUY/SELL resurfaces on every regime change); R7 `StrategyRevalidatedEvent` reaches only
+  notification — strategy doesn't subscribe (human-in-the-loop by design? document or close the loop);
+  R8 sector caps dead on the live path (`PositionSizer` supports `sector` but signals don't carry it);
+  R9 `POST /aggregate` bypasses the buffer + macro bias (two aggregation semantics); R10 a known-neutral
+  regime (slowdown → HOLD 0.0 component) halves the strategy weight while an *unknown* regime costs
+  nothing — consider dropping the HOLD bias component; R11 the "ml" source is configured but nothing
+  produces per-symbol ML signals yet (aggregation is effectively 2-source). P3: EDGAR `Revenues` tag
+  misses `RevenueFromContractWithCustomer…` filers (add tag fallbacks); new durables replay full stream
+  history on first start (consider `DeliverPolicy.NEW` for the aggregator); double cost-gating
+  (strategy at emit + aggregator on the aggregate) is intentional-conservative — document.
 - [P1 ✅ done] Orphaned components wired (Direction #2 complete): feature-engine + strategy +
   risk-mgmt + backtest + ml-pipeline. Leftover specs (`earnings_decay`, `cross_asset`,
   `adaptive_weights`) belong in later services (signal-aggregator / macro), not the core runtime.
@@ -415,15 +450,27 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   clean; all suites green (697 total). Live-verified on a real `nats-server` (consensus BUY →
   `signal.aggregated` in the `SIGNALS` stream). **Direction #3 complete — the full 13-service
   architecture is implemented.**
+- 2026-07-05 — **signal-aggregator wired as a live consumer** (integration; behavior-neutral for now):
+  durable `EventSubscriber`s on `signal.generated` (latest-per-symbol strategy component buffer) and
+  `macro.regime_changed` (`REGIME_BIAS` expansion/recovery→BUY, slowdown→neutral, contraction/crisis→SELL
+  → market-wide component; a transition re-aggregates every buffered symbol); `ensure_stream(MACRO)`;
+  event-driven aggregation publishes `signal.aggregated` per update. +10 tests (signal-aggregator 59);
+  ruff + format + mypy clean; all suites green (707 total). Live-verified on a real `nats-server`
+  (signal.generated → aggregated BUY [1 comp]; expansion→crisis → re-aggregated HOLD [2 comps]).
+  **Whole-system logic review (first Fable 5 pass)**: 5×P1 + 6×P2 + P3 findings logged above as
+  **R1–R11** — headline R1: the aggregate is advisory (no consumer; event lacks price/SL/TP), so
+  risk-mgmt still acts on raw strategy signals. Other P1s: R2 daily-loss never rolls over,
+  R3 double-fill on redelivery, R4 live-short vs long/flat backtest mismatch, R5 SL/TP not enforced
+  post-fill. Fixes awaiting user decision (recommended order: R1 decision → R2+R3 → R4+R5 → R6 TTL).
 
-**Next:** All 13 services (9 core + 4 ML/AI extension) are built and functional. The system has no
-skeletons left. Remaining work is **integration + hardening**, not new services: wire signal-aggregator
-as a live multi-stream consumer (subscribe to strategy `signal.generated` + ML + `macro.regime_changed`,
-aggregate per symbol, emit to risk-mgmt) instead of the current request-driven `POST /aggregate`; have
-**feature-engine consume `FundamentalsUpdatedEvent` / `CompanyClassifiedEvent`** so fundamentals + style
-feed ML features; a **generic Helm Deployment template** for the 13 untemplated services (top infra
-item); extend `FinancialStatements` (current assets/liabilities + shares) → full 9-signal Piotroski;
-scheduled triggers (backtest weekly revalidation, ml-pipeline daily drift, macro/fundamentals refresh);
+**Next:** **Decide R1–R5 from the 2026-07-05 review** (see Known issues) — recommended: make
+signal-aggregator the decision node (R1a: extend `SignalAggregatedEvent` with price/SL/TP, switch
+risk-mgmt's subscription), fix daily-loss rollover (R2) + fill idempotency (R3), go long-only until
+shorts are modeled (R4), enforce SL/TP on re-mark (R5). Then: **feature-engine consumes
+`FundamentalsUpdatedEvent` / `CompanyClassifiedEvent`** so fundamentals + style feed ML features; a
+**generic Helm Deployment template** for the 13 untemplated services (top infra item); extend
+`FinancialStatements` (current assets/liabilities + shares) → full 9-signal Piotroski; scheduled
+triggers (backtest weekly revalidation, ml-pipeline daily drift, macro/fundamentals refresh);
 notification email/SMTP; MLflow registry; ml-pipeline training/inference (PyTorch);
 `docs/ml_integration_plan.md` before deep ML work; deeper persistence (event-log/DB, multi-instance).
 

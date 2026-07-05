@@ -16,6 +16,25 @@ class SignalComponent:
     confidence: float  # [0, 1]
 
 
+# Market-wide directional bias contributed by the macro regime.
+REGIME_BIAS: dict[str, tuple[str, float]] = {
+    "expansion": ("BUY", 0.5),
+    "recovery": ("BUY", 0.3),
+    "slowdown": ("HOLD", 0.0),
+    "contraction": ("SELL", 0.3),
+    "crisis": ("SELL", 0.6),
+}
+
+
+def regime_to_component(regime: str, source: str = "macro") -> "SignalComponent | None":
+    """Map a macro regime to a directional signal component (None if unknown)."""
+    bias = REGIME_BIAS.get(regime)
+    if bias is None:
+        return None
+    signal, confidence = bias
+    return SignalComponent(source=source, signal=signal, confidence=confidence)
+
+
 @dataclass
 class AggregationResult:
     symbol: str
