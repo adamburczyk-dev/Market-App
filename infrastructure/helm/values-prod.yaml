@@ -1,43 +1,24 @@
 # Production overrides — nadpisuje values.yaml
+#
+# NOTE on replicas: services that consume NATS events use durable *push*
+# consumers, which do not load-balance across replicas (known tech debt —
+# a pull/queue-group consumer is required for true multi-replica HA), and
+# risk-mgmt/execution state is a single-writer Redis snapshot. Until then,
+# only services without an event subscription scale horizontally here.
 global:
   imagePullPolicy: Always
   env: production
 
-marketData:
-  replicaCount: 2
-  env:
-    LOG_LEVEL: WARNING
-
-featureEngine:
-  replicaCount: 2
-  env:
-    LOG_LEVEL: WARNING
-
-strategy:
-  replicaCount: 2
-
-backtest:
-  replicaCount: 1
-
-mlPipeline:
-  enabled: true
-  replicaCount: 1
-
-riskMgmt:
-  enabled: true
-  replicaCount: 2
-
-execution:
-  enabled: true
-  replicaCount: 2
-
-notification:
-  enabled: true
-  replicaCount: 1
-
-dashboard:
-  enabled: true
-  replicaCount: 1
+services:
+  market-data:
+    replicaCount: 2   # producer + HTTP API, no event subscription
+    env:
+      LOG_LEVEL: WARNING
+  feature-engine:
+    env:
+      LOG_LEVEL: WARNING
+  dashboard:
+    replicaCount: 2   # stateless HTTP BFF
 
 postgres:
   storage: 100Gi

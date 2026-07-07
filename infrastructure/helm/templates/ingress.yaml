@@ -1,3 +1,7 @@
+{{/*
+API-gateway routes for every enabled service — mirrors the docker-compose
+Traefik labels (PathPrefix /api/v1/<service-name> -> service).
+*/}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -13,31 +17,14 @@ spec:
     - host: trading.local   # Zmień na domenę produkcyjną
       http:
         paths:
-          - path: /api/v1/market-data
+          {{- range $name, $svc := .Values.services }}
+          {{- if $svc.enabled }}
+          - path: /api/v1/{{ $name }}
             pathType: Prefix
             backend:
               service:
-                name: market-data
+                name: {{ $name }}
                 port:
                   number: 8000
-          - path: /api/v1/features
-            pathType: Prefix
-            backend:
-              service:
-                name: feature-engine
-                port:
-                  number: 8000
-          - path: /api/v1/strategy
-            pathType: Prefix
-            backend:
-              service:
-                name: strategy
-                port:
-                  number: 8000
-          - path: /api/v1/backtest
-            pathType: Prefix
-            backend:
-              service:
-                name: backtest
-                port:
-                  number: 8000
+          {{- end }}
+          {{- end }}

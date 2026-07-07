@@ -283,10 +283,17 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 - [P2] No `docs/ml_integration_plan.md`; serwisy 10–13 reference it conceptually. Initial contracts now in code — write the doc before deep ML work.
 - [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
 - [P3] `infrastructure/terraform/` is referenced in README but absent (planned).
-- [P2] Helm chart lags: `values.yaml` lists every service but `templates/` has a deployment only for
-  `market-data`. The other 13 services have values entries but **no Deployment template** — a generic
-  templated `Deployment`/`Service`/`HPA` ranging over the services map is the fix. Pre-existing;
-  flagged since the rule requires Helm↔compose sync. **This is now the top open infra item.**
+- [P2 ✅ done 2026-07-07] Helm chart: `values.yaml` restructured into a **`services:` map**
+  (kebab-case key = k8s name = compose name) and a **generic `templates/services.yaml`** renders
+  Deployment+Service for all 13 services (probes on `/health`+`/ready`, prometheus annotations,
+  common env injected: SERVICE_NAME/NATS_URL/REDIS_HOST/REDIS_PASSWORD-secret, `needsDb` → DB
+  secret; per-service `env` maps mirror compose URLs). `ingress.yaml` generates the 13
+  `/api/v1/{service}` routes (mirrors compose Traefik labels); dedicated market-data template
+  removed; dashboard containerPort fixed 8501→8000. `values-prod.yaml` migrated; replicas >1 only
+  for services **without** an event subscription (push durables don't load-balance — see the open
+  robustness item; risk-mgmt/execution are single-writer Redis snapshots). Render-verified with a
+  real `helm` binary (lint + template, dev & prod: 13 Deployments/Services, 13 ingress paths,
+  secret refs, prod deep-merge). No HPA yet — deliberate until consumers can scale.
 - [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
 - [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
 - [env] Docker CLI + daemon are available (start `dockerd` as root if the socket is missing). Under
@@ -559,14 +566,26 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   on one nats-server: POST /statements → f_score 7 merged with technicals; POST /classify → growth
   encoding; MSFT weak firm → f_score 1; ranked percentiles AAPL 1.0 / MSFT 0.0).
 
-**Next:** the 2026-07-05 review is fully closed (R1–R11 + P3s); feature-engine Tier-2 enrichment done. Then: a
-**generic Helm Deployment template** for the 13 untemplated services (top infra item); extend
+- 2026-07-07 — **Generic Helm chart** (top infra item closed): `values.yaml` restructured to a
+  `services:` map (13 entries, kebab-case = k8s = compose names; all `enabled: true` now that every
+  service is functional; env maps mirror compose inter-service URLs; market-data `needsDb`);
+  new generic `templates/services.yaml` (Deployment+Service per enabled entry: health/ready probes,
+  prometheus annotations, common env + secret refs, optional resources) replaces the market-data-only
+  template; `ingress.yaml` now generates all 13 `/api/v1/{service}` routes (mirrors compose Traefik
+  labels); dashboard containerPort fixed 8501→8000 (compose maps host 8501→container 8000);
+  `values-prod.yaml` migrated to the map — replicas >1 only for non-subscribing services
+  (market-data, dashboard) until pull/queue-group consumers land. **Render-verified with a real
+  helm binary** (installed via Go): `helm lint` clean; dev+prod `helm template` → 13 Deployments +
+  13 Services (+postgres) + Ingress with 13 paths; asserted env/secret/probe/replica invariants
+  with a YAML checker. `make helm-template` target unchanged and working.
+
+**Next:** extend
 `FinancialStatements` (current assets/liabilities + shares) → full 9-signal Piotroski; scheduled
 triggers (backtest weekly revalidation, ml-pipeline daily drift, macro/fundamentals refresh);
 notification email/SMTP (and optionally alert on `strategy.status_changed`, now that it has a stream);
 MLflow registry; ml-pipeline training/inference (PyTorch) — its per-symbol signals activate the "ml"
 aggregation source (R11); `docs/ml_integration_plan.md` before deep ML work; deeper persistence
-(event-log/DB, multi-instance).
+(event-log/DB, multi-instance; pull/queue-group consumers for multi-replica HA).
 
 ## Architecture rules (non-negotiable)
 

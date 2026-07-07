@@ -4,191 +4,259 @@ global:
   imageRegistry: ghcr.io/your-org/trading-system
 
 # ==================== APPLICATION SERVICES ====================
+# One entry per microservice; templates/services.yaml ranges over this map and
+# renders a Deployment + Service for every enabled entry (kebab-case key = the
+# k8s name = the compose service name, so inter-service URLs are identical in
+# both stacks). `env` mirrors docker-compose (minus infra vars the template
+# injects: SERVICE_NAME, NATS_URL, REDIS_HOST, REDIS_PASSWORD). `needsDb: true`
+# additionally injects the DB_PASSWORD secret ref.
 
-marketData:
-  enabled: true
-  replicaCount: 1
-  image:
-    name: market-data
-    tag: latest
-  port: 8000
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "100m"
-    limits:
-      memory: "512Mi"
-      cpu: "500m"
-  env:
-    LOG_LEVEL: INFO
+services:
+  market-data:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: market-data
+      tag: latest
+    port: 8000
+    needsDb: true
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
+      DB_HOST: postgres
+      DB_NAME: trading_db
+      DB_USER: trader
 
-featureEngine:
-  enabled: true
-  replicaCount: 1
-  image:
-    name: feature-engine
-    tag: latest
-  port: 8000
-  resources:
-    requests:
-      memory: "512Mi"
-      cpu: "200m"
-    limits:
-      memory: "1Gi"
-      cpu: "1000m"
-  env:
-    LOG_LEVEL: INFO
-    # Tier-2 attribute enrichment (fundamentals announced by fundamentals.updated)
-    FUNDAMENTAL_DATA_URL: http://fundamental-data:8000
+  feature-engine:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: feature-engine
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "200m"
+      limits:
+        memory: "1Gi"
+        cpu: "1000m"
+    env:
+      LOG_LEVEL: INFO
+      MARKET_DATA_URL: http://market-data:8000
+      # Tier-2 attribute enrichment (fundamentals announced by fundamentals.updated)
+      FUNDAMENTAL_DATA_URL: http://fundamental-data:8000
 
-strategy:
-  enabled: true
-  replicaCount: 1
-  image:
-    name: strategy
-    tag: latest
-  port: 8000
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "100m"
-    limits:
-      memory: "512Mi"
-      cpu: "500m"
+  strategy:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: strategy
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
+      FEATURE_ENGINE_URL: http://feature-engine:8000
+      RISK_MGMT_URL: http://risk-mgmt:8000
 
-backtest:
-  enabled: true
-  replicaCount: 1
-  image:
-    name: backtest
-    tag: latest
-  port: 8000
-  resources:
-    requests:
-      memory: "512Mi"
-      cpu: "500m"
-    limits:
-      memory: "2Gi"
-      cpu: "2000m"
+  backtest:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: backtest
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "2000m"
+    env:
+      LOG_LEVEL: INFO
+      MARKET_DATA_URL: http://market-data:8000
 
-mlPipeline:
-  enabled: false   # Włącz w fazie 3
-  replicaCount: 1
-  image:
-    name: ml-pipeline
-    tag: latest
-  port: 8000
-  resources:
-    requests:
-      memory: "1Gi"
-      cpu: "500m"
-    limits:
-      memory: "4Gi"
-      cpu: "2000m"
+  ml-pipeline:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: ml-pipeline
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "4Gi"
+        cpu: "2000m"
+    env:
+      LOG_LEVEL: INFO
 
-riskMgmt:
-  enabled: false   # Włącz w fazie 4
-  replicaCount: 1
-  image:
-    name: risk-mgmt
-    tag: latest
-  port: 8000
+  risk-mgmt:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: risk-mgmt
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
 
-execution:
-  enabled: false   # Włącz w fazie 5
-  replicaCount: 1
-  image:
-    name: execution
-    tag: latest
-  port: 8000
+  execution:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: execution
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
+      RISK_MGMT_URL: http://risk-mgmt:8000
+      MARKET_DATA_URL: http://market-data:8000
 
-notification:
-  enabled: false   # Włącz w fazie 5
-  replicaCount: 1
-  image:
-    name: notification
-    tag: latest
-  port: 8000
+  notification:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: notification
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
+      # SLACK_WEBHOOK_URL / TELEGRAM_* are secrets — inject via extraEnv/secret
+      # in a real deployment; without them the service stays log-only.
 
-dashboard:
-  enabled: false   # Włącz w fazie 4
-  replicaCount: 1
-  image:
-    name: dashboard
-    tag: latest
-  port: 8501
+  dashboard:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: dashboard
+      tag: latest
+    port: 8000  # container listens on 8000 (compose maps host 8501 -> 8000)
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
+      RISK_MGMT_URL: http://risk-mgmt:8000
+      EXECUTION_URL: http://execution:8000
+      NOTIFICATION_URL: http://notification:8000
+      ML_PIPELINE_URL: http://ml-pipeline:8000
 
-# ==================== ML/AI EXTENSION (serwisy 10-13) ====================
+  # ---------- ML/AI extension (serwisy 10-13) ----------
 
-fundamentalData:
-  enabled: false   # Włącz gdy gotowy SEC_USER_AGENT
-  replicaCount: 1
-  image:
-    name: fundamental-data
-    tag: latest
-  port: 8000
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "100m"
-    limits:
-      memory: "512Mi"
-      cpu: "500m"
-  env:
-    LOG_LEVEL: INFO
+  fundamental-data:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: fundamental-data
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
+      # SEC_USER_AGENT required for live EDGAR fetch; without it the service
+      # degrades gracefully to manually-ingested statements.
 
-macroData:
-  enabled: false   # Włącz gdy gotowy klucz FRED_API_KEY
-  replicaCount: 1
-  image:
-    name: macro-data
-    tag: latest
-  port: 8000
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "100m"
-    limits:
-      memory: "512Mi"
-      cpu: "500m"
-  env:
-    LOG_LEVEL: INFO
+  macro-data:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: macro-data
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
+      # FRED_API_KEY required for live FRED fetch; manual overrides work without.
 
-companyClassifier:
-  enabled: false
-  replicaCount: 1
-  image:
-    name: company-classifier
-    tag: latest
-  port: 8000
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "100m"
-    limits:
-      memory: "512Mi"
-      cpu: "500m"
-  env:
-    LOG_LEVEL: INFO
+  company-classifier:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: company-classifier
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
 
-signalAggregator:
-  enabled: false
-  replicaCount: 1
-  image:
-    name: signal-aggregator
-    tag: latest
-  port: 8000
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "100m"
-    limits:
-      memory: "512Mi"
-      cpu: "500m"
-  env:
-    LOG_LEVEL: INFO
-    # sector enrichment for regime-aware sector caps (graceful None when down)
-    COMPANY_CLASSIFIER_URL: http://company-classifier:8000
+  signal-aggregator:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: signal-aggregator
+      tag: latest
+    port: 8000
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    env:
+      LOG_LEVEL: INFO
+      # sector enrichment for regime-aware sector caps (graceful None when down)
+      COMPANY_CLASSIFIER_URL: http://company-classifier:8000
 
 # ==================== INFRASTRUCTURE ====================
 
