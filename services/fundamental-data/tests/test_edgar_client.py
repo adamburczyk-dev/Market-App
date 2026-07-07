@@ -15,6 +15,15 @@ CONCEPTS = {
     "NetIncomeLoss": [("2023-09-30", 96995, "10-K", "FY"), ("2024-09-28", 93736, "10-K", "FY")],
     "Assets": [("2023-09-30", 352583, "10-K", "FY"), ("2024-09-28", 364980, "10-K", "FY")],
     "Liabilities": [("2023-09-30", 290437, "10-K", "FY"), ("2024-09-28", 308030, "10-K", "FY")],
+    "AssetsCurrent": [("2023-09-30", 143566, "10-K", "FY"), ("2024-09-28", 152987, "10-K", "FY")],
+    "LiabilitiesCurrent": [
+        ("2023-09-30", 145308, "10-K", "FY"),
+        ("2024-09-28", 176392, "10-K", "FY"),
+    ],
+    "CommonStockSharesOutstanding": [
+        ("2023-09-30", 15550, "10-K", "FY"),
+        ("2024-09-28", 15116, "10-K", "FY"),
+    ],
     "NetCashProvidedByUsedInOperatingActivities": [
         ("2023-09-30", 110543, "10-K", "FY"),
         ("2024-09-28", 118254, "10-K", "FY"),
@@ -25,6 +34,13 @@ CONCEPTS = {
     ],
 }
 
+TAG_UNITS = {
+    "EarningsPerShareBasic": "USD/shares",
+    "CommonStockSharesOutstanding": "shares",
+    "WeightedAverageNumberOfSharesOutstandingBasic": "shares",
+    "WeightedAverageNumberOfDilutedSharesOutstanding": "shares",
+}
+
 
 def sec_handler(request: httpx.Request) -> httpx.Response:
     path = request.url.path
@@ -32,7 +48,7 @@ def sec_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=TICKERS)
     if "/companyconcept/" in path:
         tag = path.rsplit("/", 1)[-1].removesuffix(".json")
-        unit = "USD/shares" if tag == "EarningsPerShareBasic" else "USD"
+        unit = TAG_UNITS.get(tag, "USD")
         obs = [{"end": e, "val": v, "form": f, "fp": fp} for (e, v, f, fp) in CONCEPTS.get(tag, [])]
         return httpx.Response(200, json={"units": {unit: obs}})
     return httpx.Response(404)
@@ -74,6 +90,9 @@ async def test_latest_statements_assembles_two_periods():
     assert latest.revenue == 391035
     assert latest.net_income == 93736
     assert latest.total_assets == 364980
+    assert latest.current_assets == 152987
+    assert latest.current_liabilities == 176392
+    assert latest.shares_outstanding == 15116  # buyback vs 15550 prior
     assert latest.operating_cash_flow == 118254
     assert latest.eps == 6.11
     assert latest.source == "sec-edgar"

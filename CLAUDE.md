@@ -25,13 +25,14 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
-- `shared/trading-common`: 157 tests green, `ruff` + `mypy --strict` clean. Contracts present:
+- `shared/trading-common`: 160 tests green, `ruff` + `mypy --strict` clean. Contracts present:
   `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
   set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`, and the shared
   **`CostAwareFilter`** (moved out of strategy — a cross-cutting gate like `RiskEnvelope`).
   `SignalAggregatedEvent` carries `sector` (R8); `StrategyStatusChangedEvent` metrics are optional
-  (a revalidation-driven change has no 30d PF).
+  (a revalidation-driven change has no 30d PF). `FinancialStatements` carries balance-sheet detail
+  (`current_assets`/`current_liabilities`/`shares_outstanding`) for the full 9-signal Piotroski.
 - All 13 services functionally implemented (`/health` `/ready` `/metrics` green; no skeletons left).
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
   feature-engine only (`earnings_decay`, `cross_asset`). (`decay_monitor`+`cost_filter` now wired into
@@ -160,20 +161,22 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   1×`macro.regime_changed` in the `MACRO` stream). **risk-mgmt now subscribes to `RegimeChangedEvent`**,
   so the regime auto-drives the exposure caps (macro→risk loop closed).
 - `fundamental-data` (**serwis 9 — Direction #3, built from scratch**): SEC EDGAR annual fundamentals +
-  (partial) Piotroski F-Score. `core/piotroski.py` (`compute_f_score` — 7 of the classic 9 signals
-  computable from the `FinancialStatements` contract: 3 current-period profitability + 4 trend signals;
-  current-ratio Δ and share-issuance omitted, documented, until the schema carries balance-sheet detail;
-  each signal fails conservatively on missing/degenerate inputs), `core/edgar_client.py` (`EdgarClient` —
+  **full 9-signal Piotroski F-Score**. `core/piotroski.py` (`compute_f_score` — 3 current-period
+  profitability + 6 trend signals, incl. current-ratio Δ and no-dilution enabled by the extended
+  `FinancialStatements` (current assets/liabilities + shares outstanding, contracts-first);
+  each signal fails conservatively on missing/degenerate inputs — legacy statements without
+  balance-sheet detail cap at 7), `core/edgar_client.py` (`EdgarClient` —
   ticker→CIK via company_tickers.json, XBRL `companyconcept` per us-gaap tag → annual `FinancialStatements`;
   disabled + [] when no `SEC_USER_AGENT`), `core/service.py` (`FundamentalDataService.refresh` from EDGAR /
   `ingest` posted statements → score → store latest-per-symbol → publish `FundamentalsUpdatedEvent`).
   Routes `GET /fundamentals[/{symbol}]`, `POST /refresh/{symbol}`, `POST /statements`; real `/ready` (NATS);
   publisher + `ensure_stream(FUNDAMENTALS, ["fundamentals.>"])`. Full scaffold (compose port 8009, Helm
-  `fundamentalData` values entry). Revenue now has **tag fallbacks** (`Revenues` →
+  `fundamental-data` services entry). Revenue has **tag fallbacks** (`Revenues` →
   `RevenueFromContractWithCustomer[Ex/In]cludingAssessedTax` → `SalesRevenueNet`), merged per period
-  with earlier-tag priority — ASC-606 filers and tag-switchers both resolve. 30 tests; ruff + format +
-  mypy clean; live-verified on a real `nats-server` (ingest → `fundamentals.updated` in the
-  `FUNDAMENTALS` stream; F-score 7/7 on an improving firm).
+  with earlier-tag priority — ASC-606 filers and tag-switchers both resolve; new tags: `AssetsCurrent`,
+  `LiabilitiesCurrent`, `CommonStockSharesOutstanding` (+weighted-average share fallbacks). 33 tests;
+  ruff + format + mypy clean; live-verified on a real `nats-server` (ingest → `fundamentals.updated`
+  in the `FUNDAMENTALS` stream).
 - `company-classifier` (**serwis 11 — Direction #3, built from scratch**): `CompanyProfile` → investment
   style + model-stack routing (pure compute, no external API). `core/classifier.py` (`classify` — style
   scored from valuation/growth metrics: growth signals (rev/earnings growth, rich P/E, no dividend) vs
@@ -579,8 +582,19 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   13 Services (+postgres) + Ingress with 13 paths; asserted env/secret/probe/replica invariants
   with a YAML checker. `make helm-template` target unchanged and working.
 
-**Next:** extend
-`FinancialStatements` (current assets/liabilities + shares) → full 9-signal Piotroski; scheduled
+- 2026-07-07 — **Full 9-signal Piotroski** (contracts-first): `FinancialStatements` +
+  `current_assets`/`current_liabilities`/`shares_outstanding` (ge=0, optional — legacy statements
+  stay valid); `compute_f_score` adds `improving_current_ratio` (current-ratio Δ, degenerate
+  denominator → conservative fail) and `no_dilution` (shares ≤ prior; flat counts as no issuance);
+  `FScoreBreakdown.omitted` removed, `max_score` 7→9. EDGAR `TAG_MAP` += `AssetsCurrent`,
+  `LiabilitiesCurrent`, `CommonStockSharesOutstanding` (fallbacks: weighted-average basic/diluted
+  share tags; the candidate-merge machinery from the revenue fix reused as-is). Fixtures upgraded
+  (improving firm now 9/9 with buyback, deteriorating 0/9 with dilution; legacy-shape statements cap
+  at 7 — tested). Counts: shared 160 (+3), fundamental-data 33 (+3) → **all 14 suites green (780)**;
+  ruff + format + mypy clean. Event path unchanged (same ingest→score→publish flow already
+  live-verified), so no new NATS run needed.
+
+**Next:** scheduled
 triggers (backtest weekly revalidation, ml-pipeline daily drift, macro/fundamentals refresh);
 notification email/SMTP (and optionally alert on `strategy.status_changed`, now that it has a stream);
 MLflow registry; ml-pipeline training/inference (PyTorch) — its per-symbol signals activate the "ml"

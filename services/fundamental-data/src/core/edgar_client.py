@@ -30,6 +30,13 @@ TAG_MAP: dict[str, tuple[tuple[str, str], ...]] = {
     "net_income": (("NetIncomeLoss", "USD"),),
     "total_assets": (("Assets", "USD"),),
     "total_liabilities": (("Liabilities", "USD"),),
+    "current_assets": (("AssetsCurrent", "USD"),),
+    "current_liabilities": (("LiabilitiesCurrent", "USD"),),
+    "shares_outstanding": (
+        ("CommonStockSharesOutstanding", "shares"),
+        ("WeightedAverageNumberOfSharesOutstandingBasic", "shares"),
+        ("WeightedAverageNumberOfDilutedSharesOutstanding", "shares"),
+    ),
     "operating_cash_flow": (("NetCashProvidedByUsedInOperatingActivities", "USD"),),
     "eps": (("EarningsPerShareBasic", "USD/shares"),),
 }
@@ -142,6 +149,9 @@ class EdgarClient:
                     net_income=by_field["net_income"].get(period_end),
                     total_assets=by_field["total_assets"].get(period_end),
                     total_liabilities=by_field["total_liabilities"].get(period_end),
+                    current_assets=by_field["current_assets"].get(period_end),
+                    current_liabilities=by_field["current_liabilities"].get(period_end),
+                    shares_outstanding=by_field["shares_outstanding"].get(period_end),
                     operating_cash_flow=by_field["operating_cash_flow"].get(period_end),
                     eps=by_field["eps"].get(period_end),
                     source="sec-edgar",

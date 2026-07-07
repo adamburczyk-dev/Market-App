@@ -17,6 +17,9 @@ def stmt(
     total_assets: float | None = None,
     total_liabilities: float | None = None,
     operating_cash_flow: float | None = None,
+    current_assets: float | None = None,
+    current_liabilities: float | None = None,
+    shares_outstanding: float | None = None,
     symbol: str = "AAPL",
 ) -> FinancialStatements:
     return FinancialStatements(
@@ -28,20 +31,25 @@ def stmt(
         total_assets=total_assets,
         total_liabilities=total_liabilities,
         operating_cash_flow=operating_cash_flow,
+        current_assets=current_assets,
+        current_liabilities=current_liabilities,
+        shares_outstanding=shares_outstanding,
     )
 
 
 def improving_pair() -> tuple[FinancialStatements, FinancialStatements]:
-    """A clearly-improving, profitable company → all 7 signals pass (score 7)."""
-    current = stmt(date(2024, 12, 31), 1200, 200, 1000, 400, 250)
-    prior = stmt(date(2023, 12, 31), 1000, 100, 1000, 500, 120)
+    """A clearly-improving, profitable company → all 9 signals pass (score 9)."""
+    # current ratio 2.5 vs 1.6; buyback 95 vs 100 shares
+    current = stmt(date(2024, 12, 31), 1200, 200, 1000, 400, 250, 500, 200, 95)
+    prior = stmt(date(2023, 12, 31), 1000, 100, 1000, 500, 120, 400, 250, 100)
     return current, prior
 
 
 def deteriorating_pair() -> tuple[FinancialStatements, FinancialStatements]:
-    """A loss-making, deteriorating company → all 7 signals fail (score 0)."""
-    current = stmt(date(2024, 12, 31), 800, -50, 1000, 600, -60)
-    prior = stmt(date(2023, 12, 31), 1000, 100, 1000, 400, 120)
+    """A loss-making, deteriorating company → all 9 signals fail (score 0)."""
+    # current ratio 1.0 vs 1.6; dilution 110 vs 100 shares
+    current = stmt(date(2024, 12, 31), 800, -50, 1000, 600, -60, 300, 300, 110)
+    prior = stmt(date(2023, 12, 31), 1000, 100, 1000, 400, 120, 400, 250, 100)
     return current, prior
 
 

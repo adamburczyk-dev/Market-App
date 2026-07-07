@@ -130,6 +130,10 @@ class FinancialStatements(BaseModel):
     net_income: float | None = None
     total_assets: float | None = Field(default=None, ge=0)
     total_liabilities: float | None = Field(default=None, ge=0)
+    # balance-sheet detail for the liquidity / dilution Piotroski signals
+    current_assets: float | None = Field(default=None, ge=0)
+    current_liabilities: float | None = Field(default=None, ge=0)
+    shares_outstanding: float | None = Field(default=None, ge=0)
     operating_cash_flow: float | None = None
     eps: float | None = None
     piotroski_f_score: int | None = Field(default=None, ge=0, le=9)

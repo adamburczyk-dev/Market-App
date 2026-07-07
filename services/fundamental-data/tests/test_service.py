@@ -14,8 +14,8 @@ async def test_ingest_scores_and_publishes():
     service = build_service(publisher=publisher)
     current, prior = improving_pair()
     scored, breakdown = await service.ingest(current, prior)
-    assert scored.piotroski_f_score == 7
-    assert breakdown.score == 7
+    assert scored.piotroski_f_score == 9
+    assert breakdown.score == 9
     assert len(publisher.published) == 1
     event = publisher.published[0]
     assert event.event_type == EventType.FUNDAMENTALS_UPDATED
@@ -32,7 +32,7 @@ async def test_ingest_stores_latest_by_symbol():
     await service.ingest(current, prior)
     record = service.get("AAPL")
     assert record is not None
-    assert record[0].piotroski_f_score == 7
+    assert record[0].piotroski_f_score == 9
     assert service.symbols() == ["AAPL"]
 
 
@@ -52,7 +52,7 @@ async def test_refresh_uses_fetcher_statements():
     service = build_service(fetcher=fetcher, publisher=publisher)
     record = await service.refresh("AAPL")
     assert record is not None
-    assert record[0].piotroski_f_score == 7
+    assert record[0].piotroski_f_score == 9
     assert publisher.published[0].event_type == EventType.FUNDAMENTALS_UPDATED
 
 

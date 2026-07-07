@@ -29,13 +29,13 @@ async def test_ingest_then_get(wired: tuple[AsyncClient, FundamentalDataService]
     resp = await client.post("/api/v1/fundamental-data/statements", json=ingest_body())
     assert resp.status_code == 200
     body = resp.json()
-    assert body["f_score"] == 7
-    assert body["f_score_breakdown"]["max_score"] == 7
-    assert body["statement"]["piotroski_f_score"] == 7
+    assert body["f_score"] == 9
+    assert body["f_score_breakdown"]["max_score"] == 9
+    assert body["statement"]["piotroski_f_score"] == 9
 
     got = await client.get("/api/v1/fundamental-data/fundamentals/AAPL")
     assert got.status_code == 200
-    assert got.json()["f_score"] == 7
+    assert got.json()["f_score"] == 9
 
     listing = await client.get("/api/v1/fundamental-data/fundamentals")
     assert listing.json()["symbols"] == ["AAPL"]

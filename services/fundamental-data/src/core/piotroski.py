@@ -1,19 +1,14 @@
 """Piotroski F-Score from FinancialStatements.
 
-The classic F-Score (Piotroski 2000) sums 9 binary signals. Seven are computable
-from the ``FinancialStatements`` contract (revenue, net income, total assets,
-total liabilities, operating cash flow). Two require balance-sheet detail the
-schema does not carry yet:
-
-- current ratio Δ (needs current assets / current liabilities)
-- share issuance (needs shares outstanding)
-
-Those are omitted (documented) until FinancialStatements is extended — so the
-score returned here is 0–7. Each signal is conservative: a missing or degenerate
-input (None, zero denominator) fails that signal rather than raising.
+The classic F-Score (Piotroski 2000) sums 9 binary signals; all are computable
+now that ``FinancialStatements`` carries balance-sheet detail (current assets /
+current liabilities for the liquidity trend, shares outstanding for dilution).
+Each signal is conservative: a missing or degenerate input (None, zero
+denominator) fails that signal rather than raising — so a statement without
+the balance-sheet detail simply cannot score above 7.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from trading_common.schemas import FinancialStatements
 
@@ -34,13 +29,12 @@ class FScoreBreakdown:
     improving_roa: bool = False
     # leverage / liquidity trend
     decreasing_leverage: bool = False
+    improving_current_ratio: bool = False
+    # dilution
+    no_dilution: bool = False  # shares outstanding did not grow
     # operating efficiency trend
     improving_net_margin: bool = False
     improving_asset_turnover: bool = False
-
-    omitted: tuple[str, ...] = field(
-        default=("current_ratio_change", "share_issuance"),
-    )
 
     @property
     def score(self) -> int:
@@ -51,6 +45,8 @@ class FScoreBreakdown:
                 self.quality_of_earnings,
                 self.improving_roa,
                 self.decreasing_leverage,
+                self.improving_current_ratio,
+                self.no_dilution,
                 self.improving_net_margin,
                 self.improving_asset_turnover,
             )
@@ -63,11 +59,12 @@ class FScoreBreakdown:
             "quality_of_earnings": self.quality_of_earnings,
             "improving_roa": self.improving_roa,
             "decreasing_leverage": self.decreasing_leverage,
+            "improving_current_ratio": self.improving_current_ratio,
+            "no_dilution": self.no_dilution,
             "improving_net_margin": self.improving_net_margin,
             "improving_asset_turnover": self.improving_asset_turnover,
-            "omitted": list(self.omitted),
             "score": self.score,
-            "max_score": 7,
+            "max_score": 9,
         }
 
 
@@ -75,7 +72,7 @@ def compute_f_score(
     current: FinancialStatements,
     prior: FinancialStatements | None = None,
 ) -> FScoreBreakdown:
-    """Compute the (partial) Piotroski F-Score for ``current`` vs ``prior``.
+    """Compute the Piotroski F-Score (0-9) for ``current`` vs ``prior``.
 
     Without a ``prior`` period, only the three current-period signals can fire.
     """
@@ -102,6 +99,14 @@ def compute_f_score(
     lev_prev = _ratio(prior.total_liabilities, prior.total_assets)
     if lev_now is not None and lev_prev is not None:
         b.decreasing_leverage = lev_now < lev_prev
+
+    cr_now = _ratio(current.current_assets, current.current_liabilities)
+    cr_prev = _ratio(prior.current_assets, prior.current_liabilities)
+    if cr_now is not None and cr_prev is not None:
+        b.improving_current_ratio = cr_now > cr_prev
+
+    if current.shares_outstanding is not None and prior.shares_outstanding is not None:
+        b.no_dilution = current.shares_outstanding <= prior.shares_outstanding
 
     margin_now = _ratio(current.net_income, current.revenue)
     margin_prev = _ratio(prior.net_income, prior.revenue)

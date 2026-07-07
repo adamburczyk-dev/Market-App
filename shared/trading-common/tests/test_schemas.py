@@ -203,6 +203,31 @@ class TestFinancialStatements:
                 symbol="X", period_end=date(2024, 1, 1), fiscal_period="FY", piotroski_f_score=10
             )
 
+    def test_balance_sheet_detail_for_full_piotroski(self):
+        fs = FinancialStatements(
+            symbol="AAPL",
+            period_end=date(2024, 9, 28),
+            fiscal_period="FY",
+            current_assets=152_987.0,
+            current_liabilities=176_392.0,
+            shares_outstanding=15_116.0,
+        )
+        assert fs.current_assets == 152_987.0
+        assert fs.current_liabilities == 176_392.0
+        assert fs.shares_outstanding == 15_116.0
+
+    def test_balance_sheet_detail_defaults_none(self):
+        fs = FinancialStatements(symbol="X", period_end=date(2024, 1, 1), fiscal_period="FY")
+        assert fs.current_assets is None
+        assert fs.current_liabilities is None
+        assert fs.shares_outstanding is None
+
+    def test_negative_shares_outstanding_raises(self):
+        with pytest.raises(ValueError):
+            FinancialStatements(
+                symbol="X", period_end=date(2024, 1, 1), fiscal_period="FY", shares_outstanding=-1.0
+            )
+
 
 class TestMacroSnapshot:
     def test_minimal(self):
