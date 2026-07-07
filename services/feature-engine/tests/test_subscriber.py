@@ -1,8 +1,8 @@
-"""Testy obsługi wiadomości w MarketDataSubscriber (ack / term / nak)."""
+"""Testy obsługi wiadomości w EventSubscriber (ack / term / nak)."""
 
 import pytest
 
-from src.events.subscriber import MarketDataSubscriber
+from src.events.subscriber import EventSubscriber
 
 
 class _FakeMsg:
@@ -22,8 +22,8 @@ class _FakeMsg:
         self.naked = True
 
 
-def _subscriber(handler) -> MarketDataSubscriber:  # type: ignore[no-untyped-def]
-    return MarketDataSubscriber(js=None, subject="s", durable="d", handler=handler)
+def _subscriber(handler) -> EventSubscriber:  # type: ignore[no-untyped-def]
+    return EventSubscriber(js=None, subject="s", durable="d", handler=handler)
 
 
 @pytest.mark.asyncio

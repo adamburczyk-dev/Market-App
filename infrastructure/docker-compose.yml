@@ -167,6 +167,8 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
       NATS_URL: nats://nats:4222
       MARKET_DATA_URL: http://market-data:8000
+      # Tier-2 attribute enrichment (fundamentals announced by fundamentals.updated)
+      FUNDAMENTAL_DATA_URL: http://fundamental-data:8000
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     ports:
       - "8002:8000"

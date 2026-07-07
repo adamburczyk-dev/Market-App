@@ -18,9 +18,12 @@ def _fv(symbol: str, **features: float) -> FeatureVector:
 
 
 def test_ranks_lowest_to_highest():
-    ranked = {v.symbol: v for v in cross_sectional_rank(
-        [_fv("A", momentum=0.1), _fv("B", momentum=0.5), _fv("C", momentum=0.9)]
-    )}
+    ranked = {
+        v.symbol: v
+        for v in cross_sectional_rank(
+            [_fv("A", momentum=0.1), _fv("B", momentum=0.5), _fv("C", momentum=0.9)]
+        )
+    }
     assert ranked["A"].features["momentum"] == 0.0
     assert ranked["B"].features["momentum"] == 0.5
     assert ranked["C"].features["momentum"] == 1.0
@@ -34,18 +37,22 @@ def test_single_symbol_is_neutral():
 
 
 def test_ties_share_mean_rank():
-    r = {v.symbol: v.features["x"] for v in cross_sectional_rank(
-        [_fv("A", x=1.0), _fv("B", x=1.0), _fv("C", x=2.0)]
-    )}
+    r = {
+        v.symbol: v.features["x"]
+        for v in cross_sectional_rank([_fv("A", x=1.0), _fv("B", x=1.0), _fv("C", x=2.0)])
+    }
     assert r["A"] == 0.25  # A,B tie at the bottom (mean of ranks 0,1 → 0.5/2)
     assert r["B"] == 0.25
     assert r["C"] == 1.0
 
 
 def test_per_feature_independent_and_missing_keys():
-    r = {v.symbol: v.features for v in cross_sectional_rank(
-        [_fv("A", x=1.0, y=9.0), _fv("B", x=2.0)]  # B lacks y
-    )}
+    r = {
+        v.symbol: v.features
+        for v in cross_sectional_rank(
+            [_fv("A", x=1.0, y=9.0), _fv("B", x=2.0)]  # B lacks y
+        )
+    }
     assert r["A"]["x"] == 0.0
     assert r["B"]["x"] == 1.0
     assert r["A"]["y"] == 0.5  # only A has y -> single-value -> neutral

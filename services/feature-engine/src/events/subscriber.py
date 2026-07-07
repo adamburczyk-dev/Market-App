@@ -1,8 +1,11 @@
-"""Subscribe to MarketDataUpdatedEvent from JetStream and dispatch to a handler.
+"""Durable JetStream subscriptions dispatching to async handlers.
 
-Poison-message safe: a malformed payload is terminated (no redelivery), a
-transient failure (e.g. market-data temporarily down) is NAK'd and redelivered
-up to ``max_deliver`` times.
+Used for the three source subjects feature-engine consumes:
+``market_data.updated`` (Tier-1 technical computation), ``fundamentals.updated``
+and ``company.classified`` (Tier-2 attribute enrichment). Poison-message safe:
+a malformed payload is terminated (no redelivery), a transient failure (e.g.
+an upstream temporarily down) is NAK'd and redelivered up to ``max_deliver``
+times.
 """
 
 from collections.abc import Awaitable, Callable
@@ -18,8 +21,8 @@ logger = structlog.get_logger()
 Handler = Callable[[bytes], Awaitable[None]]
 
 
-class MarketDataSubscriber:
-    """Durable push subscription to a market-data subject."""
+class EventSubscriber:
+    """Durable push subscription to a JetStream subject."""
 
     def __init__(
         self,
@@ -44,9 +47,7 @@ class MarketDataSubscriber:
             manual_ack=True,
             config=ConsumerConfig(max_deliver=self._max_deliver),
         )
-        logger.info(
-            "Subscribed to market-data events", subject=self._subject, durable=self._durable
-        )
+        logger.info("Subscribed to events", subject=self._subject, durable=self._durable)
 
     async def _on_message(self, msg) -> None:  # type: ignore[no-untyped-def]
         try:

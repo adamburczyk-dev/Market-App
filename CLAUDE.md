@@ -48,7 +48,16 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   computation from OHLCV (numpy; raw per-symbol values), HTTP query to market-data,
   NATS **JetStream** subscriber on `market_data.updated` → compute → publish `FeaturesReadyEvent`,
   FastAPI routes (`POST /compute/{symbol}`, `GET /features/{symbol}`, `GET /features`,
-  `GET /ranked`). 78 tests green; verified end-to-end on a live nats-server.
+  `GET /ranked`). **Tier-2 attribute enrichment wired**: durable subscribers on
+  `fundamentals.updated` (→ HTTP query back to fundamental-data → `f_score` +
+  `fund_net_margin`/`fund_roa`/`fund_leverage`) and `company.classified` (→ `style_growth`/
+  `style_value` encoding) fill a per-symbol `SymbolAttributeStore` (Redis-backed, in-memory
+  fallback), merged into vectors at **read time** so `/features` and `/ranked` expose them
+  (incl. cross-sectional f_score percentile). Attribute updates deliberately do NOT publish
+  `features.ready` (no strategy re-evaluation on a fundamentals refresh — the ML tier reads the
+  merged vectors). 93 tests green; live-verified end-to-end (real uvicorn fundamental-data +
+  company-classifier: ingest → f_score 7 merged; classify → growth encoding; 2-symbol universe
+  ranks f_score 1.0/0.0).
 - `strategy` is now **functionally implemented** (Direction #2): JetStream subscriber on
   `features.ready` → fetch ranked+raw features from feature-engine (HTTP) → **momentum-on-ranks**
   rule → `TradingSignal` (vol-agnostic % stop) → **`RiskEnvelope`** (SL-enforcing; step-7 sizing
@@ -534,8 +543,23 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   aggregates carry `sector="Information Technology"` → **crisis blocks the BUY by sector cap**,
   slowdown re-agg stays 1-component (R10), expansion regime → sized `order.requested` (50 szt.).
 
-**Next:** the 2026-07-05 review is fully closed (R1–R11 + P3s). Then: **feature-engine consumes
-`FundamentalsUpdatedEvent` / `CompanyClassifiedEvent`** so fundamentals + style feed ML features; a
+- 2026-07-07 — **feature-engine Tier-2 enrichment** (first "Next" item): consumes
+  `fundamentals.updated` (durable `feature-engine-fundamentals`; event announces, payload queried
+  back via new `HttpFundamentalsClient` — 404→None/skip, transport error→NAK/redeliver) and
+  `company.classified` (durable `feature-engine-company`; style straight from the event).
+  New `core/attributes.py` (`SymbolAttributeStore`: per-symbol dict, `put` merges so the two
+  handlers' disjoint keys coexist; InMemory + Redis backends) and `core/enrichment.py`
+  (`fundamental_features`: f_score + net-margin/ROA/leverage, conservative on missing/zero inputs;
+  `style_features`: growth (1,0) / value (0,1) / blend (0.5,0.5)). Attributes merged into vectors at
+  **read time** (`get_features`/`ranked_universe`) → `/ranked` now ranks `f_score` cross-sectionally.
+  Deliberate: attribute updates do NOT publish `features.ready` (no strategy re-evaluation on a
+  fundamentals refresh). Renamed generic `MarketDataSubscriber`→`EventSubscriber`; `ensure_stream`
+  FUNDAMENTALS+COMPANY; compose+Helm env `FUNDAMENTAL_DATA_URL`. feature-engine 93 tests (+15);
+  ruff + format + mypy clean; **live-verified** (real uvicorn fundamental-data + company-classifier
+  on one nats-server: POST /statements → f_score 7 merged with technicals; POST /classify → growth
+  encoding; MSFT weak firm → f_score 1; ranked percentiles AAPL 1.0 / MSFT 0.0).
+
+**Next:** the 2026-07-05 review is fully closed (R1–R11 + P3s); feature-engine Tier-2 enrichment done. Then: a
 **generic Helm Deployment template** for the 13 untemplated services (top infra item); extend
 `FinancialStatements` (current assets/liabilities + shares) → full 9-signal Piotroski; scheduled
 triggers (backtest weekly revalidation, ml-pipeline daily drift, macro/fundamentals refresh);

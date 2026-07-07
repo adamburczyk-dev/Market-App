@@ -11,6 +11,8 @@ class Settings(BaseSettings):
 
     # Where to query OHLCV (HTTP, per architecture: events in, queries over HTTP)
     MARKET_DATA_URL: str = "http://market-data:8000"
+    # Where to query fundamentals announced by fundamentals.updated events
+    FUNDAMENTAL_DATA_URL: str = "http://fundamental-data:8000"
 
     # NATS JetStream — source (subscribe) + own stream (publish)
     NATS_SOURCE_STREAM: str = "MARKET_DATA"
@@ -19,6 +21,13 @@ class Settings(BaseSettings):
     NATS_MAX_DELIVER: int = 5
     NATS_FEATURES_STREAM: str = "FEATURES"
     NATS_FEATURES_SUBJECTS: str = "features.>"
+    # Tier-2 attribute sources (fundamentals + company style)
+    NATS_FUNDAMENTALS_STREAM: str = "FUNDAMENTALS"
+    NATS_FUNDAMENTALS_SUBJECT: str = "fundamentals.updated"
+    NATS_FUNDAMENTALS_DURABLE: str = "feature-engine-fundamentals"
+    NATS_COMPANY_STREAM: str = "COMPANY"
+    NATS_COMPANY_SUBJECT: str = "company.classified"
+    NATS_COMPANY_DURABLE: str = "feature-engine-company"
 
     # Feature computation
     FEATURE_LOOKBACK: int = 250

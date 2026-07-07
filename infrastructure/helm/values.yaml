@@ -38,6 +38,8 @@ featureEngine:
       cpu: "1000m"
   env:
     LOG_LEVEL: INFO
+    # Tier-2 attribute enrichment (fundamentals announced by fundamentals.updated)
+    FUNDAMENTAL_DATA_URL: http://fundamental-data:8000
 
 strategy:
   enabled: true
