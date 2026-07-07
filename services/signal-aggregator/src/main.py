@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         publisher,
         buy_threshold=settings.BUY_THRESHOLD,
         base_edge_bps=settings.BASE_EDGE_BPS,
+        signal_ttl_s=settings.SIGNAL_TTL_SECONDS,
     )
     app.state.service = service
 

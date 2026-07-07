@@ -1,10 +1,17 @@
-"""RiskMgmtService — size signals into orders; manage the circuit breaker."""
+"""RiskMgmtService — size aggregated signals into orders; manage the circuit breaker.
+
+The NATS path consumes ``SignalAggregatedEvent`` (the signal-aggregator's decision
+— strategy + macro-regime combined); the manual ``POST /signal`` route still accepts
+a raw ``SignalGeneratedEvent`` for ops/testing. Both funnel into the same
+risk-check → size → publish pipeline.
+"""
 
 import structlog
 from trading_common.events import (
     CircuitBreakerTriggeredEvent,
     OrderRequestedEvent,
     RegimeChangedEvent,
+    SignalAggregatedEvent,
     SignalGeneratedEvent,
 )
 
@@ -55,9 +62,11 @@ class RiskMgmtService:
     def breaker(self) -> CircuitBreaker:
         return self._breaker
 
-    async def handle_signal_event(self, data: bytes) -> None:
-        signal = SignalGeneratedEvent.model_validate_json(data)
-        await self.process_signal(signal)
+    # --- event handlers (NATS-driven) ---
+
+    async def handle_aggregated_event(self, data: bytes) -> None:
+        event = SignalAggregatedEvent.model_validate_json(data)
+        await self.process_aggregated(event)
 
     async def handle_regime_changed_event(self, data: bytes) -> None:
         """Apply a macro regime change → drives regime-aware exposure caps."""
@@ -65,37 +74,71 @@ class RiskMgmtService:
         await self.update_portfolio(regime=event.new_regime)
         logger.info("Applied regime change", old=event.old_regime, new=event.new_regime)
 
+    # --- signal processing ---
+
+    async def process_aggregated(self, event: SignalAggregatedEvent) -> OrderRequestedEvent | None:
+        """Size the aggregator's decision into a risk-approved order, or block it."""
+        if event.final_signal not in ("BUY", "SELL"):
+            return None
+        return await self._risk_check_and_order(
+            symbol=event.symbol,
+            side=event.final_signal,
+            price=event.price,
+            stop_loss=event.stop_loss,
+            take_profit=event.take_profit,
+            strategy_name=event.strategy_name or "aggregated",
+        )
+
     async def process_signal(self, signal: SignalGeneratedEvent) -> OrderRequestedEvent | None:
-        """Size a signal into a risk-approved order, or block it."""
+        """Size a raw strategy signal (manual POST /signal path)."""
+        if signal.signal not in ("BUY", "SELL"):
+            return None
+        return await self._risk_check_and_order(
+            symbol=signal.symbol,
+            side=signal.signal,
+            price=signal.price,
+            stop_loss=signal.stop_loss,
+            take_profit=signal.take_profit,
+            strategy_name=signal.strategy_name,
+        )
+
+    async def _risk_check_and_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        price: float | None,
+        stop_loss: float | None,
+        take_profit: float | None,
+        strategy_name: str,
+    ) -> OrderRequestedEvent | None:
         if self._breaker.is_tripped:
             logger.warning(
                 "Circuit breaker tripped — order blocked",
-                symbol=signal.symbol,
+                symbol=symbol,
                 level=self._breaker.level,
             )
             return None
-        if signal.signal not in ("BUY", "SELL"):
-            return None
-        if signal.stop_loss is None:
-            logger.warning("Signal without stop_loss — blocked", symbol=signal.symbol)
+        if price is None or stop_loss is None:
+            logger.warning("Signal without price/stop_loss — blocked", symbol=symbol, side=side)
             return None
 
-        shares, reason = self._sizer.size(signal.price, signal.stop_loss, self._portfolio)
+        shares, reason = self._sizer.size(price, stop_loss, self._portfolio)
         if shares <= 0:
-            logger.info("Signal blocked by sizing/regime", symbol=signal.symbol, reason=reason)
+            logger.info("Signal blocked by sizing/regime", symbol=symbol, reason=reason)
             return None
 
         order = OrderRequestedEvent(
-            symbol=signal.symbol,
-            side=signal.signal,
+            symbol=symbol,
+            side=side,
             quantity=float(shares),
-            price=signal.price,
-            strategy_name=signal.strategy_name,
-            stop_loss=signal.stop_loss,
-            take_profit=signal.take_profit,
+            price=price,
+            strategy_name=strategy_name,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
         )
         await self._publisher.publish(order)
-        logger.info("Order requested", symbol=signal.symbol, side=signal.signal, quantity=shares)
+        logger.info("Order requested", symbol=symbol, side=side, quantity=shares)
         return order
 
     async def update_portfolio(

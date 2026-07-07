@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 nats_client.jetstream(),
                 settings.NATS_SOURCE_SUBJECT,
                 settings.NATS_DURABLE,
-                service.handle_signal_event,
+                service.handle_aggregated_event,
                 max_deliver=settings.NATS_MAX_DELIVER,
             )
             await signal_sub.start()

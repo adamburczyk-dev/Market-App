@@ -23,6 +23,11 @@ class AggregateRequest(BaseModel):
     components: list[ComponentBody]
     expected_return_bps: float | None = None
     market_cap_tier: str = "large"
+    # optional order-driving context, attached to an actionable aggregate
+    price: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    strategy_name: str | None = None
 
 
 class OutcomeRequest(BaseModel):
@@ -51,6 +56,10 @@ async def aggregate(
         components,
         expected_return_bps=req.expected_return_bps,
         market_cap_tier=req.market_cap_tier,
+        price=req.price,
+        stop_loss=req.stop_loss,
+        take_profit=req.take_profit,
+        strategy_name=req.strategy_name,
     )
     return {
         "symbol": result.symbol,
@@ -60,6 +69,10 @@ async def aggregate(
         "components_count": result.components_count,
         "weights": result.weights,
         "cost_filtered": result.cost_filtered,
+        "price": result.price,
+        "stop_loss": result.stop_loss,
+        "take_profit": result.take_profit,
+        "strategy_name": result.strategy_name,
     }
 
 

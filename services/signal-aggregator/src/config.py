@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     SIGNAL_SOURCES: str = "strategy,ml,macro"
     BUY_THRESHOLD: float = 0.2  # weighted-score magnitude for BUY/SELL
     BASE_EDGE_BPS: float = 200.0  # confidence → expected edge for the cost gate
+    SIGNAL_TTL_SECONDS: float = 86_400.0  # buffered strategy signals expire after 1 day
 
     # Adaptive weighting
     WEIGHT_LOOKBACK_DAYS: int = 60

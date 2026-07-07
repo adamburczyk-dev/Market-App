@@ -453,6 +453,28 @@ class TestMlExtensionEvents:
         )
         assert e.subject() == "signal.aggregated"
         assert e.source_service == "signal-aggregator"
+        # levels are optional (a HOLD or a legacy aggregate carries none)
+        assert e.price is None
+        assert e.stop_loss is None
+        assert e.take_profit is None
+        assert e.strategy_name is None
+
+    def test_signal_aggregated_carries_order_context(self):
+        e = SignalAggregatedEvent(
+            symbol="AAPL",
+            final_signal="BUY",
+            confidence=0.82,
+            components_count=2,
+            price=100.0,
+            stop_loss=95.0,
+            take_profit=110.0,
+            strategy_name="momentum_rank",
+        )
+        restored = SignalAggregatedEvent.model_validate(e.model_dump())
+        assert restored.price == 100.0
+        assert restored.stop_loss == 95.0
+        assert restored.take_profit == 110.0
+        assert restored.strategy_name == "momentum_rank"
 
     def test_serialization_roundtrip(self):
         e = SignalAggregatedEvent(

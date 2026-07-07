@@ -271,9 +271,22 @@ class FeaturesReadyEvent(BaseEvent):
 
 
 class SignalAggregatedEvent(BaseEvent):
+    """Multi-source aggregate decision — the order-driving signal (risk-mgmt consumes it).
+
+    ``price``/``stop_loss``/``take_profit``/``strategy_name`` are carried from the
+    underlying strategy component so risk-mgmt can size the order and execution can
+    place protective exits. They are present on actionable (BUY/SELL) aggregates;
+    a HOLD carries no levels. risk-mgmt blocks BUY/SELL without price+stop_loss
+    (defense-in-depth for the "no order without stop_loss" rule).
+    """
+
     event_type: EventType = EventType.SIGNAL_AGGREGATED
     symbol: str
     final_signal: str  # "BUY" | "SELL" | "HOLD"
     confidence: float
     components_count: int
+    price: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    strategy_name: str | None = None
     source_service: str = "signal-aggregator"

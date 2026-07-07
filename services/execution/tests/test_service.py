@@ -69,15 +69,16 @@ async def test_handle_order_event_fills():
 async def test_market_data_event_remarks_held_position():
     risk = NullRiskClient()
     broker = PaperBroker(initial_cash=100_000.0)
-    service = ExecutionService(broker, NullPublisher(), risk, FakeMarketDataClient(close=90.0))
-    await service.execute(order())  # BUY 50 AAPL @100
+    # 96 is above the order's stop_loss (95) → a pure re-mark, no protective exit
+    service = ExecutionService(broker, NullPublisher(), risk, FakeMarketDataClient(close=96.0))
+    await service.execute(order())  # BUY 50 AAPL @100, SL 95 / TP 110
     risk.pushed.clear()
 
     event = MarketDataUpdatedEvent(symbol="AAPL", interval="1d", rows_count=1)
     await service.handle_market_data_event(event.model_dump_json().encode())
 
-    assert broker.positions()["AAPL"]["last_price"] == 90.0
-    assert broker.equity == 99_500.0  # unrealized loss
+    assert broker.positions()["AAPL"]["last_price"] == 96.0
+    assert broker.equity == 99_800.0  # unrealized loss
     assert len(risk.pushed) == 1
     assert risk.pushed[0]["drawdown_pct"] > 0
 

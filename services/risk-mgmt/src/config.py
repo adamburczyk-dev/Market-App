@@ -9,10 +9,13 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str | None = None
     NATS_URL: str = "nats://localhost:4222"
 
-    # NATS JetStream — source (signals) + own streams (orders + risk events)
+    # NATS JetStream — source (aggregated signals) + own streams (orders + risk events).
+    # risk-mgmt consumes the signal-aggregator's decision, not raw strategy signals
+    # (R1a: the aggregator is the decision node). New durable name — the old
+    # "risk-mgmt" consumer was filtered on signal.generated and cannot be rebound.
     NATS_SOURCE_STREAM: str = "SIGNALS"
-    NATS_SOURCE_SUBJECT: str = "signal.generated"
-    NATS_DURABLE: str = "risk-mgmt"
+    NATS_SOURCE_SUBJECT: str = "signal.aggregated"
+    NATS_DURABLE: str = "risk-mgmt-aggregated"
     NATS_MAX_DELIVER: int = 5
     NATS_ORDERS_STREAM: str = "ORDERS"
     NATS_ORDERS_SUBJECTS: str = "order.>"

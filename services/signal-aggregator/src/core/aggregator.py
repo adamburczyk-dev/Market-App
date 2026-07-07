@@ -44,6 +44,11 @@ class AggregationResult:
     components_count: int
     weights: dict[str, float] = field(default_factory=dict)
     cost_filtered: bool = False
+    # order-driving context, attached when the aggregate is actionable (BUY/SELL)
+    price: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    strategy_name: str | None = None
 
 
 def _signed(component: SignalComponent) -> float:

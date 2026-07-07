@@ -72,15 +72,63 @@ async def test_update_portfolio_trips_and_publishes_breaker():
     assert event in publisher.published
 
 
+def aggregated(
+    side: str = "BUY",
+    price: float | None = 100.0,
+    stop_loss: float | None = 95.0,
+    strategy_name: str | None = "momentum_rank",
+):
+    from trading_common.events import SignalAggregatedEvent
+
+    return SignalAggregatedEvent(
+        symbol="AAPL",
+        final_signal=side,
+        confidence=0.8,
+        components_count=2,
+        price=price,
+        stop_loss=stop_loss,
+        take_profit=110.0,
+        strategy_name=strategy_name,
+    )
+
+
 @pytest.mark.asyncio
-async def test_handle_signal_event_publishes_order():
+async def test_handle_aggregated_event_publishes_order():
     from src.events.publisher import NullPublisher
 
     publisher = NullPublisher()
     service = build_service(publisher=publisher)
-    await service.handle_signal_event(signal().model_dump_json().encode())
+    await service.handle_aggregated_event(aggregated().model_dump_json().encode())
     assert len(publisher.published) == 1
-    assert publisher.published[0].event_type == EventType.ORDER_REQUESTED
+    order = publisher.published[0]
+    assert order.event_type == EventType.ORDER_REQUESTED
+    assert order.stop_loss == 95.0
+    assert order.strategy_name == "momentum_rank"
+
+
+@pytest.mark.asyncio
+async def test_aggregated_hold_produces_no_order():
+    service = build_service()
+    assert await service.process_aggregated(aggregated(side="HOLD")) is None
+
+
+@pytest.mark.asyncio
+async def test_aggregated_without_levels_blocked():
+    # defense-in-depth: an actionable aggregate missing price/SL cannot become an order
+    service = build_service()
+    assert await service.process_aggregated(aggregated(price=None)) is None
+    assert await service.process_aggregated(aggregated(stop_loss=None)) is None
+
+
+@pytest.mark.asyncio
+async def test_aggregated_without_strategy_name_defaults():
+    from src.events.publisher import NullPublisher
+
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    order = await service.process_aggregated(aggregated(strategy_name=None))
+    assert order is not None
+    assert order.strategy_name == "aggregated"
 
 
 def regime_event(old: str = "expansion", new: str = "crisis"):  # type: ignore[no-untyped-def]

@@ -120,3 +120,68 @@ async def test_new_signal_replaces_previous_component():
     # latest-per-source wins: second aggregation reflects the SELL, not a mix
     assert publisher.published[-1].final_signal == "SELL"
     assert publisher.published[-1].components_count == 1
+
+
+@pytest.mark.asyncio
+async def test_actionable_aggregate_carries_order_context():
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    await service.handle_signal_generated(signal_event().model_dump_json().encode())
+    event = publisher.published[-1]
+    assert event.final_signal == "BUY"
+    assert event.price == 100.0
+    assert event.stop_loss == 95.0
+    assert event.take_profit == 110.0
+    assert event.strategy_name == "momentum_rank"
+
+
+@pytest.mark.asyncio
+async def test_hold_aggregate_carries_no_levels():
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    await service.handle_regime_changed(regime_event(new="crisis").model_dump_json().encode())
+    await service.handle_signal_generated(signal_event(confidence=0.9).model_dump_json().encode())
+    event = publisher.published[-1]
+    assert event.final_signal == "HOLD"  # crisis bias dampens the BUY
+    assert event.price is None
+    assert event.stop_loss is None
+    assert event.take_profit is None
+
+
+class FakeClock:
+    def __init__(self, start):
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.mark.asyncio
+async def test_expired_signal_is_pruned_and_yields_none():
+    from datetime import UTC, datetime, timedelta
+
+    clock = FakeClock(datetime(2026, 7, 5, 12, 0, tzinfo=UTC))
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher, signal_ttl_s=3600.0, clock=clock)
+    await service.handle_signal_generated(signal_event().model_dump_json().encode())
+    assert len(publisher.published) == 1
+
+    clock.now += timedelta(hours=2)  # beyond the 1h TTL
+    assert await service.aggregate_symbol("AAPL") is None
+    # pruned: a regime change no longer resurfaces the stale signal
+    await service.handle_regime_changed(regime_event().model_dump_json().encode())
+    assert len(publisher.published) == 1  # nothing new published
+
+
+@pytest.mark.asyncio
+async def test_fresh_signal_survives_ttl_window():
+    from datetime import UTC, datetime, timedelta
+
+    clock = FakeClock(datetime(2026, 7, 5, 12, 0, tzinfo=UTC))
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher, signal_ttl_s=3600.0, clock=clock)
+    await service.handle_signal_generated(signal_event().model_dump_json().encode())
+    clock.now += timedelta(minutes=30)  # within TTL
+    result = await service.aggregate_symbol("AAPL")
+    assert result is not None
+    assert result.final_signal == "BUY"

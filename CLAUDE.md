@@ -25,7 +25,7 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
-- `shared/trading-common`: 154 tests green, `ruff` + `mypy --strict` clean. Contracts present:
+- `shared/trading-common`: 155 tests green, `ruff` + `mypy --strict` clean. Contracts present:
   `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
   set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`, and the shared
@@ -55,9 +55,12 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   re-evaluates and emits `StrategyStatusChangedEvent`). 86 tests green; live-verified the full chain
   (FeaturesReady → BUY → RiskEnvelope → SignalGenerated in the SIGNALS stream).
 - `risk-mgmt` is now **functionally implemented** (Direction #2): JetStream subscriber on
-  `signal.generated` → **`PositionSizer`** (`adaptive_sizing` drawdown-scaled risk budget +
+  **`signal.aggregated`** (R1a — the signal-aggregator is the decision node; durable
+  `risk-mgmt-aggregated`; the manual `POST /signal` route still accepts raw strategy signals) →
+  **`PositionSizer`** (`adaptive_sizing` drawdown-scaled risk budget +
   `regime_allocator` exposure/sector caps + 5% position cap → size-down) → publish
-  **`OrderRequestedEvent`** (new contract, risk→execution). **Circuit Breaker** armed 24/7
+  **`OrderRequestedEvent`** (risk→execution). BUY/SELL aggregates without price+stop_loss are
+  blocked (defense-in-depth). **Circuit Breaker** armed 24/7
   (`CircuitBreaker`: YELLOW dd>8% / RED daily-loss>5% halt / BLACK dd>15% flatten) → publishes
   `CircuitBreakerTriggeredEvent` and blocks new orders when tripped. `PortfolioState`
   (updatable via `POST /portfolio`) is now **Redis-persisted** (`RedisStateRepository` snapshot on
@@ -65,17 +68,23 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   **re-derives** the breaker level, so a tripped halt survives a restart. Also subscribes to
   **`RegimeChangedEvent`** (`macro.regime_changed`, from macro-data) → `update_portfolio(regime)` so the
   macro regime auto-drives the RegimeAllocator exposure caps (no manual push needed). Routes `/portfolio`,
-  `/circuit-breaker`, `/signal`. 97 tests green; live-verified (SignalGenerated → sized OrderRequested;
-  breaker RED halts new orders; tripped breaker survives a restart via real Redis; a real
-  `macro.regime_changed` event flips the regime → tightens the cap).
+  `/circuit-breaker`, `/signal`. 100 tests green; live-verified (SignalAggregated → sized
+  OrderRequested; breaker RED halts new orders; tripped breaker survives a restart via real Redis;
+  a real `macro.regime_changed` event flips the regime → tightens the cap).
 - `execution` is now **functionally implemented** (paper trading — **closes the loop**): JetStream
   subscriber on `order.requested` → `PaperBroker` simulates the fill → publish `OrderFilledEvent` →
   push portfolio metrics (equity/exposure/drawdown/daily-loss) back to risk-mgmt over HTTP
   (`POST /portfolio`), so fills drive sizing + the circuit breaker. `PaperBroker` (cash/positions,
   peak-equity drawdown, mark-to-fill) is now **Redis-persisted** (`RedisBrokerRepository` snapshot on
   every fill/mark; `NullBrokerRepository` fallback) — `restore()` reloads cash/positions on startup.
-  Routes `/portfolio`, `/positions`, `/execute`; real `/ready`. 30 tests green; live-verified
-  (OrderRequested → OrderFilled → portfolio fed back; broker cash/positions survive a restart via real Redis).
+  2026-07-05 review fixes wired: **R2** daily-loss baseline rolls on the first fill/mark of a new day
+  (date in the snapshot; injectable clock), **R3** fills idempotent by order `event_id` (dedup set
+  persisted; save-before-publish ordering), **R4** long-only (SELL = exit: capped at held qty,
+  skipped when flat — matches the long/flat backtest engine), **R5** protective exits (positions carry
+  SL/TP; each re-mark checks levels and paper-exits on breach, publishing a second `OrderFilledEvent`).
+  Routes `/portfolio`, `/positions`, `/execute` (409 on duplicate/long-only violation); real `/ready`.
+  44 tests green; live-verified (OrderRequested → OrderFilled → portfolio fed back; broker state
+  survives a restart via real Redis; SL breach on re-mark exits the position).
 - `backtest` is now **functionally implemented** (Direction #2): wires the orphaned
   `continuous_validation` (`ContinuousWalkForward`, abstract) to a real **momentum backtest engine**
   (`core/engine.py`: numpy time-series long/flat momentum, no look-ahead, per-turn costs →
@@ -162,14 +171,15 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `SignalAggregatedEvent`; `record_outcome` adapts weights). Routes `POST /aggregate`, `POST /outcomes`,
   `GET /weights`; real `/ready` (NATS); publisher + `ensure_stream(SIGNALS, ["signal.>"])`. Full scaffold
   (compose port 8012, Helm `signalAggregator`). Also **moved `cost_filter` → trading-common** (shared gate,
-  strategy now imports it from there). Now also a **live multi-stream consumer**: durable subscribers on
-  `signal.generated` (buffers the latest per-symbol strategy component) and `macro.regime_changed`
+  strategy now imports it from there). A **live multi-stream consumer and the decision node (R1a)**:
+  durable subscribers on `signal.generated` (buffers the latest per-symbol strategy signal **with its
+  price/SL/TP**, TTL-expired after `SIGNAL_TTL_SECONDS`, default 1 day — R6) and `macro.regime_changed`
   (`REGIME_BIAS` → market-wide directional component; a transition re-aggregates every buffered symbol);
-  the event-driven path publishes `signal.aggregated` per update. ⚠️ Currently **advisory**: nothing
-  consumes `signal.aggregated` and the event lacks price/SL/TP, so it cannot drive orders — risk-mgmt
-  still sizes raw `signal.generated` (see Known issues **R1**). 59 tests; ruff + format + mypy clean;
-  live-verified on a real `nats-server` (signal → aggregated BUY; expansion→crisis → re-aggregated HOLD
-  in the `SIGNALS` stream). **This closes the full 13-service architecture.**
+  each update publishes `signal.aggregated` carrying the order context (levels attached only when the
+  final direction matches the strategy component's), which **risk-mgmt consumes and sizes into orders**.
+  63 tests; ruff + format + mypy clean; live-verified on a real `nats-server` (full chain: signal →
+  aggregated BUY+levels → sized order → fill; crisis → re-aggregated HOLD → no order).
+  **This closes the full 13-service architecture.**
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -185,36 +195,33 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4. **Contracts-first** always: extend `shared/trading-common` before adding any cross-service type.
 
 **Known issues / tech debt** (propose a fix when you touch the area):
-- [P1 — 2026-07-05 whole-system review, **awaiting decision**] **R1 Aggregator is advisory, not a gate**:
-  nothing consumes `signal.aggregated`, and the event lacks price/SL/TP so it cannot drive risk-mgmt
-  (which still consumes raw `signal.generated`). Decide: (a) make it the decision node — extend
-  `SignalAggregatedEvent` with price/SL/TP/strategy_name and switch risk-mgmt's subscription
-  (**recommended**); or (b) keep it advisory and document that role.
-- [P1 — 2026-07-05 review] **R2 "Daily loss" never resets**: execution's `day_start_equity` has no daily
-  rollover (and is Redis-persisted) → "daily loss > 5% → halt until next day" behaves as "cumulative loss
-  since first boot > 5% → quasi-permanent halt". Fix: date-tagged day-start, rolled on the first
-  fill/mark of a new day (include the date in the snapshot).
-- [P1 — 2026-07-05 review] **R3 Double fill on redelivery**: `execute()` mutates the broker *before*
-  publish/save; a transient NATS/Redis error → NAK → redelivery → the same order fills twice. Fix:
-  idempotency by order `event_id` (processed-ids set; use event_id as order_id).
-- [P1 — 2026-07-05 review] **R4 Live can short, backtest is long/flat**: SELL-to-open creates negative
-  positions with no short-specific risk logic, while the validating engine is long/flat — OOS results
-  don't validate live behavior. Decide: block SELL-to-open (long-only) or model shorts end-to-end.
-- [P1 — 2026-07-05 review] **R5 SL/TP not enforced post-fill**: stops are enforced contractually
-  (validator + RiskEnvelope + risk-mgmt) but nothing exits a position through its stop at runtime — only
-  an opposite signal or the portfolio circuit breaker. Fix: execution checks SL/TP on each re-mark and
-  generates paper exits (OrderRequested already carries the levels).
-- [P2 — 2026-07-05 review] **R6–R11**: R6 aggregator buffer has no TTL (strategy is silent on HOLD →
-  stale BUY/SELL resurfaces on every regime change); R7 `StrategyRevalidatedEvent` reaches only
-  notification — strategy doesn't subscribe (human-in-the-loop by design? document or close the loop);
-  R8 sector caps dead on the live path (`PositionSizer` supports `sector` but signals don't carry it);
-  R9 `POST /aggregate` bypasses the buffer + macro bias (two aggregation semantics); R10 a known-neutral
-  regime (slowdown → HOLD 0.0 component) halves the strategy weight while an *unknown* regime costs
-  nothing — consider dropping the HOLD bias component; R11 the "ml" source is configured but nothing
-  produces per-symbol ML signals yet (aggregation is effectively 2-source). P3: EDGAR `Revenues` tag
-  misses `RevenueFromContractWithCustomer…` filers (add tag fallbacks); new durables replay full stream
-  history on first start (consider `DeliverPolicy.NEW` for the aggregator); double cost-gating
-  (strategy at emit + aggregator on the aggregate) is intentional-conservative — document.
+- [P1 ✅ done 2026-07-07] **R1 resolved as (a)** — the signal-aggregator is the **decision node**:
+  `SignalAggregatedEvent` extended with price/SL/TP/strategy_name (attached only when the final
+  direction matches the strategy component's); risk-mgmt's subscription switched to
+  `signal.aggregated` (new durable `risk-mgmt-aggregated`; the old `risk-mgmt` durable on
+  `signal.generated` is orphaned server-side — harmless, delete manually if desired). Raw
+  `signal.generated` now only feeds the aggregator.
+- [P1 ✅ done 2026-07-07] **R2** — `PaperBroker` day baseline is date-tagged and rolls on the first
+  fill/mark of a new day (date persisted in the snapshot; injectable clock for tests).
+- [P1 ✅ done 2026-07-07] **R3** — fills are idempotent by order `event_id` (persisted dedup set;
+  save-before-publish so a crash replays cleanly and a publish failure dedups on redelivery).
+- [P1 ✅ done 2026-07-07] **R4** — long-only: execution treats SELL as an exit (capped at held qty,
+  skipped when flat). Live behavior now matches the long/flat backtest engine. Shorts, if ever wanted,
+  must be modeled end-to-end (engine + sizing + broker) as a deliberate feature.
+- [P1 ✅ done 2026-07-07] **R5** — protective exits: positions carry SL/TP; every re-mark checks the
+  levels and paper-exits on breach (second `OrderFilledEvent`). Paper simplification: the latest BUY
+  defines the position's levels (no per-lot tracking); exits use the mark price (no gap modeling).
+- [P2 — 2026-07-05 review, open] **R7–R11**: R7 `StrategyRevalidatedEvent` reaches only notification —
+  strategy doesn't subscribe (human-in-the-loop by design? document or close the loop); R8 sector caps
+  dead on the live path (`PositionSizer` supports `sector` but signals don't carry it); R9
+  `POST /aggregate` bypasses the buffer + macro bias (two aggregation semantics — manual path is
+  ops/testing only); R10 a known-neutral regime (slowdown → HOLD 0.0 component) halves the strategy
+  weight while an *unknown* regime costs nothing — consider dropping the HOLD bias component; R11 the
+  "ml" source is configured but nothing produces per-symbol ML signals yet (aggregation is effectively
+  2-source). (R6 buffer TTL ✅ done 2026-07-07 — `SIGNAL_TTL_SECONDS`, default 1 day.) P3: EDGAR
+  `Revenues` tag misses `RevenueFromContractWithCustomer…` filers (add tag fallbacks); new durables
+  replay full stream history on first start (consider `DeliverPolicy.NEW` for the aggregator); double
+  cost-gating (strategy at emit + aggregator on the aggregate) is intentional-conservative.
 - [P1 ✅ done] Orphaned components wired (Direction #2 complete): feature-engine + strategy +
   risk-mgmt + backtest + ml-pipeline. Leftover specs (`earnings_decay`, `cross_asset`,
   `adaptive_weights`) belong in later services (signal-aggregator / macro), not the core runtime.
@@ -463,10 +470,23 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   R3 double-fill on redelivery, R4 live-short vs long/flat backtest mismatch, R5 SL/TP not enforced
   post-fill. Fixes awaiting user decision (recommended order: R1 decision → R2+R3 → R4+R5 → R6 TTL).
 
-**Next:** **Decide R1–R5 from the 2026-07-05 review** (see Known issues) — recommended: make
-signal-aggregator the decision node (R1a: extend `SignalAggregatedEvent` with price/SL/TP, switch
-risk-mgmt's subscription), fix daily-loss rollover (R2) + fill idempotency (R3), go long-only until
-shorts are modeled (R4), enforce SL/TP on re-mark (R5). Then: **feature-engine consumes
+- 2026-07-07 — **Review fixes R1–R6 applied** (per user's go-ahead on the recommendation):
+  **R1(a)** contracts-first: `SignalAggregatedEvent` + price/SL/TP/strategy_name (levels attached only
+  when the final direction matches the strategy component's); aggregator buffers the strategy signal's
+  order context; **risk-mgmt switched to `signal.aggregated`** (durable `risk-mgmt-aggregated`;
+  `process_aggregated` + shared `_risk_check_and_order`; manual `POST /signal` kept). **R6** buffer TTL
+  (`SIGNAL_TTL_SECONDS`, default 1 day; expired entries pruned, never resurface on regime changes).
+  **R2** day-baseline rollover in `PaperBroker` (date-tagged, persisted, injectable clock). **R3**
+  idempotent fills by order `event_id` (persisted dedup set; save-before-publish). **R4** long-only
+  (SELL = exit, capped at held qty, skipped when flat; 409 on the manual route). **R5** protective
+  exits (positions carry SL/TP; re-mark breach → paper exit + `OrderFilledEvent`). Counts: shared 155
+  (+1), signal-aggregator 63 (+4), risk-mgmt 100 (+3), execution 44 (+14) → **all suites green (729)**;
+  ruff + format + mypy clean. **Live full-chain verified on a real `nats-server`**:
+  `signal.generated` (BUY, SL 95) → aggregated BUY+levels → sized `order.requested` (50 szt.) → fill
+  @100 → mark @94 → **protective SL exit** (fill @94, flat, cash 99 700) → crisis regime →
+  re-aggregated HOLD → **no new order**.
+
+**Next:** R1–R6 closed; open P2s are **R7–R11** (see Known issues). Then: **feature-engine consumes
 `FundamentalsUpdatedEvent` / `CompanyClassifiedEvent`** so fundamentals + style feed ML features; a
 **generic Helm Deployment template** for the 13 untemplated services (top infra item); extend
 `FinancialStatements` (current assets/liabilities + shares) → full 9-signal Piotroski; scheduled

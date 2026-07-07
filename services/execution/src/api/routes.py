@@ -1,5 +1,5 @@
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from trading_common.events import OrderRequestedEvent
 
@@ -54,6 +54,10 @@ async def execute(
         take_profit=body.take_profit,
     )
     fill = await service.execute(order)
+    if fill is None:
+        raise HTTPException(
+            status_code=409, detail="duplicate order or long-only SELL without a position"
+        )
     return {
         "order_id": fill.order_id,
         "symbol": fill.symbol,
