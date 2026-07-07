@@ -28,6 +28,7 @@ from src.core.aggregator import (
     combine,
     regime_to_component,
 )
+from src.core.company_client import CompanyClient
 from src.events.publisher import Publisher
 
 logger = structlog.get_logger()
@@ -55,6 +56,7 @@ class SignalAggregatorService:
         base_edge_bps: float = 200.0,
         signal_ttl_s: float = 86_400.0,
         clock: Callable[[], datetime] | None = None,
+        company_client: CompanyClient | None = None,
     ) -> None:
         self._optimizer = optimizer
         self._cost = cost_filter
@@ -63,6 +65,7 @@ class SignalAggregatorService:
         self._base_edge_bps = base_edge_bps
         self._ttl_s = signal_ttl_s
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._company = company_client
         # live event state: latest strategy signal per symbol + market-wide macro bias
         self._buffer: dict[str, BufferedSignal] = {}
         self._macro: SignalComponent | None = None
@@ -77,7 +80,12 @@ class SignalAggregatorService:
     # --- live event handlers (NATS-driven) ---
 
     async def handle_signal_generated(self, data: bytes) -> None:
-        """A strategy (rule-based) signal → buffer it and re-aggregate its symbol."""
+        """A strategy (rule-based) signal → buffer it and re-aggregate its symbol.
+
+        The buffer entry ages from the event's *emit* timestamp, not receive
+        time — so a durable consumer replaying stream history (first start, or
+        a rebuilt consumer) cannot resurrect stale signals past the TTL.
+        """
         event = SignalGeneratedEvent.model_validate_json(data)
         self._buffer[event.symbol] = BufferedSignal(
             component=SignalComponent(
@@ -87,7 +95,7 @@ class SignalAggregatorService:
             stop_loss=event.stop_loss,
             take_profit=event.take_profit,
             strategy_name=event.strategy_name,
-            at=self._clock(),
+            at=event.timestamp,
         )
         await self.aggregate_symbol(event.symbol)
 
@@ -119,6 +127,7 @@ class SignalAggregatorService:
         components = [entry.component]
         if self._macro is not None:
             components.append(self._macro)
+        sector = await self._company.get_sector(symbol) if self._company is not None else None
         return await self.aggregate(
             symbol,
             components,
@@ -127,6 +136,7 @@ class SignalAggregatorService:
             take_profit=entry.take_profit,
             strategy_name=entry.strategy_name,
             levels_direction=entry.component.signal,
+            sector=sector,
         )
 
     def _weights_for(self, sources: list[str]) -> dict[str, float]:
@@ -153,6 +163,7 @@ class SignalAggregatorService:
         take_profit: float | None = None,
         strategy_name: str | None = None,
         levels_direction: str | None = None,
+        sector: str | None = None,
     ) -> AggregationResult:
         """Combine components → weighted signal → cost gate → publish aggregated signal.
 
@@ -160,7 +171,9 @@ class SignalAggregatorService:
         only when the final decision is actionable and matches ``levels_direction``
         (the direction the levels were computed for) — a BUY stop makes no sense on
         a SELL decision. An actionable aggregate without levels is published anyway
-        but risk-mgmt will block it (no order without stop_loss).
+        but risk-mgmt will block it (no order without stop_loss). ``sector`` is
+        symbol-level (direction-independent) and always carried through — risk-mgmt
+        uses it for regime-aware sector caps.
         """
         weights = self._weights_for([c.source for c in components])
         signal, confidence, score = combine(components, weights, self._buy_threshold)
@@ -202,6 +215,7 @@ class SignalAggregatorService:
             stop_loss=stop_loss if attach else None,
             take_profit=take_profit if attach else None,
             strategy_name=strategy_name if attach else None,
+            sector=sector,
         )
 
         await self._publisher.publish(
@@ -214,6 +228,7 @@ class SignalAggregatorService:
                 stop_loss=result.stop_loss,
                 take_profit=result.take_profit,
                 strategy_name=result.strategy_name,
+                sector=result.sector,
             )
         )
         logger.info(

@@ -16,14 +16,22 @@ from trading_common.schemas import FinancialStatements
 
 logger = structlog.get_logger()
 
-# FinancialStatements field → (us-gaap concept tag, XBRL unit)
-TAG_MAP: dict[str, tuple[str, str]] = {
-    "revenue": ("Revenues", "USD"),
-    "net_income": ("NetIncomeLoss", "USD"),
-    "total_assets": ("Assets", "USD"),
-    "total_liabilities": ("Liabilities", "USD"),
-    "operating_cash_flow": ("NetCashProvidedByUsedInOperatingActivities", "USD"),
-    "eps": ("EarningsPerShareBasic", "USD/shares"),
+# FinancialStatements field → ordered candidate (us-gaap concept tag, XBRL unit)
+# pairs. Filers differ in which revenue concept they report — classic ``Revenues``
+# vs the ASC 606 ``RevenueFromContractWithCustomer…`` tags — so revenue carries
+# fallbacks (P3 review fix). Candidates are merged per period; earlier wins.
+TAG_MAP: dict[str, tuple[tuple[str, str], ...]] = {
+    "revenue": (
+        ("Revenues", "USD"),
+        ("RevenueFromContractWithCustomerExcludingAssessedTax", "USD"),
+        ("RevenueFromContractWithCustomerIncludingAssessedTax", "USD"),
+        ("SalesRevenueNet", "USD"),
+    ),
+    "net_income": (("NetIncomeLoss", "USD"),),
+    "total_assets": (("Assets", "USD"),),
+    "total_liabilities": (("Liabilities", "USD"),),
+    "operating_cash_flow": (("NetCashProvidedByUsedInOperatingActivities", "USD"),),
+    "eps": (("EarningsPerShareBasic", "USD/shares"),),
 }
 
 
@@ -94,6 +102,21 @@ class EdgarClient:
             out[date.fromisoformat(end)] = float(val)
         return out
 
+    async def _field_values(
+        self, cik: str, candidates: tuple[tuple[str, str], ...]
+    ) -> dict[date, float]:
+        """Merge candidate concepts per period; earlier candidates win on conflict.
+
+        A filer may report different periods under different tags (e.g. pre- vs
+        post-ASC-606 revenue), so every candidate is fetched and unioned rather
+        than stopping at the first non-empty one.
+        """
+        merged: dict[date, float] = {}
+        for tag, unit in candidates:
+            for period, value in (await self._annual_by_period(cik, tag, unit)).items():
+                merged.setdefault(period, value)
+        return merged
+
     async def latest_statements(self, symbol: str, count: int = 2) -> list[FinancialStatements]:
         if not self.enabled:
             return []
@@ -103,8 +126,8 @@ class EdgarClient:
             return []
 
         by_field: dict[str, dict[date, float]] = {}
-        for fieldname, (tag, unit) in TAG_MAP.items():
-            by_field[fieldname] = await self._annual_by_period(cik, tag, unit)
+        for fieldname, candidates in TAG_MAP.items():
+            by_field[fieldname] = await self._field_values(cik, candidates)
 
         # candidate annual periods = union of period-ends seen, most recent first
         periods = sorted({p for values in by_field.values() for p in values}, reverse=True)

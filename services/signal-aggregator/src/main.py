@@ -9,6 +9,7 @@ from trading_common.cost_filter import CostAwareFilter
 from src.api import router as api_router
 from src.config import settings
 from src.core.adaptive_weights import AdaptiveWeightOptimizer
+from src.core.company_client import HttpCompanyClient
 from src.core.observability import setup_observability
 from src.core.service import SignalAggregatorService
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         publisher = NullPublisher()
         nats_client = None
 
+    company_client = HttpCompanyClient(settings.COMPANY_CLASSIFIER_URL)
     service = SignalAggregatorService(
         optimizer,
         CostAwareFilter(),
@@ -49,6 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         buy_threshold=settings.BUY_THRESHOLD,
         base_edge_bps=settings.BASE_EDGE_BPS,
         signal_ttl_s=settings.SIGNAL_TTL_SECONDS,
+        company_client=company_client,
     )
     app.state.service = service
 
@@ -91,6 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()
+    await company_client.aclose()
 
 
 app = FastAPI(

@@ -296,6 +296,16 @@ class TestStrategyStatusChangedEvent:
         assert restored.strategy_name == e.strategy_name
         assert restored.sharpe_90d == e.sharpe_90d
 
+    def test_metrics_optional_for_revalidation_driven_change(self):
+        e = StrategyStatusChangedEvent(
+            strategy_name="momentum_rank",
+            old_status="active",
+            new_status="probation",
+            reason="backtest_revalidation:probation",
+        )
+        assert e.sharpe_90d is None
+        assert e.profit_factor_30d is None
+
 
 class TestStrategyRevalidatedEvent:
     def make(self, **kwargs):
@@ -458,6 +468,7 @@ class TestMlExtensionEvents:
         assert e.stop_loss is None
         assert e.take_profit is None
         assert e.strategy_name is None
+        assert e.sector is None  # unclassified company → sizing skips the sector gate
 
     def test_signal_aggregated_carries_order_context(self):
         e = SignalAggregatedEvent(
@@ -475,6 +486,17 @@ class TestMlExtensionEvents:
         assert restored.stop_loss == 95.0
         assert restored.take_profit == 110.0
         assert restored.strategy_name == "momentum_rank"
+
+    def test_signal_aggregated_carries_sector(self):
+        e = SignalAggregatedEvent(
+            symbol="AAPL",
+            final_signal="BUY",
+            confidence=0.82,
+            components_count=2,
+            sector="Information Technology",
+        )
+        restored = SignalAggregatedEvent.model_validate(e.model_dump())
+        assert restored.sector == "Information Technology"
 
     def test_serialization_roundtrip(self):
         e = SignalAggregatedEvent(

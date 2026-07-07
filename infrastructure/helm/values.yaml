@@ -185,6 +185,8 @@ signalAggregator:
       cpu: "500m"
   env:
     LOG_LEVEL: INFO
+    # sector enrichment for regime-aware sector caps (graceful None when down)
+    COMPANY_CLASSIFIER_URL: http://company-classifier:8000
 
 # ==================== INFRASTRUCTURE ====================
 

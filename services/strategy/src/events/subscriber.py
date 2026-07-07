@@ -1,7 +1,9 @@
-"""Subscribe to FeaturesReadyEvent from JetStream and dispatch to a handler.
+"""Durable JetStream subscriptions dispatching to async handlers.
 
-Poison-message safe: malformed payloads are terminated; transient failures are
-NAK'd and redelivered up to ``max_deliver`` times.
+Used for both source subjects strategy consumes: ``features.ready`` (signal
+generation) and ``backtest.strategy_revalidated`` (walk-forward status
+recommendations). Poison-message safe: malformed payloads are terminated;
+transient failures are NAK'd and redelivered up to ``max_deliver`` times.
 """
 
 from collections.abc import Awaitable, Callable
@@ -17,8 +19,8 @@ logger = structlog.get_logger()
 Handler = Callable[[bytes], Awaitable[None]]
 
 
-class FeaturesSubscriber:
-    """Durable push subscription to the features.ready subject."""
+class EventSubscriber:
+    """Durable push subscription to a JetStream subject."""
 
     def __init__(
         self,
@@ -43,7 +45,7 @@ class FeaturesSubscriber:
             manual_ack=True,
             config=ConsumerConfig(max_deliver=self._max_deliver),
         )
-        logger.info("Subscribed to features events", subject=self._subject, durable=self._durable)
+        logger.info("Subscribed to events", subject=self._subject, durable=self._durable)
 
     async def _on_message(self, msg) -> None:  # type: ignore[no-untyped-def]
         try:

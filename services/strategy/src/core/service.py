@@ -8,6 +8,7 @@ from trading_common.cost_filter import CostAwareFilter
 from trading_common.events import (
     FeaturesReadyEvent,
     SignalGeneratedEvent,
+    StrategyRevalidatedEvent,
     StrategyStatusChangedEvent,
 )
 from trading_common.risk_envelope import RiskEnvelope
@@ -20,6 +21,13 @@ from src.core.portfolio_client import PortfolioClient
 from src.events.publisher import Publisher
 
 logger = structlog.get_logger()
+
+# Backtest recommends in the imperative ("deactivate"); the tracker holds states.
+RECOMMENDED_TO_STATUS = {
+    "active": "active",
+    "probation": "probation",
+    "deactivate": "deactivated",
+}
 
 
 @dataclass
@@ -75,9 +83,55 @@ class StrategyService:
         event = FeaturesReadyEvent.model_validate_json(data)
         await self.evaluate_symbol(event.symbol, Interval(event.interval))
 
-    async def evaluate_symbol(
-        self, symbol: str, interval: Interval
-    ) -> SignalGeneratedEvent | None:
+    async def handle_revalidated_event(self, data: bytes) -> None:
+        event = StrategyRevalidatedEvent.model_validate_json(data)
+        await self.apply_revalidation(event)
+
+    async def apply_revalidation(
+        self, event: StrategyRevalidatedEvent
+    ) -> StrategyStatusChangedEvent | None:
+        """Apply a backtest walk-forward recommendation to this strategy's status.
+
+        Backtest only *recommends* — strategy owns the status (per the
+        StrategyRevalidatedEvent contract). A recommendation for another
+        strategy is ignored; an unknown recommended_status raises so the
+        subscriber terminates the message as poison. Publishes
+        StrategyStatusChangedEvent only on an actual transition.
+        """
+        if event.strategy_name != self._name:
+            logger.info(
+                "Revalidation for another strategy — ignored",
+                target=event.strategy_name,
+                own=self._name,
+            )
+            return None
+        status = RECOMMENDED_TO_STATUS.get(event.recommended_status)
+        if status is None:
+            raise ValueError(f"unknown recommended_status: {event.recommended_status}")
+        old_status = self._health.apply_status(status)
+        if old_status is None:
+            logger.info("Revalidation confirmed current status", status=status)
+            return None
+        changed = StrategyStatusChangedEvent(
+            strategy_name=self._name,
+            old_status=old_status,
+            new_status=status,
+            reason=(
+                f"backtest_revalidation:{event.recommended_status}"
+                f"_degradation_{event.degradation_pct:.0%}"
+            ),
+            sharpe_90d=event.current_oos_sharpe,
+        )
+        await self._publisher.publish(changed)
+        logger.warning(
+            "Strategy status changed by revalidation",
+            old=old_status,
+            new=status,
+            current_oos_sharpe=event.current_oos_sharpe,
+        )
+        return changed
+
+    async def evaluate_symbol(self, symbol: str, interval: Interval) -> SignalGeneratedEvent | None:
         if not self._health.is_active:
             logger.info("Strategy not active, skipping", status=self._health.status)
             return None

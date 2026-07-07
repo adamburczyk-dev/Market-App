@@ -1,5 +1,7 @@
 """Tests for the live, event-driven aggregation path (NATS handlers + buffer)."""
 
+from datetime import datetime
+
 import pytest
 from trading_common.events import EventType, RegimeChangedEvent, SignalGeneratedEvent
 
@@ -9,7 +11,13 @@ from src.events.publisher import NullPublisher
 from .conftest import build_service
 
 
-def signal_event(symbol: str = "AAPL", side: str = "BUY", confidence: float = 0.9):
+def signal_event(
+    symbol: str = "AAPL",
+    side: str = "BUY",
+    confidence: float = 0.9,
+    ts: datetime | None = None,
+):
+    kwargs = {"timestamp": ts} if ts is not None else {}
     return SignalGeneratedEvent(
         symbol=symbol,
         strategy_name="momentum_rank",
@@ -18,6 +26,7 @@ def signal_event(symbol: str = "AAPL", side: str = "BUY", confidence: float = 0.
         price=100.0,
         stop_loss=95.0,
         take_profit=110.0,
+        **kwargs,
     )
 
 
@@ -26,12 +35,16 @@ def regime_event(old: str = "expansion", new: str = "crisis"):
 
 
 class TestRegimeBias:
-    def test_all_regimes_map_to_direction(self):
+    def test_directional_regimes_map_to_direction(self):
         assert regime_to_component("expansion").signal == "BUY"
         assert regime_to_component("recovery").signal == "BUY"
-        assert regime_to_component("slowdown").signal == "HOLD"
         assert regime_to_component("contraction").signal == "SELL"
         assert regime_to_component("crisis").signal == "SELL"
+
+    def test_slowdown_is_neutral_and_contributes_nothing(self):
+        # R10: a known-neutral regime must not claim weight (a HOLD component
+        # would dilute the strategy signal more than an unknown regime does)
+        assert regime_to_component("slowdown") is None
 
     def test_unknown_regime_is_none(self):
         assert regime_to_component("weird") is None
@@ -160,10 +173,11 @@ class FakeClock:
 async def test_expired_signal_is_pruned_and_yields_none():
     from datetime import UTC, datetime, timedelta
 
-    clock = FakeClock(datetime(2026, 7, 5, 12, 0, tzinfo=UTC))
+    start = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
+    clock = FakeClock(start)
     publisher = NullPublisher()
     service = build_service(publisher=publisher, signal_ttl_s=3600.0, clock=clock)
-    await service.handle_signal_generated(signal_event().model_dump_json().encode())
+    await service.handle_signal_generated(signal_event(ts=start).model_dump_json().encode())
     assert len(publisher.published) == 1
 
     clock.now += timedelta(hours=2)  # beyond the 1h TTL
@@ -177,11 +191,31 @@ async def test_expired_signal_is_pruned_and_yields_none():
 async def test_fresh_signal_survives_ttl_window():
     from datetime import UTC, datetime, timedelta
 
-    clock = FakeClock(datetime(2026, 7, 5, 12, 0, tzinfo=UTC))
+    start = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
+    clock = FakeClock(start)
     publisher = NullPublisher()
     service = build_service(publisher=publisher, signal_ttl_s=3600.0, clock=clock)
-    await service.handle_signal_generated(signal_event().model_dump_json().encode())
+    await service.handle_signal_generated(signal_event(ts=start).model_dump_json().encode())
     clock.now += timedelta(minutes=30)  # within TTL
     result = await service.aggregate_symbol("AAPL")
     assert result is not None
     assert result.final_signal == "BUY"
+
+
+@pytest.mark.asyncio
+async def test_replayed_old_event_expires_by_emit_timestamp():
+    """A durable replaying stream history must not resurrect a stale signal.
+
+    The buffer ages entries from the event's emit timestamp, not receive time —
+    a week-old signal.generated delivered *now* is already past the TTL.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
+    clock = FakeClock(now)
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher, signal_ttl_s=3600.0, clock=clock)
+    stale = signal_event(ts=now - timedelta(days=7))  # replayed history
+    await service.handle_signal_generated(stale.model_dump_json().encode())
+    assert publisher.published == []  # pruned on arrival, never aggregated
+    assert await service.aggregate_symbol("AAPL") is None

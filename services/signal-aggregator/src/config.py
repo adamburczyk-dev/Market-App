@@ -22,11 +22,18 @@ class Settings(BaseSettings):
     NATS_MACRO_SUBJECT: str = "macro.regime_changed"
     NATS_MACRO_DURABLE: str = "signal-aggregator-regime"
 
-    # Signal sources combined (rules-based + ML + macro regime)
+    # Signal sources combined (rules-based + ML + macro regime).
+    # NOTE (R11): "ml" is configured ahead of its producer — ml-pipeline does not
+    # emit per-symbol signals yet, so live aggregation is effectively 2-source
+    # (strategy + macro); weights renormalize over the present sources, so the
+    # absent "ml" costs nothing until it ships.
     SIGNAL_SOURCES: str = "strategy,ml,macro"
     BUY_THRESHOLD: float = 0.2  # weighted-score magnitude for BUY/SELL
     BASE_EDGE_BPS: float = 200.0  # confidence → expected edge for the cost gate
     SIGNAL_TTL_SECONDS: float = 86_400.0  # buffered strategy signals expire after 1 day
+
+    # Sector enrichment for regime-aware sector caps (R8; HTTP query, graceful None)
+    COMPANY_CLASSIFIER_URL: str = "http://company-classifier:8000"
 
     # Adaptive weighting
     WEIGHT_LOOKBACK_DAYS: int = 60

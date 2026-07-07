@@ -22,8 +22,13 @@ async def test_publish_signal_with_dedup_header():
     js = _FakeJS()
     publisher = NatsPublisher(js)
     event = SignalGeneratedEvent(
-        symbol="AAPL", strategy_name="momentum_rank", signal="BUY",
-        confidence=0.9, price=100.0, stop_loss=95.0, take_profit=110.0,
+        symbol="AAPL",
+        strategy_name="momentum_rank",
+        signal="BUY",
+        confidence=0.9,
+        price=100.0,
+        stop_loss=95.0,
+        take_profit=110.0,
     )
     await publisher.publish(event)
     assert len(js.calls) == 1

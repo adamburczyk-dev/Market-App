@@ -478,6 +478,8 @@ services:
       NATS_URL: nats://nats:4222
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      # sector enrichment for regime-aware sector caps (graceful None when down)
+      COMPANY_CLASSIFIER_URL: http://company-classifier:8000
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     ports:
       - "8012:8000"

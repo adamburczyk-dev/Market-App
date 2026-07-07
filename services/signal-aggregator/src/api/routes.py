@@ -28,6 +28,7 @@ class AggregateRequest(BaseModel):
     stop_loss: float | None = None
     take_profit: float | None = None
     strategy_name: str | None = None
+    sector: str | None = None
 
 
 class OutcomeRequest(BaseModel):
@@ -49,7 +50,15 @@ async def weights(service: SignalAggregatorService = Depends(get_service)) -> di
 async def aggregate(
     req: AggregateRequest, service: SignalAggregatorService = Depends(get_service)
 ) -> dict:
-    """Combine component signals; publishes SignalAggregatedEvent."""
+    """Manually combine the *posted* components; publishes SignalAggregatedEvent.
+
+    Ops/testing path ONLY (R9): it aggregates exactly what the caller posts —
+    it does NOT read the live per-symbol buffer, does NOT add the current macro
+    bias, and does NOT enrich the sector. The live decision path is the
+    event-driven one (signal.generated / macro.regime_changed subscribers);
+    note the published event still reaches risk-mgmt, so a posted BUY with
+    levels WILL be sized into a real (paper) order.
+    """
     components = [SignalComponent(c.source, c.signal, c.confidence) for c in req.components]
     result = await service.aggregate(
         req.symbol,
@@ -60,6 +69,7 @@ async def aggregate(
         stop_loss=req.stop_loss,
         take_profit=req.take_profit,
         strategy_name=req.strategy_name,
+        sector=req.sector,
     )
     return {
         "symbol": result.symbol,
@@ -73,6 +83,7 @@ async def aggregate(
         "stop_loss": result.stop_loss,
         "take_profit": result.take_profit,
         "strategy_name": result.strategy_name,
+        "sector": result.sector,
     }
 
 

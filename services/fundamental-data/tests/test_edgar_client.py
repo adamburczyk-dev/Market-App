@@ -108,3 +108,67 @@ async def test_http_error_yields_no_statements():
     ec = client_with(lambda r: httpx.Response(500))
     assert await ec.latest_statements("AAPL") == []
     await ec.aclose()
+
+
+# --- P3: revenue tag fallbacks (ASC 606 filers don't report ``Revenues``) ---
+
+
+def handler_with_concepts(concepts: dict):  # type: ignore[no-untyped-def]
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("company_tickers.json"):
+            return httpx.Response(200, json=TICKERS)
+        if "/companyconcept/" in path:
+            tag = path.rsplit("/", 1)[-1].removesuffix(".json")
+            if tag not in concepts:
+                return httpx.Response(404)  # filer doesn't use this concept
+            unit = "USD/shares" if tag == "EarningsPerShareBasic" else "USD"
+            obs = [{"end": e, "val": v, "form": f, "fp": fp} for (e, v, f, fp) in concepts[tag]]
+            return httpx.Response(200, json={"units": {unit: obs}})
+        return httpx.Response(404)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_asc606_filer_falls_back_to_contract_revenue_tag():
+    concepts = {
+        "RevenueFromContractWithCustomerExcludingAssessedTax": [
+            ("2024-09-28", 391035, "10-K", "FY")
+        ],
+        "NetIncomeLoss": [("2024-09-28", 93736, "10-K", "FY")],
+    }
+    ec = client_with(handler_with_concepts(concepts))
+    statements = await ec.latest_statements("AAPL", count=1)
+    await ec.aclose()
+    assert statements[0].revenue == 391035
+
+
+@pytest.mark.asyncio
+async def test_primary_revenue_tag_wins_over_fallback():
+    concepts = {
+        "Revenues": [("2024-09-28", 400000, "10-K", "FY")],
+        "RevenueFromContractWithCustomerExcludingAssessedTax": [
+            ("2024-09-28", 391035, "10-K", "FY")
+        ],
+    }
+    ec = client_with(handler_with_concepts(concepts))
+    statements = await ec.latest_statements("AAPL", count=1)
+    await ec.aclose()
+    assert statements[0].revenue == 400000  # earlier candidate takes priority
+
+
+@pytest.mark.asyncio
+async def test_tag_switch_across_periods_unions_both():
+    # pre-ASC-606 year under Revenues, post-switch year under the contract tag
+    concepts = {
+        "Revenues": [("2023-09-30", 383285, "10-K", "FY")],
+        "RevenueFromContractWithCustomerExcludingAssessedTax": [
+            ("2024-09-28", 391035, "10-K", "FY")
+        ],
+    }
+    ec = client_with(handler_with_concepts(concepts))
+    statements = await ec.latest_statements("AAPL", count=2)
+    await ec.aclose()
+    assert statements[0].revenue == 391035  # 2024 from the fallback tag
+    assert statements[1].revenue == 383285  # 2023 from the classic tag

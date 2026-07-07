@@ -77,6 +77,7 @@ def aggregated(
     price: float | None = 100.0,
     stop_loss: float | None = 95.0,
     strategy_name: str | None = "momentum_rank",
+    sector: str | None = None,
 ):
     from trading_common.events import SignalAggregatedEvent
 
@@ -89,6 +90,7 @@ def aggregated(
         stop_loss=stop_loss,
         take_profit=110.0,
         strategy_name=strategy_name,
+        sector=sector,
     )
 
 
@@ -129,6 +131,38 @@ async def test_aggregated_without_strategy_name_defaults():
     order = await service.process_aggregated(aggregated(strategy_name=None))
     assert order is not None
     assert order.strategy_name == "aggregated"
+
+
+# --- R8: regime-aware sector caps on the live path ---
+
+
+@pytest.mark.asyncio
+async def test_blocked_sector_in_crisis_regime():
+    service = build_service(portfolio=PortfolioState(regime="crisis"))
+    blocked = await service.process_aggregated(aggregated(sector="Information Technology"))
+    assert blocked is None  # crisis allows only defensive sectors
+
+
+@pytest.mark.asyncio
+async def test_defensive_sector_allowed_in_crisis_regime():
+    service = build_service(portfolio=PortfolioState(regime="crisis"))
+    order = await service.process_aggregated(aggregated(sector="Consumer Staples"))
+    assert order is not None
+
+
+@pytest.mark.asyncio
+async def test_any_sector_allowed_in_expansion():
+    service = build_service(portfolio=PortfolioState(regime="expansion"))
+    order = await service.process_aggregated(aggregated(sector="Information Technology"))
+    assert order is not None
+
+
+@pytest.mark.asyncio
+async def test_unclassified_sector_skips_the_gate():
+    # sector None (company-classifier had no profile) → only the exposure cap applies
+    service = build_service(portfolio=PortfolioState(regime="crisis"))
+    order = await service.process_aggregated(aggregated(sector=None))
+    assert order is not None
 
 
 def regime_event(old: str = "expansion", new: str = "crisis"):  # type: ignore[no-untyped-def]

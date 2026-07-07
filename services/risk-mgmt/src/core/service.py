@@ -87,6 +87,7 @@ class RiskMgmtService:
             stop_loss=event.stop_loss,
             take_profit=event.take_profit,
             strategy_name=event.strategy_name or "aggregated",
+            sector=event.sector,
         )
 
     async def process_signal(self, signal: SignalGeneratedEvent) -> OrderRequestedEvent | None:
@@ -111,6 +112,7 @@ class RiskMgmtService:
         stop_loss: float | None,
         take_profit: float | None,
         strategy_name: str,
+        sector: str | None = None,
     ) -> OrderRequestedEvent | None:
         if self._breaker.is_tripped:
             logger.warning(
@@ -123,7 +125,7 @@ class RiskMgmtService:
             logger.warning("Signal without price/stop_loss — blocked", symbol=symbol, side=side)
             return None
 
-        shares, reason = self._sizer.size(price, stop_loss, self._portfolio)
+        shares, reason = self._sizer.size(price, stop_loss, self._portfolio, sector=sector)
         if shares <= 0:
             logger.info("Signal blocked by sizing/regime", symbol=symbol, reason=reason)
             return None

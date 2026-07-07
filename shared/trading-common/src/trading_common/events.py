@@ -210,13 +210,20 @@ class ModelTrainedEvent(BaseEvent):
 
 
 class StrategyStatusChangedEvent(BaseEvent):
+    """Strategy status transition (active/probation/deactivated) — audit trail.
+
+    Metrics are optional: a decay-monitor evaluation carries them, while a
+    status change applied from a backtest revalidation recommendation has no
+    30-day profit factor to report.
+    """
+
     event_type: EventType = EventType.STRATEGY_STATUS_CHANGED
     strategy_name: str
     old_status: str
     new_status: str
     reason: str
-    sharpe_90d: float
-    profit_factor_30d: float
+    sharpe_90d: float | None = None
+    profit_factor_30d: float | None = None
     source_service: str = "strategy"
 
 
@@ -278,6 +285,10 @@ class SignalAggregatedEvent(BaseEvent):
     place protective exits. They are present on actionable (BUY/SELL) aggregates;
     a HOLD carries no levels. risk-mgmt blocks BUY/SELL without price+stop_loss
     (defense-in-depth for the "no order without stop_loss" rule).
+
+    ``sector`` (GICS-style name, e.g. "Information Technology") is enriched by the
+    aggregator from company-classifier so risk-mgmt can apply regime-aware sector
+    caps; None when the company is unclassified — sizing then skips the sector gate.
     """
 
     event_type: EventType = EventType.SIGNAL_AGGREGATED
@@ -289,4 +300,5 @@ class SignalAggregatedEvent(BaseEvent):
     stop_loss: float | None = None
     take_profit: float | None = None
     strategy_name: str | None = None
+    sector: str | None = None
     source_service: str = "signal-aggregator"

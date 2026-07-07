@@ -16,18 +16,21 @@ class SignalComponent:
     confidence: float  # [0, 1]
 
 
-# Market-wide directional bias contributed by the macro regime.
-REGIME_BIAS: dict[str, tuple[str, float]] = {
+# Market-wide directional bias contributed by the macro regime. "slowdown" is
+# known-neutral → None: a HOLD component would still claim macro's weight and
+# dilute the strategy signal, penalizing a *known* neutral regime more than an
+# unknown one (R10).
+REGIME_BIAS: dict[str, tuple[str, float] | None] = {
     "expansion": ("BUY", 0.5),
     "recovery": ("BUY", 0.3),
-    "slowdown": ("HOLD", 0.0),
+    "slowdown": None,
     "contraction": ("SELL", 0.3),
     "crisis": ("SELL", 0.6),
 }
 
 
 def regime_to_component(regime: str, source: str = "macro") -> "SignalComponent | None":
-    """Map a macro regime to a directional signal component (None if unknown)."""
+    """Map a macro regime to a directional component (None if unknown or neutral)."""
     bias = REGIME_BIAS.get(regime)
     if bias is None:
         return None
@@ -49,6 +52,8 @@ class AggregationResult:
     stop_loss: float | None = None
     take_profit: float | None = None
     strategy_name: str | None = None
+    # symbol-level enrichment (independent of direction): regime-aware sector caps
+    sector: str | None = None
 
 
 def _signed(component: SignalComponent) -> float:

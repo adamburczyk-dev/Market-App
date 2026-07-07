@@ -14,13 +14,20 @@ class Settings(BaseSettings):
     # Where to read live portfolio state for RiskEnvelope (HTTP; falls back to placeholder)
     RISK_MGMT_URL: str = "http://risk-mgmt:8000"
 
-    # NATS JetStream — source (features.ready) + own stream (signals)
+    # NATS JetStream — source (features.ready) + own streams (signals, strategy status)
     NATS_SOURCE_STREAM: str = "FEATURES"
     NATS_SOURCE_SUBJECT: str = "features.ready"
     NATS_DURABLE: str = "strategy"
     NATS_MAX_DELIVER: int = 5
     NATS_SIGNALS_STREAM: str = "SIGNALS"
     NATS_SIGNALS_SUBJECTS: str = "signal.>"
+    # StrategyStatusChangedEvent (strategy.status_changed) lands here
+    NATS_STRATEGY_STREAM: str = "STRATEGY"
+    NATS_STRATEGY_SUBJECTS: str = "strategy.>"
+    # Consume backtest walk-forward revalidations (R7 — closes the backtest→strategy loop)
+    NATS_BACKTEST_STREAM: str = "BACKTEST"
+    NATS_BACKTEST_SUBJECT: str = "backtest.strategy_revalidated"
+    NATS_BACKTEST_DURABLE: str = "strategy-revalidation"
 
     # Strategy: momentum-on-ranks
     STRATEGY_NAME: str = "momentum_rank"

@@ -1,11 +1,13 @@
 """Strategy health tracking via StrategyDecayMonitor.
 
-Gates signal output: only an ACTIVE strategy publishes signals. Health is
-re-evaluated from performance metrics (fed by backtest/execution once they
-exist); until then it stays ACTIVE.
+Gates signal output: only an ACTIVE strategy publishes signals. Status moves
+two ways: a metrics evaluation through the decay monitor (``evaluate``), or a
+direct application of a backtest walk-forward recommendation (``apply_status``).
 """
 
 from src.core.decay_monitor import StrategyDecayMonitor, StrategyHealth
+
+VALID_STATUSES = {"active", "probation", "deactivated"}
 
 
 class StrategyHealthTracker:
@@ -26,6 +28,19 @@ class StrategyHealthTracker:
     @property
     def health(self) -> StrategyHealth | None:
         return self._health
+
+    def apply_status(self, status: str) -> str | None:
+        """Set the status directly (e.g. from a backtest revalidation).
+
+        Returns the old status when it changed, None when already there.
+        Raises ValueError on an unknown status so the event subscriber can
+        terminate the message as poison.
+        """
+        if status not in VALID_STATUSES:
+            raise ValueError(f"unknown strategy status: {status}")
+        old = self._status
+        self._status = status
+        return old if old != status else None
 
     def evaluate(
         self,

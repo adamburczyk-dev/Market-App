@@ -25,11 +25,13 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
-- `shared/trading-common`: 155 tests green, `ruff` + `mypy --strict` clean. Contracts present:
+- `shared/trading-common`: 157 tests green, `ruff` + `mypy --strict` clean. Contracts present:
   `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
   set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`, and the shared
   **`CostAwareFilter`** (moved out of strategy — a cross-cutting gate like `RiskEnvelope`).
+  `SignalAggregatedEvent` carries `sector` (R8); `StrategyStatusChangedEvent` metrics are optional
+  (a revalidation-driven change has no 30d PF).
 - All 13 services functionally implemented (`/health` `/ready` `/metrics` green; no skeletons left).
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
   feature-engine only (`earnings_decay`, `cross_asset`). (`decay_monitor`+`cost_filter` now wired into
@@ -52,8 +54,14 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   rule → `TradingSignal` (vol-agnostic % stop) → **`RiskEnvelope`** (SL-enforcing; step-7 sizing
   treated as advisory) → **`CostAwareFilter`** → publish `SignalGeneratedEvent` (now carries
   `stop_loss`/`take_profit`). `StrategyDecayMonitor` gates output (inactive → suppress; `POST /decay`
-  re-evaluates and emits `StrategyStatusChangedEvent`). 86 tests green; live-verified the full chain
-  (FeaturesReady → BUY → RiskEnvelope → SignalGenerated in the SIGNALS stream).
+  re-evaluates and emits `StrategyStatusChangedEvent`). **R7 closed**: a second durable subscriber
+  (`strategy-revalidation`) consumes `backtest.strategy_revalidated` — backtest *recommends*, strategy
+  *owns*: `apply_revalidation` maps `deactivate`→`deactivated`, applies via
+  `StrategyHealthTracker.apply_status`, ignores other strategies' events, poison-terms unknown
+  recommendations, and publishes `StrategyStatusChangedEvent` on a real transition into the **new
+  `STRATEGY` stream** (`strategy.>` — previously `strategy.status_changed` had NO stream, so a live
+  publish would have failed; latent bug fixed). 56 tests green; live-verified (real
+  `backtest.strategy_revalidated` → probation + event in the STRATEGY stream).
 - `risk-mgmt` is now **functionally implemented** (Direction #2): JetStream subscriber on
   **`signal.aggregated`** (R1a — the signal-aggregator is the decision node; durable
   `risk-mgmt-aggregated`; the manual `POST /signal` route still accepts raw strategy signals) →
@@ -67,10 +75,13 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   every update; `NullStateRepository` fallback) — on startup `restore()` reloads the snapshot and
   **re-derives** the breaker level, so a tripped halt survives a restart. Also subscribes to
   **`RegimeChangedEvent`** (`macro.regime_changed`, from macro-data) → `update_portfolio(regime)` so the
-  macro regime auto-drives the RegimeAllocator exposure caps (no manual push needed). Routes `/portfolio`,
-  `/circuit-breaker`, `/signal`. 100 tests green; live-verified (SignalAggregated → sized
-  OrderRequested; breaker RED halts new orders; tripped breaker survives a restart via real Redis;
-  a real `macro.regime_changed` event flips the regime → tightens the cap).
+  macro regime auto-drives the RegimeAllocator exposure caps (no manual push needed). **R8 closed**:
+  `process_aggregated` passes the event's `sector` into `PositionSizer.size(..., sector=...)`, so the
+  regime-aware **sector caps are live** (crisis/contraction allow only defensive sectors; `sector=None`
+  → gate skipped). Routes `/portfolio`, `/circuit-breaker`, `/signal`. 104 tests green; live-verified
+  (SignalAggregated → sized OrderRequested; breaker RED halts new orders; tripped breaker survives a
+  restart via real Redis; a real `macro.regime_changed` event flips the regime → tightens the cap;
+  crisis blocks an Information-Technology BUY by sector while expansion sizes it).
 - `execution` is now **functionally implemented** (paper trading — **closes the loop**): JetStream
   subscriber on `order.requested` → `PaperBroker` simulates the fill → publish `OrderFilledEvent` →
   push portfolio metrics (equity/exposure/drawdown/daily-loss) back to risk-mgmt over HTTP
@@ -149,9 +160,11 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `ingest` posted statements → score → store latest-per-symbol → publish `FundamentalsUpdatedEvent`).
   Routes `GET /fundamentals[/{symbol}]`, `POST /refresh/{symbol}`, `POST /statements`; real `/ready` (NATS);
   publisher + `ensure_stream(FUNDAMENTALS, ["fundamentals.>"])`. Full scaffold (compose port 8009, Helm
-  `fundamentalData` values entry). 27 tests; ruff + format + mypy clean; live-verified on a real
-  `nats-server` (ingest → `fundamentals.updated` in the `FUNDAMENTALS` stream; F-score 7/7 on an
-  improving firm).
+  `fundamentalData` values entry). Revenue now has **tag fallbacks** (`Revenues` →
+  `RevenueFromContractWithCustomer[Ex/In]cludingAssessedTax` → `SalesRevenueNet`), merged per period
+  with earlier-tag priority — ASC-606 filers and tag-switchers both resolve. 30 tests; ruff + format +
+  mypy clean; live-verified on a real `nats-server` (ingest → `fundamentals.updated` in the
+  `FUNDAMENTALS` stream; F-score 7/7 on an improving firm).
 - `company-classifier` (**serwis 11 — Direction #3, built from scratch**): `CompanyProfile` → investment
   style + model-stack routing (pure compute, no external API). `core/classifier.py` (`classify` — style
   scored from valuation/growth metrics: growth signals (rev/earnings growth, rich P/E, no dividend) vs
@@ -173,13 +186,18 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   (compose port 8012, Helm `signalAggregator`). Also **moved `cost_filter` → trading-common** (shared gate,
   strategy now imports it from there). A **live multi-stream consumer and the decision node (R1a)**:
   durable subscribers on `signal.generated` (buffers the latest per-symbol strategy signal **with its
-  price/SL/TP**, TTL-expired after `SIGNAL_TTL_SECONDS`, default 1 day — R6) and `macro.regime_changed`
-  (`REGIME_BIAS` → market-wide directional component; a transition re-aggregates every buffered symbol);
-  each update publishes `signal.aggregated` carrying the order context (levels attached only when the
-  final direction matches the strategy component's), which **risk-mgmt consumes and sizes into orders**.
-  63 tests; ruff + format + mypy clean; live-verified on a real `nats-server` (full chain: signal →
-  aggregated BUY+levels → sized order → fill; crisis → re-aggregated HOLD → no order).
-  **This closes the full 13-service architecture.**
+  price/SL/TP**, TTL-expired after `SIGNAL_TTL_SECONDS`, default 1 day — R6; the entry ages from the
+  event's **emit timestamp**, so a durable replaying stream history cannot resurrect stale signals) and
+  `macro.regime_changed` (`REGIME_BIAS` → market-wide directional component; **slowdown is neutral →
+  contributes nothing** (R10); a transition re-aggregates every buffered symbol); each update publishes
+  `signal.aggregated` carrying the order context (levels attached only when the final direction matches
+  the strategy component's) **+ the symbol's `sector`** (R8 — `HttpCompanyClient` queries
+  company-classifier `GET /api/v1/company-classifier/companies/{symbol}`, positive-cached, degrades to
+  None), which **risk-mgmt consumes and sizes into orders** honoring the regime's sector caps.
+  `POST /aggregate` is documented as ops/testing only (R9 — bypasses buffer/macro/sector enrichment).
+  74 tests; ruff + format + mypy clean; live-verified on a real `nats-server` (full chain: signal →
+  aggregated BUY+levels → sized order → fill; crisis → re-aggregated HOLD → no order; sector enriched
+  from a real uvicorn company-classifier over HTTP). **This closes the full 13-service architecture.**
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -211,17 +229,23 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 - [P1 ✅ done 2026-07-07] **R5** — protective exits: positions carry SL/TP; every re-mark checks the
   levels and paper-exits on breach (second `OrderFilledEvent`). Paper simplification: the latest BUY
   defines the position's levels (no per-lot tracking); exits use the mark price (no gap modeling).
-- [P2 — 2026-07-05 review, open] **R7–R11**: R7 `StrategyRevalidatedEvent` reaches only notification —
-  strategy doesn't subscribe (human-in-the-loop by design? document or close the loop); R8 sector caps
-  dead on the live path (`PositionSizer` supports `sector` but signals don't carry it); R9
-  `POST /aggregate` bypasses the buffer + macro bias (two aggregation semantics — manual path is
-  ops/testing only); R10 a known-neutral regime (slowdown → HOLD 0.0 component) halves the strategy
-  weight while an *unknown* regime costs nothing — consider dropping the HOLD bias component; R11 the
-  "ml" source is configured but nothing produces per-symbol ML signals yet (aggregation is effectively
-  2-source). (R6 buffer TTL ✅ done 2026-07-07 — `SIGNAL_TTL_SECONDS`, default 1 day.) P3: EDGAR
-  `Revenues` tag misses `RevenueFromContractWithCustomer…` filers (add tag fallbacks); new durables
-  replay full stream history on first start (consider `DeliverPolicy.NEW` for the aggregator); double
-  cost-gating (strategy at emit + aggregator on the aggregate) is intentional-conservative.
+- [P2 ✅ done 2026-07-07] **R7–R11** (2026-07-05 review, second batch): **R7** strategy subscribes
+  `backtest.strategy_revalidated` (durable `strategy-revalidation`) and applies the recommendation
+  (`deactivate`→`deactivated`; publishes `StrategyStatusChangedEvent` on transition) — the
+  backtest→strategy loop is closed *and* the new `STRATEGY` stream (`strategy.>`) fixes the latent
+  no-stream bug for `strategy.status_changed`. **R8** `SignalAggregatedEvent.sector` (contracts-first):
+  aggregator enriches it from company-classifier (`HttpCompanyClient`, positive-cache, graceful None);
+  risk-mgmt feeds it to `PositionSizer` → regime sector caps live. Caveat: profile sectors must use the
+  RegimeAllocator's GICS-style names ("Information Technology", "Consumer Staples", …) — an unmatched
+  string blocks in restrictive regimes (conservative). **R9** documented: `POST /aggregate` is
+  ops/testing only (bypasses buffer + macro bias + sector enrichment; its event still reaches
+  risk-mgmt). **R10** slowdown → no macro component (was HOLD 0.0, which stole weight from strategy).
+  **R11** documented in config: "ml" source is pre-provisioned; live aggregation is 2-source until
+  ml-pipeline emits per-symbol signals (renormalization makes the absent source free). P3s: EDGAR
+  revenue **tag fallbacks** shipped (per-period merge, earlier-tag priority); durable-replay staleness
+  solved by aging buffer entries from the **event emit timestamp** (durables stay `DeliverPolicy.ALL`
+  for start-order independence — better than `DeliverPolicy.NEW` since TTL now guards replays); double
+  cost-gating stays intentional-conservative.
 - [P1 ✅ done] Orphaned components wired (Direction #2 complete): feature-engine + strategy +
   risk-mgmt + backtest + ml-pipeline. Leftover specs (`earnings_decay`, `cross_asset`,
   `adaptive_weights`) belong in later services (signal-aggregator / macro), not the core runtime.
@@ -486,13 +510,39 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   @100 → mark @94 → **protective SL exit** (fill @94, flat, cash 99 700) → crisis regime →
   re-aggregated HOLD → **no new order**.
 
-**Next:** R1–R6 closed; open P2s are **R7–R11** (see Known issues). Then: **feature-engine consumes
+- 2026-07-07 — **Review gaps R7–R11 + P3s closed** (user: finish all gaps before new topics):
+  **R7** contracts-first `StrategyStatusChangedEvent` metrics → optional; strategy consumes
+  `backtest.strategy_revalidated` (renamed generic `EventSubscriber`, durable `strategy-revalidation`,
+  `ensure_stream(BACKTEST)`), `StrategyHealthTracker.apply_status` + `apply_revalidation` (own-name
+  filter; `deactivate`→`deactivated`; poison-term on unknown status; publishes status-changed on real
+  transitions). Found & fixed a **latent bug**: `strategy.status_changed` had no JetStream stream —
+  live publishes would have failed; added the `STRATEGY` stream (`strategy.>`). **R8** contracts-first
+  `SignalAggregatedEvent.sector`; new `HttpCompanyClient` in signal-aggregator (queries
+  company-classifier `/api/v1/company-classifier/companies/{symbol}`, positive-cache, graceful None;
+  compose+Helm env `COMPANY_CLASSIFIER_URL`); risk-mgmt `_risk_check_and_order(..., sector)` →
+  `PositionSizer.size(..., sector=...)` — regime sector caps now live. **R9** `POST /aggregate`
+  documented ops/testing-only (+ optional `sector` in the body). **R10** `REGIME_BIAS["slowdown"] =
+  None` — known-neutral regime contributes no component (no more weight-stealing HOLD). **R11**
+  documented: "ml" source pre-provisioned, aggregation effectively 2-source until ml-pipeline emits.
+  P3: EDGAR revenue tag fallbacks (`Revenues` → `RevenueFromContractWithCustomer[Ex/In]cludingAssessedTax`
+  → `SalesRevenueNet`; per-period merge, earlier-tag priority); aggregator buffer TTL now ages from the
+  **event emit timestamp** (durable replays can't resurrect stale signals; `DeliverPolicy.ALL` kept).
+  Counts: shared 157 (+2), strategy 56 (+10), risk-mgmt 104 (+4), signal-aggregator 74 (+11),
+  fundamental-data 30 (+3) → **all suites green (759)**; ruff + format + mypy clean. **Live-verified on
+  a real `nats-server`**: (A) `backtest.strategy_revalidated` → probation + `strategy.status_changed`
+  in the STRATEGY stream, foreign strategy ignored; (B) real uvicorn **company-classifier** over HTTP →
+  aggregates carry `sector="Information Technology"` → **crisis blocks the BUY by sector cap**,
+  slowdown re-agg stays 1-component (R10), expansion regime → sized `order.requested` (50 szt.).
+
+**Next:** the 2026-07-05 review is fully closed (R1–R11 + P3s). Then: **feature-engine consumes
 `FundamentalsUpdatedEvent` / `CompanyClassifiedEvent`** so fundamentals + style feed ML features; a
 **generic Helm Deployment template** for the 13 untemplated services (top infra item); extend
 `FinancialStatements` (current assets/liabilities + shares) → full 9-signal Piotroski; scheduled
 triggers (backtest weekly revalidation, ml-pipeline daily drift, macro/fundamentals refresh);
-notification email/SMTP; MLflow registry; ml-pipeline training/inference (PyTorch);
-`docs/ml_integration_plan.md` before deep ML work; deeper persistence (event-log/DB, multi-instance).
+notification email/SMTP (and optionally alert on `strategy.status_changed`, now that it has a stream);
+MLflow registry; ml-pipeline training/inference (PyTorch) — its per-symbol signals activate the "ml"
+aggregation source (R11); `docs/ml_integration_plan.md` before deep ML work; deeper persistence
+(event-log/DB, multi-instance).
 
 ## Architecture rules (non-negotiable)
 
