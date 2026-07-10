@@ -113,3 +113,22 @@ async def test_handle_model_drift_event():
     )
     await service.handle_model_drift(e.model_dump_json().encode())
     assert ch.sent[0].severity == "critical"
+
+
+@pytest.mark.asyncio
+async def test_handle_strategy_status_changed_event():
+    from trading_common.events import StrategyStatusChangedEvent
+
+    ch = CollectingChannel()
+    service = build_service([ch])
+    e = StrategyStatusChangedEvent(
+        strategy_name="momentum_rank",
+        old_status="active",
+        new_status="deactivated",
+        reason="backtest_revalidation:deactivate_degradation_120%",
+        sharpe_90d=-0.2,
+    )
+    await service.handle_strategy_status_changed(e.model_dump_json().encode())
+    assert len(ch.sent) == 1
+    assert ch.sent[0].severity == "warning"
+    assert "deactivated" in ch.sent[0].title

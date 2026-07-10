@@ -4,6 +4,7 @@ These are the events that warrant a human-facing notification:
 - risk.circuit_breaker          → critical (RED/BLACK) / warning (YELLOW)
 - order.filled                  → info
 - backtest.strategy_revalidated → warning (probation/deactivate) / info (active)
+- strategy.status_changed       → warning (demotion) / info (reactivation)
 - ml.drift_detected             → severity carried on the event
 """
 
@@ -13,6 +14,7 @@ from trading_common.events import (
     ModelDriftDetectedEvent,
     OrderFilledEvent,
     StrategyRevalidatedEvent,
+    StrategyStatusChangedEvent,
 )
 
 from src.core.channels import Alert
@@ -53,6 +55,24 @@ def from_strategy_revalidated(event: StrategyRevalidatedEvent) -> Alert:
         ),
         source=event.subject(),
         metadata={"strategy": event.strategy_name, "status": event.recommended_status},
+    )
+
+
+def from_strategy_status_changed(event: StrategyStatusChangedEvent) -> Alert:
+    """The applied status transition (strategy owns it — see R7); revalidation
+    alerts cover the recommendation, this one covers what actually happened."""
+    demoted = event.new_status in ("probation", "deactivated")
+    sharpe = f"{event.sharpe_90d:.2f}" if event.sharpe_90d is not None else "n/a"
+    return Alert(
+        severity="warning" if demoted else "info",
+        title=(f"Strategy status: {event.strategy_name} {event.old_status} → {event.new_status}"),
+        message=f"reason: {event.reason} (sharpe_90d {sharpe})",
+        source=event.subject(),
+        metadata={
+            "strategy": event.strategy_name,
+            "old_status": event.old_status,
+            "new_status": event.new_status,
+        },
     )
 
 

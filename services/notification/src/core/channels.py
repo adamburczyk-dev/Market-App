@@ -1,11 +1,15 @@
 """Alert + delivery channels.
 
 A channel turns an Alert into a delivered message. LogChannel is always on (works
-without credentials); Slack/Telegram are HTTP-based and only constructed when their
-config is present, so the service degrades gracefully to logging when nothing is wired.
+without credentials); Slack/Telegram/Email are only constructed when their config
+is present, so the service degrades gracefully to logging when nothing is wired.
 """
 
+import asyncio
+import smtplib
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from email.message import EmailMessage
 from typing import Protocol
 
 import httpx
@@ -97,3 +101,60 @@ class TelegramChannel:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+class EmailChannel:
+    """Sends the alert as a plain-text e-mail over SMTP.
+
+    The blocking smtplib call runs in a worker thread. A fresh connection is
+    opened per alert — volume is human-scale, so connection reuse isn't worth
+    holding SMTP state. ``sender`` is injectable for tests.
+    """
+
+    name = "email"
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        from_addr: str,
+        to_addrs: list[str],
+        user: str | None = None,
+        password: str | None = None,
+        starttls: bool = True,
+        timeout_s: float = 10.0,
+        sender: Callable[[EmailMessage], None] | None = None,
+    ) -> None:
+        self._host = host
+        self._port = port
+        self._from = from_addr
+        self._to = to_addrs
+        self._user = user
+        self._password = password
+        self._starttls = starttls
+        self._timeout_s = timeout_s
+        self._sender = sender or self._smtp_send
+
+    def _smtp_send(self, msg: EmailMessage) -> None:
+        with smtplib.SMTP(self._host, self._port, timeout=self._timeout_s) as smtp:
+            if self._starttls:
+                smtp.starttls()
+            if self._user and self._password:
+                smtp.login(self._user, self._password)
+            smtp.send_message(msg)
+
+    def _build(self, alert: Alert) -> EmailMessage:
+        msg = EmailMessage()
+        msg["Subject"] = f"[{alert.severity.upper()}] {alert.title}"
+        msg["From"] = self._from
+        msg["To"] = ", ".join(self._to)
+        lines = [alert.message, "", f"source: {alert.source}"]
+        lines += [f"{key}: {value}" for key, value in sorted(alert.metadata.items())]
+        msg.set_content("\n".join(lines))
+        return msg
+
+    async def send(self, alert: Alert) -> None:
+        await asyncio.to_thread(self._sender, self._build(alert))
+
+    async def aclose(self) -> None:
+        return None

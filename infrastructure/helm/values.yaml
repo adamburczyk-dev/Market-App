@@ -159,8 +159,9 @@ services:
         cpu: "500m"
     env:
       LOG_LEVEL: INFO
-      # SLACK_WEBHOOK_URL / TELEGRAM_* are secrets — inject via extraEnv/secret
-      # in a real deployment; without them the service stays log-only.
+      # SLACK_WEBHOOK_URL / TELEGRAM_* / SMTP_* + EMAIL_* are secrets — inject
+      # via a Secret in a real deployment; without them the service stays
+      # log-only (email needs SMTP_HOST + EMAIL_FROM + EMAIL_TO).
 
   dashboard:
     enabled: true

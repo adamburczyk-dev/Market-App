@@ -9,6 +9,7 @@ from trading_common.events import (
     ModelDriftDetectedEvent,
     OrderFilledEvent,
     StrategyRevalidatedEvent,
+    StrategyStatusChangedEvent,
 )
 
 from src.core import alerts
@@ -61,6 +62,10 @@ class NotificationService:
     async def handle_strategy_revalidated(self, data: bytes) -> None:
         event = StrategyRevalidatedEvent.model_validate_json(data)
         await self.dispatch(alerts.from_strategy_revalidated(event))
+
+    async def handle_strategy_status_changed(self, data: bytes) -> None:
+        event = StrategyStatusChangedEvent.model_validate_json(data)
+        await self.dispatch(alerts.from_strategy_status_changed(event))
 
     async def handle_model_drift(self, data: bytes) -> None:
         event = ModelDriftDetectedEvent.model_validate_json(data)

@@ -65,3 +65,48 @@ async def test_slack_channel_raises_on_http_error():
     with pytest.raises(httpx.HTTPStatusError):
         await ch.send(alert())
     await ch.aclose()
+
+
+@pytest.mark.asyncio
+async def test_email_channel_builds_and_sends_message():
+    from src.core.channels import EmailChannel
+
+    sent = []
+    ch = EmailChannel(
+        "smtp.test",
+        587,
+        "alerts@trading.local",
+        ["ops@trading.local", "risk@trading.local"],
+        sender=sent.append,
+    )
+    await ch.send(
+        Alert(
+            severity="critical",
+            title="Circuit breaker RED",
+            message="daily_loss=6.00%",
+            source="risk.circuit_breaker",
+            metadata={"level": "red", "action": "halt"},
+        )
+    )
+    await ch.aclose()
+    assert len(sent) == 1
+    msg = sent[0]
+    assert msg["Subject"] == "[CRITICAL] Circuit breaker RED"
+    assert msg["From"] == "alerts@trading.local"
+    assert msg["To"] == "ops@trading.local, risk@trading.local"
+    body = msg.get_content()
+    assert "daily_loss=6.00%" in body
+    assert "source: risk.circuit_breaker" in body
+    assert "action: halt" in body  # metadata included
+
+
+@pytest.mark.asyncio
+async def test_email_channel_sender_failure_propagates():
+    from src.core.channels import EmailChannel
+
+    def broken(msg):  # noqa: ARG001
+        raise ConnectionRefusedError("smtp down")
+
+    ch = EmailChannel("smtp.test", 587, "a@b", ["c@d"], sender=broken)
+    with pytest.raises(ConnectionRefusedError):
+        await ch.send(alert())  # dispatch() isolates this per channel in the service

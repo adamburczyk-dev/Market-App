@@ -132,16 +132,20 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   ["ml.>"])`. 35 tests green; ruff + mypy clean; live-verified on a real `nats-server`
   (`ml.drift_detected` lands in the `ML` stream and reads back).
 - `notification` is now **functionally implemented** (closes the monitoring loop — first multi-stream
-  consumer): durable `EventSubscriber`s on the 4 alert-worthy events across their streams —
+  consumer): durable `EventSubscriber`s on the 5 alert-worthy events across their streams —
   `CircuitBreakerTriggeredEvent` (RISK), `OrderFilledEvent` (ORDERS), `StrategyRevalidatedEvent`
-  (BACKTEST), `ModelDriftDetectedEvent` (ML). `core/alerts.py` maps each event → `Alert`
+  (BACKTEST), `ModelDriftDetectedEvent` (ML), `StrategyStatusChangedEvent` (STRATEGY — the *applied*
+  transition, complementing the revalidation *recommendation*; demotion=warning, reactivation=info).
+  `core/alerts.py` maps each event → `Alert`
   (severity-graded); `NotificationService.dispatch` applies a min-severity gate, keeps a recent-alerts
   ring buffer, and fans out to channels with per-channel failure isolation. `core/channels.py`:
-  `LogChannel` (always on), `SlackChannel`/`TelegramChannel` (HTTP, built only when configured — log-only
-  otherwise). Routes `GET /channels`, `GET /alerts/recent`, `POST /test-alert`; real `/ready` (NATS);
-  `ensure_stream` for all 4 source streams (start-order independent). 28 tests green; ruff + format +
-  mypy clean; live-verified on a real `nats-server` (all 4 events → 4 correctly-graded alerts). Email/SMTP
-  channel + a scheduler-driven digest are follow-ups.
+  `LogChannel` (always on), `SlackChannel`/`TelegramChannel` (HTTP) and **`EmailChannel`** (SMTP via
+  stdlib smtplib in a worker thread; STARTTLS + optional login; needs SMTP_HOST+EMAIL_FROM+EMAIL_TO)
+  — each built only when configured, log-only otherwise. Routes `GET /channels`, `GET /alerts/recent`,
+  `POST /test-alert`; real `/ready` (NATS); `ensure_stream` for all 5 source streams (start-order
+  independent). 33 tests green; ruff + format + mypy clean; live-verified on a real `nats-server`
+  (all 5 events → 5 correctly-graded alerts; every alert also rendered to a captured `EmailMessage`).
+  A scheduler-driven digest is a follow-up.
 - `dashboard` is now **functionally implemented** (last skeleton — all 9 core services done): a
   **backend-for-frontend** (FastAPI, not Streamlit — keeps `/health` `/ready` `/metrics` + structlog +
   the standard skeleton). `HttpDashboardSource` fans out read-only GETs to risk-mgmt (`/portfolio`,
@@ -620,12 +624,24 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `StrategyRevalidatedEvent` + **uvicorn lifespan smoke** on a real nats-server for all three
   services (schedulers armed/gated correctly; graceful shutdown).
 
+- 2026-07-07 — **notification e-mail/SMTP + strategy.status_changed alerts**: new `EmailChannel`
+  (stdlib `smtplib` + `EmailMessage` in `asyncio.to_thread` — no new dependency; STARTTLS + optional
+  login; fresh connection per alert — human-scale volume; injectable `sender` for tests; enabled only
+  when SMTP_HOST+EMAIL_FROM+EMAIL_TO are set, mirroring the Slack/Telegram gating). Fifth durable
+  subscription `strategy.status_changed` (STRATEGY stream) → `from_strategy_status_changed` alert —
+  the *applied* transition (R7) complementing the revalidation *recommendation*; demotion=warning,
+  reactivation=info, optional-metrics-safe ("sharpe_90d n/a"). compose: SMTP_*/EMAIL_* passthrough
+  env; Helm: secrets note extended. notification 33 tests (+5) → **all 14 suites green (799)**;
+  ruff + format + mypy clean. **Live-verified on a real `nats-server`**: 5 events (incl. a real
+  `strategy.status_changed`) → 5 correctly-graded alerts, each also rendered to a captured
+  `EmailMessage` (subject `[WARNING] Strategy status: momentum_rank active → probation`).
+
 **Next:**
-notification email/SMTP (and optionally alert on `strategy.status_changed`, now that it has a stream);
 MLflow registry; ml-pipeline training/inference (PyTorch) — its per-symbol signals activate the "ml"
 aggregation source (R11) and bring the deferred daily drift schedule; `docs/ml_integration_plan.md`
-before deep ML work; deeper persistence (event-log/DB, multi-instance; pull/queue-group consumers
-for multi-replica HA).
+**before** the deep ML work (per the standing rule); deeper persistence (event-log/DB,
+multi-instance; pull/queue-group consumers for multi-replica HA); notification digest
+(scheduler-driven, now trivial via `PeriodicTask`).
 
 ## Architecture rules (non-negotiable)
 

@@ -7,7 +7,13 @@ from fastapi import FastAPI
 
 from src.api import router as api_router
 from src.config import settings
-from src.core.channels import Channel, LogChannel, SlackChannel, TelegramChannel
+from src.core.channels import (
+    Channel,
+    EmailChannel,
+    LogChannel,
+    SlackChannel,
+    TelegramChannel,
+)
 from src.core.observability import setup_observability
 from src.core.service import NotificationService
 from src.events.subscriber import EventSubscriber, ensure_stream
@@ -22,6 +28,18 @@ def build_channels() -> list[Channel]:
         channels.append(SlackChannel(settings.SLACK_WEBHOOK_URL))
     if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
         channels.append(TelegramChannel(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID))
+    if settings.SMTP_HOST and settings.EMAIL_FROM and settings.email_recipients:
+        channels.append(
+            EmailChannel(
+                settings.SMTP_HOST,
+                settings.SMTP_PORT,
+                settings.EMAIL_FROM,
+                settings.email_recipients,
+                user=settings.SMTP_USER,
+                password=settings.SMTP_PASSWORD,
+                starttls=settings.SMTP_STARTTLS,
+            )
+        )
     return channels
 
 
@@ -44,6 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await ensure_stream(js, settings.NATS_ORDERS_STREAM, ["order.>"])
         await ensure_stream(js, settings.NATS_BACKTEST_STREAM, ["backtest.>"])
         await ensure_stream(js, settings.NATS_ML_STREAM, ["ml.>"])
+        await ensure_stream(js, settings.NATS_STRATEGY_STREAM, ["strategy.>"])
 
         plan = [
             (settings.NATS_RISK_SUBJECT, "notification-risk", service.handle_circuit_breaker),
@@ -54,6 +73,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 service.handle_strategy_revalidated,
             ),
             (settings.NATS_ML_SUBJECT, "notification-ml", service.handle_model_drift),
+            (
+                settings.NATS_STRATEGY_SUBJECT,
+                "notification-strategy",
+                service.handle_strategy_status_changed,
+            ),
         ]
         for subject, durable, handler in plan:
             sub = EventSubscriber(

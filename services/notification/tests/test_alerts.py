@@ -84,3 +84,35 @@ def test_model_drift_severity_passthrough():
     assert alert.severity == "critical"
     assert "m1" in alert.title
     assert alert.source == "ml.drift_detected"
+
+
+def test_status_changed_demotion_is_warning():
+    from trading_common.events import StrategyStatusChangedEvent
+
+    e = StrategyStatusChangedEvent(
+        strategy_name="momentum_rank",
+        old_status="active",
+        new_status="probation",
+        reason="backtest_revalidation:probation_degradation_67%",
+        sharpe_90d=0.4,
+    )
+    alert = alerts.from_strategy_status_changed(e)
+    assert alert.severity == "warning"
+    assert "active → probation" in alert.title
+    assert "0.40" in alert.message
+    assert alert.source == "strategy.status_changed"
+    assert alert.metadata["new_status"] == "probation"
+
+
+def test_status_changed_reactivation_is_info():
+    from trading_common.events import StrategyStatusChangedEvent
+
+    e = StrategyStatusChangedEvent(
+        strategy_name="momentum_rank",
+        old_status="probation",
+        new_status="active",
+        reason="all_metrics_healthy",
+    )
+    alert = alerts.from_strategy_status_changed(e)
+    assert alert.severity == "info"
+    assert "sharpe_90d n/a" in alert.message  # metrics optional on the contract
