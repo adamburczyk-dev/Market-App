@@ -72,3 +72,31 @@ async def test_refresh_single_period_scores_current_only():
     record = await service.refresh("AAPL")
     assert record is not None
     assert record[0].piotroski_f_score == 3  # trend signals can't fire
+
+
+# --- scheduled universe refresh ---
+
+
+@pytest.mark.asyncio
+async def test_refresh_universe_counts_refreshed_symbols():
+    publisher = NullPublisher()
+    current, prior = improving_pair()
+    fetcher = FakeFetcher([current, prior], enabled=True)
+    service = build_service(fetcher=fetcher, publisher=publisher)
+    refreshed = await service.refresh_universe(["AAPL", "MSFT"], pause_s=0.0)
+    assert refreshed == 2  # FakeFetcher serves both symbols
+    assert len(publisher.published) == 2
+
+
+@pytest.mark.asyncio
+async def test_refresh_universe_skips_symbols_without_data():
+    service = build_service(fetcher=FakeFetcher([], enabled=True))
+    assert await service.refresh_universe(["GHOST", "ZOMBIE"], pause_s=0.0) == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_universe_empty_list_is_noop():
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    assert await service.refresh_universe([], pause_s=0.0) == 0
+    assert publisher.published == []

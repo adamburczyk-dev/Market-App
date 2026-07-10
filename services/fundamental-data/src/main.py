@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager, suppress
 import nats
 import structlog
 from fastapi import FastAPI
+from trading_common.scheduler import PeriodicTask
 
 from src.api import router as api_router
 from src.config import settings
@@ -44,6 +45,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     service = FundamentalDataService(fetcher, publisher)
     app.state.service = service
 
+    scheduler: PeriodicTask | None = None
+    refresh_symbols = settings.refresh_symbols
+    if settings.SCHEDULE_REFRESH_ENABLED and fetcher.enabled and refresh_symbols:
+
+        async def _refresh_job() -> None:
+            await service.refresh_universe(refresh_symbols, pause_s=settings.REFRESH_SYMBOL_PAUSE_S)
+
+        scheduler = PeriodicTask(
+            "fundamentals-refresh",
+            interval_s=settings.REFRESH_INTERVAL_S,
+            job=_refresh_job,
+            initial_delay_s=settings.REFRESH_INITIAL_DELAY_S,
+        )
+        scheduler.start()
+    elif settings.SCHEDULE_REFRESH_ENABLED:
+        logger.info(
+            "Scheduled fundamentals refresh skipped — needs SEC_USER_AGENT and REFRESH_SYMBOLS"
+        )
+
     async def _readiness() -> tuple[bool, dict[str, bool]]:
         # fundamental-data publishes fundamentals events → NATS is required.
         nats_ok = nats_client is not None and nats_client.is_connected
@@ -54,6 +74,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
+    if scheduler is not None:
+        await scheduler.stop()
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()

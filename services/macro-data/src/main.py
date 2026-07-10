@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager, suppress
 import nats
 import structlog
 from fastapi import FastAPI
+from trading_common.scheduler import PeriodicTask
 
 from src.api import router as api_router
 from src.config import settings
@@ -38,6 +39,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     service = MacroDataService(fetcher, publisher)
     app.state.service = service
 
+    scheduler: PeriodicTask | None = None
+    if settings.SCHEDULE_REFRESH_ENABLED and fetcher.enabled:
+
+        async def _refresh_job() -> None:
+            await service.refresh()
+
+        scheduler = PeriodicTask(
+            "macro-refresh",
+            interval_s=settings.REFRESH_INTERVAL_S,
+            job=_refresh_job,
+            initial_delay_s=settings.REFRESH_INITIAL_DELAY_S,
+        )
+        scheduler.start()
+    elif settings.SCHEDULE_REFRESH_ENABLED:
+        logger.info("Scheduled macro refresh skipped — FRED fetcher not configured")
+
     async def _readiness() -> tuple[bool, dict[str, bool]]:
         # macro-data publishes regime events → NATS is required.
         nats_ok = nats_client is not None and nats_client.is_connected
@@ -48,6 +65,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
+    if scheduler is not None:
+        await scheduler.stop()
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()

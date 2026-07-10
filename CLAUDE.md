@@ -25,7 +25,7 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
-- `shared/trading-common`: 160 tests green, `ruff` + `mypy --strict` clean. Contracts present:
+- `shared/trading-common`: 169 tests green, `ruff` + `mypy --strict` clean. Contracts present:
   `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
   set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`, and the shared
@@ -33,6 +33,8 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `SignalAggregatedEvent` carries `sector` (R8); `StrategyStatusChangedEvent` metrics are optional
   (a revalidation-driven change has no 30d PF). `FinancialStatements` carries balance-sheet detail
   (`current_assets`/`current_liabilities`/`shares_outstanding`) for the full 9-signal Piotroski.
+  Shared utilities: `RiskEnvelope`, `CostAwareFilter`, and **`scheduler.PeriodicTask`** (in-process
+  asyncio periodic jobs, exception-isolated, + `seconds_until_weekday_hour` for calendar alignment).
 - All 13 services functionally implemented (`/health` `/ready` `/metrics` green; no skeletons left).
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
   feature-engine only (`earnings_decay`, `cross_asset`). (`decay_monitor`+`cost_filter` now wired into
@@ -113,7 +115,10 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   implements `_run_backtest` over the trailing OOS window; `BacktestService` pulls OHLCV from
   market-data (HTTP) → runs backtest/revalidation → publishes `BacktestCompletedEvent` and the new
   `StrategyRevalidatedEvent` (backtest **recommends** active/probation/deactivate; strategy **owns** the
-  status). Routes `POST /run`, `POST /revalidate`; real `/ready` gates on market-data. 39 tests green;
+  status). Routes `POST /run`, `POST /revalidate`; real `/ready` gates on market-data. **Scheduled
+  weekly revalidation** (Saturday 06:00 UTC via `PeriodicTask` + weekday alignment; OPT-IN
+  `SCHEDULE_REVALIDATION_ENABLED` — the event drives the live strategy status (R7), so it ships
+  disabled until the real activation-time OOS-Sharpe baseline is configured). 41 tests green;
   ruff + mypy clean; live-verified on a real `nats-server` (both events land in the `BACKTEST` stream
   and read back).
 - `ml-pipeline` is now **functionally implemented** (Direction #2 — **last orphaned component**):
@@ -156,6 +161,8 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `core/service.py` (`MacroDataService.refresh` — merge FRED + manual overrides → classify → publish
   `MacroUpdatedEvent` always + `RegimeChangedEvent` only on a real transition). Routes `GET /snapshot`,
   `GET /regime`, `POST /refresh`; real `/ready` (NATS); publisher + `ensure_stream(MACRO, ["macro.>"])`.
+  **Scheduled refresh** every 6h (`PeriodicTask`; first run at boot; runs only when `FRED_API_KEY` is
+  set — transition-safe since `RegimeChangedEvent` fires only on real changes).
   New service scaffold (Dockerfile, pyproject, compose port 8010, Helm values entry). 41 tests; ruff +
   format + mypy clean; live-verified on a real `nats-server` (expansion→crisis → 2×`macro.updated` +
   1×`macro.regime_changed` in the `MACRO` stream). **risk-mgmt now subscribes to `RegimeChangedEvent`**,
@@ -174,7 +181,9 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `fundamental-data` services entry). Revenue has **tag fallbacks** (`Revenues` →
   `RevenueFromContractWithCustomer[Ex/In]cludingAssessedTax` → `SalesRevenueNet`), merged per period
   with earlier-tag priority — ASC-606 filers and tag-switchers both resolve; new tags: `AssetsCurrent`,
-  `LiabilitiesCurrent`, `CommonStockSharesOutstanding` (+weighted-average share fallbacks). 33 tests;
+  `LiabilitiesCurrent`, `CommonStockSharesOutstanding` (+weighted-average share fallbacks).
+  **Scheduled weekly universe refresh** (`refresh_universe` over `REFRESH_SYMBOLS` csv with a
+  politeness pause between symbols; runs only with `SEC_USER_AGENT` + a non-empty universe). 36 tests;
   ruff + format + mypy clean; live-verified on a real `nats-server` (ingest → `fundamentals.updated`
   in the `FUNDAMENTALS` stream).
 - `company-classifier` (**serwis 11 — Direction #3, built from scratch**): `CompanyProfile` → investment
@@ -594,12 +603,29 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   ruff + format + mypy clean. Event path unchanged (same ingest→score→publish flow already
   live-verified), so no new NATS run needed.
 
-**Next:** scheduled
-triggers (backtest weekly revalidation, ml-pipeline daily drift, macro/fundamentals refresh);
+- 2026-07-07 — **Scheduled triggers** (in-process, no new infra): new shared
+  `trading_common.scheduler` — `PeriodicTask` (asyncio loop in the FastAPI lifespan; a failed run is
+  logged and the schedule keeps ticking; clean `stop()` on shutdown; single-replica semantics
+  documented — consistent with the push-consumer constraint) + `seconds_until_weekday_hour` for
+  calendar alignment. Wired: **backtest** weekly Saturday-06:00-UTC walk-forward revalidation
+  (OPT-IN `SCHEDULE_REVALIDATION_ENABLED` — its event drives strategy status via R7, so it needs the
+  real activation-time baseline `REVALIDATION_ORIGINAL_OOS_SHARPE`); **macro-data** FRED refresh
+  every 6h, first run at boot (gated on `FRED_API_KEY`; regime-transition-safe); **fundamental-data**
+  weekly EDGAR `refresh_universe` over `REFRESH_SYMBOLS` (gated on `SEC_USER_AGENT` + non-empty
+  universe; politeness pause between symbols). **ml-pipeline daily drift deliberately deferred**: a
+  scheduled check has no live feature/prediction source until training/inference exists — lands with
+  the PyTorch work (R11). Counts: shared 169 (+9), backtest 41 (+2), fundamental-data 36 (+3) →
+  **all 14 suites green (794)**; ruff + format + mypy (incl. --strict on shared) clean. Verified:
+  scheduler unit tests (fire/isolate/stop/align) + job-body test publishing a real
+  `StrategyRevalidatedEvent` + **uvicorn lifespan smoke** on a real nats-server for all three
+  services (schedulers armed/gated correctly; graceful shutdown).
+
+**Next:**
 notification email/SMTP (and optionally alert on `strategy.status_changed`, now that it has a stream);
 MLflow registry; ml-pipeline training/inference (PyTorch) — its per-symbol signals activate the "ml"
-aggregation source (R11); `docs/ml_integration_plan.md` before deep ML work; deeper persistence
-(event-log/DB, multi-instance; pull/queue-group consumers for multi-replica HA).
+aggregation source (R11) and bring the deferred daily drift schedule; `docs/ml_integration_plan.md`
+before deep ML work; deeper persistence (event-log/DB, multi-instance; pull/queue-group consumers
+for multi-replica HA).
 
 ## Architecture rules (non-negotiable)
 

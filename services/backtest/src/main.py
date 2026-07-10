@@ -1,9 +1,12 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 
 import nats
 import structlog
 from fastapi import FastAPI
+from trading_common.scheduler import SECONDS_PER_WEEK, PeriodicTask, seconds_until_weekday_hour
+from trading_common.schemas import Interval
 
 from src.api import router as api_router
 from src.config import settings
@@ -48,6 +51,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     app.state.service = service
 
+    scheduler: PeriodicTask | None = None
+    if settings.SCHEDULE_REVALIDATION_ENABLED:
+
+        async def _weekly_revalidation() -> None:
+            await service.revalidate(
+                settings.REVALIDATION_STRATEGY,
+                settings.REVALIDATION_SYMBOL,
+                settings.REVALIDATION_ORIGINAL_OOS_SHARPE,
+                Interval(settings.REVALIDATION_INTERVAL),
+                limit=settings.BACKTEST_DEFAULT_LIMIT,
+            )
+
+        scheduler = PeriodicTask(
+            "weekly-revalidation",
+            interval_s=SECONDS_PER_WEEK,
+            job=_weekly_revalidation,
+            initial_delay_s=seconds_until_weekday_hour(
+                datetime.now(UTC),
+                settings.REVALIDATION_WEEKDAY,
+                settings.REVALIDATION_HOUR_UTC,
+            ),
+        )
+        scheduler.start()
+
     async def _readiness() -> tuple[bool, dict[str, bool]]:
         # backtest is request-driven; its hard dependency is market-data (historical OHLCV).
         market_ok = await market_client.health_ok()
@@ -58,6 +85,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
+    if scheduler is not None:
+        await scheduler.stop()
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()

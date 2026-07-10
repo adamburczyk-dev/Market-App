@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     FRED_API_KEY: str | None = None
     FRED_BASE_URL: str = "https://api.stlouisfed.org/fred"
 
+    # Scheduled FRED refresh (runs only when FRED_API_KEY is set). The regime
+    # publish path is transition-safe: RegimeChangedEvent fires only on a real
+    # change, so a periodic refresh is idempotent for downstream consumers.
+    SCHEDULE_REFRESH_ENABLED: bool = True
+    REFRESH_INTERVAL_S: float = 21_600.0  # 6h — FRED series update at most daily
+    REFRESH_INITIAL_DELAY_S: float = 0.0  # populate the regime right at boot
+
     @property
     def redis_url(self) -> str:
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""

@@ -27,6 +27,18 @@ class Settings(BaseSettings):
     IS_WINDOW_DAYS: int = 252  # ~1 year in-sample
     DEGRADATION_THRESHOLD: float = 0.40  # OOS Sharpe drop >= 40% → probation
 
+    # Scheduled weekly revalidation (Saturday per the monitoring requirements).
+    # OPT-IN: the published StrategyRevalidatedEvent drives the live strategy
+    # status (R7), so enable only with the strategy's real activation-time
+    # OOS-Sharpe baseline configured below.
+    SCHEDULE_REVALIDATION_ENABLED: bool = False
+    REVALIDATION_WEEKDAY: int = 5  # Monday=0 … Saturday=5
+    REVALIDATION_HOUR_UTC: int = 6
+    REVALIDATION_STRATEGY: str = "momentum_rank"
+    REVALIDATION_SYMBOL: str = "AAPL"
+    REVALIDATION_INTERVAL: str = "1d"
+    REVALIDATION_ORIGINAL_OOS_SHARPE: float = 1.0  # activation-time OOS Sharpe
+
     @property
     def redis_url(self) -> str:
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""

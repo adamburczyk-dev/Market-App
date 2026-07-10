@@ -1,5 +1,8 @@
 """FundamentalDataService — assemble fundamentals, score them, publish updates."""
 
+import asyncio
+from collections.abc import Sequence
+
 import structlog
 from trading_common.events import FundamentalsUpdatedEvent
 from trading_common.schemas import FinancialStatements
@@ -60,3 +63,19 @@ class FundamentalDataService:
     ) -> tuple[FinancialStatements, FScoreBreakdown]:
         """Score and publish manually-provided statements (no SEC access required)."""
         return await self._process(current, prior)
+
+    async def refresh_universe(self, symbols: Sequence[str], pause_s: float = 1.0) -> int:
+        """Refresh each symbol from EDGAR (scheduled path); returns the refreshed count.
+
+        ``pause_s`` spaces the per-symbol fetches out of politeness to SEC's
+        rate limits. A symbol without data is skipped (already logged by
+        ``refresh``); transport errors degrade to "no data" inside the fetcher.
+        """
+        refreshed = 0
+        for i, symbol in enumerate(symbols):
+            if i and pause_s > 0:
+                await asyncio.sleep(pause_s)
+            if await self.refresh(symbol) is not None:
+                refreshed += 1
+        logger.info("Universe refresh finished", requested=len(symbols), refreshed=refreshed)
+        return refreshed
