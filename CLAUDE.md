@@ -9,8 +9,10 @@ via NATS JetStream (events) and HTTP (request/response).
 - **Project context/status/direction: this file** — see "Project status & direction" below (single source of truth I read every session)
 - Full 24-week development plan: `Plan_Rozwoju_Systemu_Tradingowego_2.md` (repo root)
 - Framework supplement — 12 components (risk envelope, drift/decay monitors, cost filter, regime allocator, …): `docs/framework_supplement.md`
-- ML/AI integration plan (serwisy 10–13, feature tiers, model stacks): not yet a standalone doc; initial contracts live in
-  `shared/trading-common` (schemas + events). Write `docs/ml_integration_plan.md` before deep work on serwisy 10–13.
+- **ML/AI integration plan: `docs/ml_integration_plan.md`** — authoritative design for the ML
+  phase (cross-sectional shallow model on ranked features, triple-barrier labels, purged
+  walk-forward, MLflow, `ml.signal_generated` → aggregator, drift monitoring, roadmap ML-0…ML-4).
+  Read it before touching ml-pipeline.
 
 ## Project status & direction
 
@@ -296,7 +298,12 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 - [P2 ✅ done] `adaptive_weights.py` moved to `signal-aggregator/`; `cost_filter.py` moved to
   `trading-common` (a shared cross-cutting gate like `RiskEnvelope`, used by both strategy and
   signal-aggregator). Neither remains in `strategy/`.
-- [P2] No `docs/ml_integration_plan.md`; serwisy 10–13 reference it conceptually. Initial contracts now in code — write the doc before deep ML work.
+- [P2 ✅ done 2026-07-12] `docs/ml_integration_plan.md` written — the binding ML-phase design
+  (see Key docs). Headline decisions: cross-sectional (pooled-universe) shallow PyTorch MLP on
+  the ranked feature vectors, triple-barrier labels (2σ·√10 barriers, h=10d), purged
+  walk-forward + embargo, cost-adjusted OOS-Sharpe>0.5 activation gate, MLflow local-backend
+  registry, ML as a *no-levels vote* in the aggregator (cannot trade alone), daily drift +
+  delayed-label outcome loop; per-style stacks and meta-labeling deliberately deferred to v2.
 - [P2] README "Status infrastruktury (zweryfikowany)" cannot be verified without Docker (none in sandbox/CI) — treat as *expected*, not *verified*.
 - [P3] `infrastructure/terraform/` is referenced in README but absent (planned).
 - [P2 ✅ done 2026-07-07] Helm chart: `values.yaml` restructured into a **`services:` map**
@@ -636,12 +643,29 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `strategy.status_changed`) → 5 correctly-graded alerts, each also rendered to a captured
   `EmailMessage` (subject `[WARNING] Strategy status: momentum_rank active → probation`).
 
-**Next:**
-MLflow registry; ml-pipeline training/inference (PyTorch) — its per-symbol signals activate the "ml"
-aggregation source (R11) and bring the deferred daily drift schedule; `docs/ml_integration_plan.md`
-**before** the deep ML work (per the standing rule); deeper persistence (event-log/DB,
-multi-instance; pull/queue-group consumers for multi-replica HA); notification digest
-(scheduler-driven, now trivial via `PeriodicTask`).
+- 2026-07-12 — **`docs/ml_integration_plan.md` written** (user delegated the ML-phase direction;
+  the doc is the binding design — see Key docs). Core calls, each argued in the doc:
+  **cross-sectional** pooled-universe learning on the ranked feature vectors (per-symbol
+  prediction rejected at this data scale, per Gu–Kelly–Xiu); **shallow PyTorch MLP** `global_v1`
+  (per-style stacks deferred until universe ≥ 200 — routing plumbing stays); **triple-barrier
+  labels** (±2σ₂₀·√10 barriers, vertical h=10d, binary P(up-first)); **purged walk-forward +
+  5d embargo**, decision metric = cost-adjusted OOS Sharpe of a top-quintile long-only portfolio,
+  activation gate Sharpe>0.5 (holdout + 2/3 recent folds); **MLflow local-backend** registry with
+  load-bearing metadata artifact; serving = `features.ready` → infer → new
+  **`MlSignalGeneratedEvent`** (`ml.signal_generated`) → aggregator's third subscription
+  (activates R11) as a **no-levels vote** — ML cannot trade alone, adaptive weights are the
+  safety net; **daily drift schedule + delayed-label outcome loop** (resolved triple-barrier
+  outcomes feed `record_outcome` + decay detection); meta-labeling, GBDT challenger, ML-derived
+  levels, auto-pause → v2. Roadmap **ML-0…ML-4** (ML-0 moves pure `features`/`ranking` into
+  trading-common so training reproduces serving bit-for-bit). Doc-only increment — no code.
+
+**Next:** implement the ML plan in order: **ML-0** (shared feature/ranking definitions in
+trading-common + dataset builder with triple-barrier labels and purged splits), **ML-1**
+(PyTorch training + gate report + MLflow local registry), **ML-2** (serving:
+`MlSignalGeneratedEvent` + aggregator ml subscription — activates R11), **ML-3** (daily drift
+schedule + delayed-label outcomes). Then: deeper persistence (event-log/DB; pull/queue-group
+consumers for multi-replica HA); notification digest (scheduler-driven, now trivial via
+`PeriodicTask`).
 
 ## Architecture rules (non-negotiable)
 
