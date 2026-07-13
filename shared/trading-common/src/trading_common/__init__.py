@@ -24,6 +24,8 @@ from trading_common.events import (
     StrategyRevalidatedEvent,
     StrategyStatusChangedEvent,
 )
+from trading_common.features import compute_feature_vector
+from trading_common.ranking import cross_sectional_rank
 from trading_common.risk_envelope import RiskEnvelope, RiskLimits
 from trading_common.scheduler import PeriodicTask, seconds_until_weekday_hour
 from trading_common.schemas import (
@@ -63,5 +65,7 @@ __all__ = [
     "StrategyStatusChangedEvent",
     "TradingSignal",
     "TransactionCosts",
+    "compute_feature_vector",
+    "cross_sectional_rank",
     "seconds_until_weekday_hour",
 ]

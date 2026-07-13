@@ -1,10 +1,33 @@
-"""Testy liczenia FeatureVector z barów OHLCV."""
+"""Testy liczenia FeatureVector z barów OHLCV (shared feature definitions)."""
 
-from trading_common.schemas import Interval
+from datetime import UTC, datetime, timedelta
 
-from src.core.features import compute_feature_vector
+from trading_common.features import compute_feature_vector
+from trading_common.schemas import Interval, OHLCVBar
 
-from .conftest import make_bars
+
+def make_bars(
+    n: int = 30, symbol: str = "AAPL", interval: Interval = Interval.D1
+) -> list[OHLCVBar]:
+    """Syntetyczne bary: lekki trend wzrostowy z oscylacją (cechy niezdegenerowane)."""
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    bars: list[OHLCVBar] = []
+    for i in range(n):
+        close = round(100 + i * 0.5 + (0.6 if i % 2 else -0.6), 2)
+        bars.append(
+            OHLCVBar(
+                symbol=symbol,
+                timestamp=base + timedelta(days=i),
+                interval=interval,
+                open=close - 0.5,
+                high=close + 1.0,
+                low=close - 1.0,
+                close=close,
+                volume=1_000_000.0 + i * 1000,
+                source="test",
+            )
+        )
+    return bars
 
 
 def test_full_feature_vector():

@@ -4,6 +4,10 @@ López de Prado: use cross-sectional percentile ranks, not raw values. For each
 feature, a symbol's value is ranked against all other symbols in the same
 snapshot; the result is a percentile in [0, 1] (0 = lowest in the universe,
 1 = highest). This is the transform strategy/ML should consume, not raw values.
+
+Shared (trading-common) for the same reason as ``trading_common.features``:
+ml-pipeline's training must apply the exact rank transform the serving path
+applies (docs/ml_integration_plan.md §3).
 """
 
 from trading_common.schemas import FeatureVector

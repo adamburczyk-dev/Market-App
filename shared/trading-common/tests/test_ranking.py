@@ -2,9 +2,8 @@
 
 from datetime import UTC, datetime
 
+from trading_common.ranking import cross_sectional_rank
 from trading_common.schemas import FeatureVector, Interval
-
-from src.core.ranking import cross_sectional_rank
 
 
 def _fv(symbol: str, **features: float) -> FeatureVector:

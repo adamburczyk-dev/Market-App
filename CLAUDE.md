@@ -27,7 +27,7 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
-- `shared/trading-common`: 169 tests green, `ruff` + `mypy --strict` clean. Contracts present:
+- `shared/trading-common`: 178 tests green, `ruff` + `mypy --strict` clean. Contracts present:
   `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
   set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`, and the shared
@@ -37,6 +37,9 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   (`current_assets`/`current_liabilities`/`shares_outstanding`) for the full 9-signal Piotroski.
   Shared utilities: `RiskEnvelope`, `CostAwareFilter`, and **`scheduler.PeriodicTask`** (in-process
   asyncio periodic jobs, exception-isolated, + `seconds_until_weekday_hour` for calendar alignment).
+  **ML-0**: the pure feature/rank definitions moved here — `trading_common.features`
+  (`compute_feature_vector`) + `trading_common.ranking` (`cross_sectional_rank`) — so ml-pipeline
+  training reproduces feature-engine serving bit-for-bit (numpy is now a trading-common dependency).
 - All 13 services functionally implemented (`/health` `/ready` `/metrics` green; no skeletons left).
 - Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
   feature-engine only (`earnings_decay`, `cross_asset`). (`decay_monitor`+`cost_filter` now wired into
@@ -60,7 +63,9 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   fallback), merged into vectors at **read time** so `/features` and `/ranked` expose them
   (incl. cross-sectional f_score percentile). Attribute updates deliberately do NOT publish
   `features.ready` (no strategy re-evaluation on a fundamentals refresh — the ML tier reads the
-  merged vectors). 93 tests green; live-verified end-to-end (real uvicorn fundamental-data +
+  merged vectors). Pure feature/rank definitions now imported from **trading-common** (ML-0 —
+  training/serving parity); the service keeps orchestration, store and API. 84 tests green
+  (pure-function tests moved to shared); live-verified end-to-end (real uvicorn fundamental-data +
   company-classifier: ingest → f_score 7 merged; classify → growth encoding; 2-symbol universe
   ranks f_score 1.0/0.0).
 - `strategy` is now **functionally implemented** (Direction #2): JetStream subscriber on
@@ -131,7 +136,13 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   actionable (drift_type feature_drift/performance_decay/accuracy_decay/prediction_shift; severity
   critical on retrain, warning on investigate). Routes `POST /models/{id}/baseline`,
   `POST /models/{id}/drift`, `GET /models`; real `/ready` (NATS). publisher + `ensure_stream(ML,
-  ["ml.>"])`. 35 tests green; ruff + mypy clean; live-verified on a real `nats-server`
+  ["ml.>"])`. **ML-0 landed** (the dataset foundation from `docs/ml_integration_plan.md`):
+  `core/labels.py` (triple-barrier labeling on the OHLC path — ±2σ₂₀·√h barriers, h=10d,
+  next-bar entry, same-bar double-touch = conservative loss, truncated-untouched → unresolved),
+  `core/splits.py` (purged walk-forward `Fold`s over session dates + embargo), `core/dataset.py`
+  (`build_dataset`: per-session cross-section via the SHARED `trading_common.features`/`ranking` →
+  full-universe rank → label → pooled matrix; level features excluded, missing attrs → neutral 0.5,
+  macro one-hot appended). 60 tests green; ruff + mypy clean; live-verified on a real `nats-server`
   (`ml.drift_detected` lands in the `ML` stream and reads back).
 - `notification` is now **functionally implemented** (closes the monitoring loop — first multi-stream
   consumer): durable `EventSubscriber`s on the 5 alert-worthy events across their streams —
@@ -659,9 +670,26 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   levels, auto-pause → v2. Roadmap **ML-0…ML-4** (ML-0 moves pure `features`/`ranking` into
   trading-common so training reproduces serving bit-for-bit). Doc-only increment — no code.
 
-**Next:** implement the ML plan in order: **ML-0** (shared feature/ranking definitions in
-trading-common + dataset builder with triple-barrier labels and purged splits), **ML-1**
-(PyTorch training + gate report + MLflow local registry), **ML-2** (serving:
+- 2026-07-13 — **ML-0 landed** (dataset foundation per the plan): pure `features.py`/`ranking.py`
+  **moved to trading-common** (`trading_common.features`/`ranking`; numpy now a shared dep;
+  feature-engine imports the shared definitions — training/serving parity is structural, not
+  aspirational; the 9 pure-function tests moved to shared, per the cost_filter precedent).
+  ml-pipeline gains `core/labels.py` (triple barrier on the OHLC path: trailing σ₂₀ of log
+  returns, barriers ±2σ√h, h=10, scan starts at the NEXT bar, same-bar double-touch resolves as
+  loss, vertical resolves by net-return sign, truncated-untouched windows → unresolved/dropped;
+  flat/degenerate σ → no label), `core/splits.py` (PEP-695-generic purged walk-forward folds over
+  session dates; gap = horizon + embargo; degenerate gaps raise), `core/dataset.py`
+  (`build_dataset`: per-session cross-section computed with the shared functions over the FULL
+  feature-bearing universe — ranks match serving exactly — then labeled rows pooled;
+  `EXCLUDED_FEATURES` drops price-level columns; fixed `feature_names` contract with neutral-0.5
+  fill; macro one-hot; deterministic). Engineered-path tests pin every barrier case (incl. √h
+  scaling and the truncated-tail asymmetry: touched → labeled, untouched → dropped). Counts:
+  shared 178 (+9 moved), feature-engine 84 (−9), ml-pipeline 60 (+25) → **all 14 suites green
+  (824)**; ruff + format + mypy (incl. --strict on shared) clean. Pure-compute increment — no
+  event-path changes, so no NATS run.
+
+**Next:** ML plan continues in order: **ML-1** (PyTorch training + purged-walk-forward gate
+report + MLflow local registry; torch/mlflow deps land in ml-pipeline only), **ML-2** (serving:
 `MlSignalGeneratedEvent` + aggregator ml subscription — activates R11), **ML-3** (daily drift
 schedule + delayed-label outcomes). Then: deeper persistence (event-log/DB; pull/queue-group
 consumers for multi-replica HA); notification digest (scheduler-driven, now trivial via

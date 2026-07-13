@@ -18,14 +18,14 @@ from trading_common.events import (
     FundamentalsUpdatedEvent,
     MarketDataUpdatedEvent,
 )
+from trading_common.features import compute_feature_vector
+from trading_common.ranking import cross_sectional_rank
 from trading_common.schemas import FeatureVector, Interval
 
 from src.core.attributes import SymbolAttributeStore
 from src.core.enrichment import fundamental_features, style_features
-from src.core.features import compute_feature_vector
 from src.core.fundamental_client import FundamentalsClient
 from src.core.market_data_client import MarketDataClient
-from src.core.ranking import cross_sectional_rank
 from src.core.store import FeatureStore
 from src.events.publisher import Publisher
 

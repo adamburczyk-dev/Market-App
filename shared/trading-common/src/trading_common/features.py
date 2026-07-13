@@ -1,7 +1,14 @@
-"""Tier-1 technical feature computation from OHLCV bars.
+"""Tier-1 technical feature computation from OHLCV bars — SHARED definition.
 
 Pure numpy (no pandas). Produces raw per-symbol features; cross-sectional
-percentile ranking (López de Prado) is a separate universe-level stage.
+percentile ranking (López de Prado) is the separate universe-level stage in
+``trading_common.ranking``.
+
+This lives in trading-common (not feature-engine) because ml-pipeline's
+training must reproduce the served features bit-for-bit over history —
+duplicating the math across a service boundary guarantees train/serve skew
+(docs/ml_integration_plan.md §3). feature-engine keeps orchestration, store
+and API; the *definitions* are a shared contract like the event schemas.
 
 Note: the vol_regime calculator (VIX-based) is intentionally NOT applied here —
 it expects market-wide implied vol, not single-symbol realized vol. It belongs
@@ -11,6 +18,7 @@ in the macro/regime context. `realized_vol_20` is exposed as a plain feature.
 import math
 
 import numpy as np
+
 from trading_common.schemas import FeatureVector, OHLCVBar
 
 _TRADING_DAYS = 252
