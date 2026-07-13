@@ -1,20 +1,33 @@
-"""MLPipelineService — drift detection over registered model baselines.
+"""MLPipelineService — training + drift detection over registered baselines.
 
-Wires the DriftDetector (PSI + KS + rolling-Sharpe/accuracy decay) into the
-runtime: compare current feature/prediction distributions against a model's
-registered baseline, and publish a ModelDriftDetectedEvent when the verdict is
-actionable (retrain or investigate).
+Training (plan §6–§7): pull the universe's OHLCV history → build the pooled
+cross-sectional dataset (shared feature/rank definitions) → purged
+walk-forward → activation-gate report → log the model to MLflow and register
+its drift baseline. Promotion to production is a separate, manual call.
+
+Drift: wires the DriftDetector (PSI + KS + rolling-Sharpe/accuracy decay) —
+compare current feature/prediction distributions against a model's registered
+baseline and publish ModelDriftDetectedEvent when the verdict is actionable.
 """
+
+from typing import Any
 
 import numpy as np
 import structlog
 from trading_common.events import ModelDriftDetectedEvent
+from trading_common.schemas import Interval
 
+from src.core.dataset import Dataset, DatasetParams, build_dataset
+from src.core.market_data_client import MarketDataClient
+from src.core.model_store import MlflowModelStore
 from src.core.monitoring.drift_detector import DriftDetector, DriftReport
 from src.core.registry import ModelBaseline, ModelRegistry
+from src.core.training import TrainingParams, run_training
 from src.events.publisher import Publisher
 
 logger = structlog.get_logger()
+
+BASELINE_SAMPLE_CAP = 500  # reference values kept per feature for drift PSI
 
 
 class MLPipelineService:
@@ -23,14 +36,84 @@ class MLPipelineService:
         detector: DriftDetector,
         registry: ModelRegistry,
         publisher: Publisher,
+        market_client: MarketDataClient | None = None,
+        model_store: MlflowModelStore | None = None,
     ) -> None:
         self._detector = detector
         self._registry = registry
         self._publisher = publisher
+        self._market = market_client
+        self._store = model_store
 
     @property
     def registry(self) -> ModelRegistry:
         return self._registry
+
+    @property
+    def model_store(self) -> MlflowModelStore | None:
+        return self._store
+
+    # --- training (plan ML-1) ---
+
+    async def build_training_dataset(
+        self, symbols: list[str], interval: Interval, limit: int
+    ) -> Dataset:
+        if self._market is None:
+            raise RuntimeError("market-data client not configured")
+        bars_by_symbol = {}
+        for symbol in symbols:
+            bars = await self._market.get_ohlcv(symbol, interval, limit=limit)
+            if bars:
+                bars_by_symbol[symbol] = bars
+            else:
+                logger.warning("No history for symbol — skipped", symbol=symbol)
+        return build_dataset(bars_by_symbol, DatasetParams())
+
+    async def train(
+        self,
+        symbols: list[str],
+        interval: Interval,
+        limit: int = 1500,
+        params: TrainingParams | None = None,
+    ) -> dict[str, Any]:
+        """Full training pass: dataset → walk-forward gate → registry + baseline.
+
+        The model version is logged to MLflow regardless of the gate outcome
+        (a failed gate is a result worth keeping); promotion stays manual.
+        """
+        dataset = await self.build_training_dataset(symbols, interval, limit)
+        model, report = run_training(dataset, params)
+
+        version: str | None = None
+        if self._store is not None:
+            version = self._store.log_training(model, report)
+        else:
+            logger.warning("Model store unavailable — training run not persisted")
+
+        model_id = (
+            f"{self._store.model_name}@v{version}"
+            if self._store is not None and version is not None
+            else "unpersisted"
+        )
+        reference = {
+            name: dataset.x[-BASELINE_SAMPLE_CAP:, i].tolist()
+            for i, name in enumerate(dataset.feature_names)
+        }
+        probs = model.predict_proba(dataset.x[-BASELINE_SAMPLE_CAP:])
+        self.register_baseline(
+            model_id,
+            reference,
+            baseline_sharpe=report.holdout.portfolio.sharpe,
+            prediction_reference=probs.tolist(),
+        )
+        return {
+            "model": self._store.model_name if self._store is not None else "global_v1",
+            "version": version,
+            "model_id": model_id,
+            "samples": dataset.n_samples,
+            "features": dataset.feature_names,
+            "gate": report.as_dict(),
+        }
 
     def register_baseline(
         self,

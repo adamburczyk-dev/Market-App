@@ -106,6 +106,10 @@ services:
         cpu: "2000m"
     env:
       LOG_LEVEL: INFO
+      # training pulls history over HTTP; sqlite/artifacts under /app/mlruns —
+      # ephemeral without a PVC (retrain after restart), volume is the scale-up
+      MARKET_DATA_URL: http://market-data:8000
+      MLFLOW_TRACKING_URI: sqlite:////app/mlruns/mlflow.db
 
   risk-mgmt:
     enabled: true

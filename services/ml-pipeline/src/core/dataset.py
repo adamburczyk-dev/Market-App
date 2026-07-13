@@ -44,6 +44,7 @@ class DatasetParams:
 class Dataset:
     x: np.ndarray  # (n_samples, n_features) — ranks / one-hots in [0, 1]
     y: np.ndarray  # (n_samples,) — binary triple-barrier outcome
+    next_returns: np.ndarray  # (n_samples,) — 1-session forward return (evaluation only)
     dates: list[datetime]  # per-sample session date (drives purged splits)
     symbols: list[str]
     feature_names: list[str]
@@ -91,6 +92,7 @@ def build_dataset(
     row_dates: list[datetime] = []
     row_symbols: list[str] = []
     row_labels: list[int] = []
+    row_next_returns: list[float] = []
 
     for session in all_dates:
         # Rank over the FULL feature-bearing cross-section (exactly what serving
@@ -119,10 +121,14 @@ def build_dataset(
             )
             if outcome is None:
                 continue
+            closes = series[symbol]["closes"]
             rows.append({**ranked.features, **macro})
             row_dates.append(session)
             row_symbols.append(symbol)
             row_labels.append(outcome.label)
+            # a labeled row always has a next bar (labels need future data);
+            # the 1-session forward return feeds the daily-rebalance evaluation
+            row_next_returns.append(float(closes[i + 1] / closes[i] - 1.0))
 
     if feature_names is None:
         keys = {key for row in rows for key in row}
@@ -132,6 +138,7 @@ def build_dataset(
         [[row.get(name, 0.5) for name in feature_names] for row in rows], dtype=float
     ).reshape(len(rows), len(feature_names))
     y = np.array(row_labels, dtype=float)
+    next_returns = np.array(row_next_returns, dtype=float)
 
     logger.info(
         "Dataset built",
@@ -141,4 +148,11 @@ def build_dataset(
         sessions=len(all_dates),
         positive_rate=round(float(y.mean()), 4) if len(rows) else None,
     )
-    return Dataset(x=x, y=y, dates=row_dates, symbols=row_symbols, feature_names=feature_names)
+    return Dataset(
+        x=x,
+        y=y,
+        next_returns=next_returns,
+        dates=row_dates,
+        symbols=row_symbols,
+        feature_names=feature_names,
+    )

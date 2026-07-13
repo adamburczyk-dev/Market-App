@@ -261,7 +261,12 @@ services:
       NATS_URL: nats://nats:4222
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
+      # training pulls the universe history over HTTP; models persist to the volume
+      MARKET_DATA_URL: http://market-data:8000
+      MLFLOW_TRACKING_URI: sqlite:////app/mlruns/mlflow.db
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    volumes:
+      - ml_mlruns:/app/mlruns
     ports:
       - "8005:8000"
     depends_on:
@@ -511,3 +516,4 @@ volumes:
   prometheus_data:
   grafana_data:
   loki_data:
+  ml_mlruns:

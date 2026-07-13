@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     NATS_ML_STREAM: str = "ML"
     NATS_ML_SUBJECTS: str = "ml.>"
 
+    # Training (plan ML-1): history source + MLflow local-backend registry
+    MARKET_DATA_URL: str = "http://market-data:8000"
+    MLFLOW_TRACKING_URI: str = "sqlite:///mlruns/mlflow.db"
+    MODEL_NAME: str = "global_v1"
+
     @property
     def redis_url(self) -> str:
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""

@@ -142,8 +142,24 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `core/splits.py` (purged walk-forward `Fold`s over session dates + embargo), `core/dataset.py`
   (`build_dataset`: per-session cross-section via the SHARED `trading_common.features`/`ranking` →
   full-universe rank → label → pooled matrix; level features excluded, missing attrs → neutral 0.5,
-  macro one-hot appended). 60 tests green; ruff + mypy clean; live-verified on a real `nats-server`
-  (`ml.drift_detected` lands in the `ML` stream and reads back).
+  macro one-hot appended; + `next_returns` for evaluation). **ML-1 landed** (training + registry):
+  `core/model.py` (PyTorch `MlpClassifier` 2×hidden + dropout, pos_weight, early stopping with a
+  min-epochs warm-up, temperature calibration), `core/evaluation.py` (tie-aware AUC, Brier, and the
+  DECISION metric — cost-adjusted Sharpe of the daily-rebalanced top-quantile long-only portfolio
+  with turnover costs), `core/training.py` (`run_training`: untouched holdout + purged walk-forward
+  folds, per-window purged fit/val split, gate = holdout Sharpe>0.5 AND ≥2/3 recent folds AND
+  Brier ≤ base rate; final model retrained on full history regardless — caller owns what a failed
+  gate means), `core/model_store.py` (**MLflow sqlite backend**: params/metrics logged, artifacts =
+  `state_dict` + LOAD-BEARING `metadata.json` (feature list/temperature/shape), alias-based
+  promotion `production` — manual sign-off; exact load round-trip), `core/market_data_client.py`;
+  service `train()` = fetch universe history → dataset → gate → MLflow version + drift baseline
+  auto-registered as `{model}@v{N}`. Routes `POST /models/train` (sync, minutes — ops/scheduled),
+  `POST /models/versions/{v}/promote`, `GET /models` (+registry versions). torch+mlflow deps
+  (ml-pipeline only; build images with the CPU wheel index — PyPI default bundles CUDA); compose:
+  `ml_mlruns` volume + MARKET_DATA_URL/MLFLOW_TRACKING_URI (Helm env mirrored, PVC = scale-up).
+  86 tests green (gate PASSES on a blatant trend universe, FAILS on driftless random walks —
+  the anti-luck check); ruff + mypy clean; uvicorn lifespan smoke with the real store on a real
+  `nats-server`; earlier live NATS verification of the drift path still applies.
 - `notification` is now **functionally implemented** (closes the monitoring loop — first multi-stream
   consumer): durable `EventSubscriber`s on the 5 alert-worthy events across their streams —
   `CircuitBreakerTriggeredEvent` (RISK), `OrderFilledEvent` (ORDERS), `StrategyRevalidatedEvent`
@@ -688,12 +704,31 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   (824)**; ruff + format + mypy (incl. --strict on shared) clean. Pure-compute increment — no
   event-path changes, so no NATS run.
 
-**Next:** ML plan continues in order: **ML-1** (PyTorch training + purged-walk-forward gate
-report + MLflow local registry; torch/mlflow deps land in ml-pipeline only), **ML-2** (serving:
-`MlSignalGeneratedEvent` + aggregator ml subscription — activates R11), **ML-3** (daily drift
-schedule + delayed-label outcomes). Then: deeper persistence (event-log/DB; pull/queue-group
-consumers for multi-replica HA); notification digest (scheduler-driven, now trivial via
-`PeriodicTask`).
+- 2026-07-13 — **ML-1 landed** (training + registry per the plan): `core/model.py` — PyTorch
+  `MlpClassifier` (2 hidden + dropout), `train_classifier` with pos_weight class balancing, early
+  stopping **with a min-epochs warm-up** (found in testing: dropout-noisy val loss produced a lucky
+  epoch-3 minimum that stopped training before any learning — AUC ~0.47 vs 0.78 after the fix) and
+  LBFGS temperature calibration. `core/evaluation.py` — tie-aware Mann-Whitney AUC, Brier, and the
+  decision metric: cost-adjusted Sharpe of the daily-rebalanced equal-weight top-quantile long-only
+  portfolio (one-way turnover costing). `core/training.py` — `run_training`: untouched recent
+  holdout + purged walk-forward folds (internal fit/val split also purged), gate = holdout
+  Sharpe>0.5 AND ≥2/3 recent folds AND Brier ≤ base rate; final model retrained on full history,
+  caller owns failed-gate semantics. `core/model_store.py` — **MLflow, sqlite backend**:
+  runs+metrics logged, artifacts = `state_dict` + load-bearing `metadata.json`, **alias-based**
+  promotion (`production`; stage API is deprecated), exact predict round-trip pinned by test.
+  Service `train()` orchestrates fetch(HTTP)→dataset→gate→version+drift-baseline (`global_v1@vN`);
+  routes `POST /models/train`, `POST /models/versions/{v}/promote`, `GET /models` extended.
+  torch+mlflow deps in ml-pipeline only (pyproject notes the CPU wheel index for images); compose
+  `ml_mlruns` volume + env; Helm env mirrored. **Gate sanity pinned by tests**: passes on a blatant
+  trend universe, fails on driftless random walks. ml-pipeline 86 (+26) → **all 14 suites green
+  (850)**; ruff + format + mypy clean; uvicorn lifespan smoke (real nats + real sqlite store) PASS.
+
+**Next:** ML plan continues: **ML-2** (serving: `MlSignalGeneratedEvent` contract +
+`features.ready` → infer → publish; aggregator ml subscription — activates R11; serving refuses on
+feature-list mismatch per the metadata contract), **ML-3** (daily drift schedule + delayed-label
+outcomes → `record_outcome`). Then: real-data bootstrap + first true training run (needs market-data
+backfill of the configured universe); deeper persistence (event-log/DB; pull/queue-group consumers
+for multi-replica HA); notification digest (scheduler-driven, now trivial via `PeriodicTask`).
 
 ## Architecture rules (non-negotiable)
 
