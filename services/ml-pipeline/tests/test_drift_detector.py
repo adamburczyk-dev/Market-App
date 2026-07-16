@@ -194,3 +194,12 @@ class TestThresholdConstants:
 
     def test_accuracy_min(self):
         assert DriftDetector.ACCURACY_MIN == 0.48
+
+
+def test_psi_catches_out_of_support_shift():
+    """A live window entirely OUTSIDE the reference range is maximal drift —
+    the closed-edge histogram used to drop those values and report ~0 PSI."""
+    detector = DriftDetector()
+    reference = np.linspace(0.0, 0.3, 200)
+    current = np.linspace(0.8, 1.0, 100)  # no overlap with the reference support
+    assert detector.compute_psi(reference, current) > detector.PSI_THRESHOLD

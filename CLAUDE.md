@@ -172,7 +172,29 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   inactive until promotion, features durable subscribed) + **live ML-2 chain verified on a real
   `nats-server`** (real trained+promoted model from a real sqlite registry: `features.ready` →
   infer → `ml.signal_generated` in the ML stream → aggregator re-aggregates 1→2 components with
-  strategy levels intact).
+  strategy levels intact). **ML-3 landed** (daily monitoring loop — **the ML plan is complete**):
+  `core/inference_log.py` (`InferenceLog` — rolling in-memory bounded log of EVERY served
+  inference incl. dead-zone HOLDs; per-feature windows are the live PSI input; BUY/SELL votes
+  double as pending outcomes; `rolling_metrics` = annualized Sharpe ·√(252/h) + accuracy over the
+  resolved window, `None` below `min_outcomes` — the caller uses neutral inputs, never fabricated
+  performance), `core/outcomes.py` (`OutcomeResolver` — a matured vote is replayed against fresh
+  market-data history with the SAME triple-barrier rule as training; the realized
+  direction-signed return feeds the aggregator's `POST /outcomes` ("ml" source — adaptive weights
+  now learn from REALIZED ML performance, closing the plan §9 loop) + the rolling decay metrics;
+  immature → retried next run, unmatched/unresolved past `OUTCOME_DROP_AFTER_DAYS` (42) → dropped
+  with label=None), `core/aggregator_client.py` (`HttpAggregatorClient`, graceful degrade).
+  `run_daily_monitor` (resolve → push outcomes → live feature/prediction windows vs registry
+  baseline → `check_drift` → event only when actionable) runs on a `PeriodicTask` (24h, 1h
+  initial delay) and skips honestly (`serving_inactive`/`no_data`/`no_baseline`; <10 outcomes →
+  neutral Sharpe/accuracy, `performance_measured=false`). Serving **pause/resume** ops routes
+  (`GET /serving`, `POST /serving/pause|resume`, `POST /monitor/run`) — a paused engine stays
+  subscribed but emits nothing. **Found+fixed a latent PSI bug**: closed histogram edges silently
+  dropped out-of-support current values (a complete distribution shift scored PSI≈0) — outer bins
+  now extend to ±inf (pinned by test). compose+Helm env: `SIGNAL_AGGREGATOR_URL`. 116 tests green;
+  ruff + mypy clean; uvicorn lifespan smoke (monitor armed/stopped, pause round-trip, honest skip)
+  + **live-verified on a real `nats-server` + a real uvicorn signal-aggregator**: drifted window +
+  3 matured BUY votes → 3 outcomes resolved and POSTed over HTTP (adaptive "ml" weight 0.33→0.86)
+  + exactly 1 `ml.drift_detected` (feature_drift/critical) read back from the ML stream.
 - `notification` is now **functionally implemented** (closes the monitoring loop — first multi-stream
   consumer): durable `EventSubscriber`s on the 5 alert-worthy events across their streams —
   `CircuitBreakerTriggeredEvent` (RISK), `OrderFilledEvent` (ORDERS), `StrategyRevalidatedEvent`
@@ -757,12 +779,34 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   → `ml.signal_generated` in ML → aggregator 1→2-component re-aggregation with strategy levels
   intact; uvicorn lifespan smoke (serving inactive until promotion; features durable subscribed).
 
-**Next:** ML plan finishes with **ML-3** (daily drift schedule via `PeriodicTask` — the deferred
-monitoring item, now that serving accumulates live vectors/predictions; delayed-label outcome
-resolution → aggregator `record_outcome` + decay detection; `POST /models/{id}/pause`). Then:
-real-data bootstrap + first true training run (needs market-data backfill of the configured
-universe); deeper persistence (event-log/DB; pull/queue-group consumers for multi-replica HA);
-notification digest (scheduler-driven, now trivial via `PeriodicTask`).
+- 2026-07-16 — **ML-3 landed** (daily monitoring loop — **the ML plan ML-0…ML-4 scope is code-complete**):
+  `core/inference_log.py` (`InferenceLog` — bounded in-memory rolling log of every served inference
+  incl. dead-zone HOLDs; feature/prediction windows = live PSI/KS inputs; BUY/SELL votes double as
+  pending outcomes; `rolling_metrics` annualized ·√(252/h), `None` under `min_outcomes`),
+  `core/outcomes.py` (`OutcomeResolver` — matured votes replayed against fresh market-data history
+  with the SAME triple-barrier rule as training; direction-signed realized return; immature →
+  retry, unmatched/unresolved past `OUTCOME_DROP_AFTER_DAYS`=42 → dropped, label=None — no
+  fabricated outcomes), `core/aggregator_client.py` (`HttpAggregatorClient` → signal-aggregator
+  `POST /outcomes`, graceful degrade) — **realized ML outcomes now drive the adaptive "ml" weight**
+  (plan §9 loop closed). `service.run_daily_monitor` (resolve → push outcomes → live windows vs
+  baseline → `check_drift`; honest skips + neutral performance under 10 outcomes with
+  `performance_measured=false`) on a `PeriodicTask` (24h, 1h initial delay). Serving pause/resume
+  (`GET /serving`, `POST /serving/pause|resume`, `POST /monitor/run`). **Latent PSI bug
+  found+fixed**: closed histogram edges dropped out-of-support current values → a complete
+  distribution shift scored PSI≈0; outer bins now ±inf (test-pinned). compose+Helm:
+  `SIGNAL_AGGREGATOR_URL` for ml-pipeline. ml-pipeline 116 (+17) → **all 14 suites green (889)**;
+  ruff + format + mypy clean. **Live-verified on a real `nats-server` + a real uvicorn
+  signal-aggregator**: drifted window + 3 matured BUY votes → `run_daily_monitor` resolved 3
+  outcomes (mean +7.6%) and POSTed them over HTTP — adaptive weights moved `ml` 0.33→0.86 — and
+  exactly 1 `ml.drift_detected` (feature_drift/critical) landed in the ML stream; uvicorn lifespan
+  smoke (monitor armed/stopped cleanly, pause round-trip, honest inactive skip).
+
+**Next:** **real-data bootstrap + first true training run** — market-data backfill of the
+configured universe (~20–50 symbols, ≥5y daily), then `POST /models/train` on real history, gate
+review, manual promote, and the paper loop runs with a live ML vote (drift monitor now watches it
+end-to-end). Then: deeper persistence (event-log/DB; pull/queue-group consumers for multi-replica
+HA); notification digest (scheduler-driven, now trivial via `PeriodicTask`); v2 ML items from the
+plan (meta-labeling, GBDT challenger, per-style stacks once universe ≥ 200).
 
 ## Architecture rules (non-negotiable)
 

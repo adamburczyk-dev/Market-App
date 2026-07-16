@@ -18,9 +18,11 @@ from trading_common.events import ModelDriftDetectedEvent
 from trading_common.schemas import Interval
 
 from src.core.dataset import Dataset, DatasetParams, build_dataset
+from src.core.inference_log import InferenceLog
 from src.core.market_data_client import MarketDataClient
 from src.core.model_store import MlflowModelStore
 from src.core.monitoring.drift_detector import DriftDetector, DriftReport
+from src.core.outcomes import OutcomeResolver
 from src.core.registry import ModelBaseline, ModelRegistry
 from src.core.serving import ServingEngine
 from src.core.training import TrainingParams, run_training
@@ -29,6 +31,7 @@ from src.events.publisher import Publisher
 logger = structlog.get_logger()
 
 BASELINE_SAMPLE_CAP = 500  # reference values kept per feature for drift PSI
+NEUTRAL_ACCURACY = 0.5  # used when too few resolved outcomes exist to measure
 
 
 class MLPipelineService:
@@ -40,6 +43,10 @@ class MLPipelineService:
         market_client: MarketDataClient | None = None,
         model_store: MlflowModelStore | None = None,
         serving: ServingEngine | None = None,
+        inference_log: InferenceLog | None = None,
+        resolver: OutcomeResolver | None = None,
+        aggregator_client: Any = None,  # AggregatorClient protocol (record_outcome)
+        horizon_days: int = 10,
     ) -> None:
         self._detector = detector
         self._registry = registry
@@ -47,6 +54,10 @@ class MLPipelineService:
         self._market = market_client
         self._store = model_store
         self._serving = serving
+        self._log = inference_log
+        self._resolver = resolver
+        self._aggregator = aggregator_client
+        self._horizon_days = horizon_days
 
     @property
     def registry(self) -> ModelRegistry:
@@ -70,6 +81,69 @@ class MLPipelineService:
             "model": self._store.model_name,
             "production_version": version,
             "serving_model_id": serving_model,
+        }
+
+    # --- daily monitoring loop (plan ML-3) ---
+
+    async def run_daily_monitor(self) -> dict[str, Any]:
+        """Resolve matured outcomes, then drift-check the live serving windows.
+
+        Order matters: resolutions first, so the decay inputs are as fresh as
+        possible. With no live data yet (cold start, nothing promoted, empty
+        window) the run is a logged no-op. When too few outcomes have resolved
+        to measure performance, the decay inputs are NEUTRAL (baseline Sharpe,
+        accuracy 0.5) — feature-PSI and prediction-shift checks still run.
+        """
+        if self._serving is None or not self._serving.active or self._serving.model_id is None:
+            logger.info("Daily monitor skipped — serving inactive")
+            return {"skipped": "serving_inactive"}
+        model_id = self._serving.model_id
+
+        resolved: list[float] = []
+        if self._resolver is not None:
+            resolved = await self._resolver.resolve_pending(model_id)
+            if self._aggregator is not None:
+                for signed_return in resolved:
+                    await self._aggregator.record_outcome("ml", signed_return)
+
+        if self._log is None:
+            return {"model_id": model_id, "outcomes_resolved": len(resolved)}
+        window = self._log.feature_window(model_id)
+        if not window:
+            logger.info("Daily monitor: no served inferences yet", model_id=model_id)
+            return {"model_id": model_id, "outcomes_resolved": len(resolved), "skipped": "no_data"}
+
+        baseline = self._registry.get(model_id)
+        if baseline is None:
+            logger.warning("Daily monitor: no drift baseline registered", model_id=model_id)
+            return {
+                "model_id": model_id,
+                "outcomes_resolved": len(resolved),
+                "skipped": "no_baseline",
+            }
+
+        metrics_30 = self._log.rolling_metrics(model_id, 30, self._horizon_days)
+        metrics_90 = self._log.rolling_metrics(model_id, 90, self._horizon_days)
+        if metrics_30 is None:  # not enough outcomes → neutral performance inputs
+            sharpe_30, accuracy_30 = baseline.baseline_sharpe, NEUTRAL_ACCURACY
+        else:
+            sharpe_30, accuracy_30 = metrics_30
+        sharpe_90 = metrics_90[0] if metrics_90 is not None else baseline.baseline_sharpe
+
+        report = await self.check_drift(
+            model_id,
+            current_features=window,
+            rolling_sharpe_30d=sharpe_30,
+            rolling_sharpe_90d=sharpe_90,
+            rolling_accuracy_30d=accuracy_30,
+            prediction_current=self._log.prediction_window(model_id),
+        )
+        return {
+            "model_id": model_id,
+            "outcomes_resolved": len(resolved),
+            "performance_measured": metrics_30 is not None,
+            "recommended_action": report.recommended_action if report else None,
+            "counts": self._log.counts(model_id),
         }
 
     # --- training (plan ML-1) ---

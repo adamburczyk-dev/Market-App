@@ -267,6 +267,8 @@ services:
       # serving: features.ready → ranked vector + macro regime → ml.signal_generated
       FEATURE_ENGINE_URL: http://feature-engine:8000
       MACRO_DATA_URL: http://macro-data:8000
+      # daily monitor pushes realized ML outcomes into the adaptive weights
+      SIGNAL_AGGREGATOR_URL: http://signal-aggregator:8000
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     volumes:
       - ml_mlruns:/app/mlruns

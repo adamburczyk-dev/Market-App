@@ -10,6 +10,8 @@ engine refuses to infer (schema drift, not sparsity). The dead zone
 silence on HOLD — a stale ML vote then simply TTL-expires in the aggregator.
 """
 
+from datetime import UTC, datetime
+
 import numpy as np
 import structlog
 from trading_common.events import FeaturesReadyEvent, MlSignalGeneratedEvent
@@ -17,6 +19,7 @@ from trading_common.schemas import Interval
 
 from src.core.dataset import REGIMES
 from src.core.feature_client import FeatureClient
+from src.core.inference_log import InferenceLog, InferenceRecord
 from src.core.macro_client import MacroClient
 from src.core.model import TrainedModel
 from src.core.model_store import MlflowModelStore
@@ -37,6 +40,7 @@ class ServingEngine:
         serve_interval: str = "1d",
         horizon_days: int = 10,
         max_missing_fraction: float = 0.5,
+        inference_log: InferenceLog | None = None,
     ) -> None:
         self._publisher = publisher
         self._features = feature_client
@@ -47,8 +51,10 @@ class ServingEngine:
         self._interval = serve_interval
         self._horizon_days = horizon_days
         self._max_missing = max_missing_fraction
+        self._log = inference_log
         self._model: TrainedModel | None = None
         self._model_id: str | None = None
+        self._paused = False
 
     @property
     def active(self) -> bool:
@@ -57,6 +63,19 @@ class ServingEngine:
     @property
     def model_id(self) -> str | None:
         return self._model_id
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def pause(self) -> None:
+        """Force HOLD-only serving (manual ops action; plan §9)."""
+        self._paused = True
+        logger.warning("Serving paused — HOLD-only", model_id=self._model_id)
+
+    def resume(self) -> None:
+        self._paused = False
+        logger.info("Serving resumed", model_id=self._model_id)
 
     def reload(self) -> str | None:
         """(Re)load the production alias from the registry; None deactivates."""
@@ -104,6 +123,9 @@ class ServingEngine:
         """Infer one symbol; publishes (and returns) only actionable BUY/SELL votes."""
         if self._model is None or self._model_id is None or self._store is None:
             return None  # nothing promoted — serving is silent
+        if self._paused:
+            logger.debug("Serving paused — no vote", symbol=symbol)
+            return None
         ranked = await self._features.get_ranked(symbol, interval)
         if ranked is None:
             return None
@@ -118,6 +140,21 @@ class ServingEngine:
         elif probability_up <= self._sell:
             signal = "SELL"
         else:
+            signal = "HOLD"
+        if self._log is not None:  # every real model output feeds the drift window
+            self._log.append(
+                self._model_id,
+                InferenceRecord(
+                    symbol=symbol,
+                    at=datetime.now(UTC),
+                    features={
+                        n: float(v) for n, v in zip(self._model.feature_names, row, strict=True)
+                    },
+                    probability_up=probability_up,
+                    signal=signal,
+                ),
+            )
+        if signal == "HOLD":
             logger.debug("Dead zone — no ML vote", symbol=symbol, p=round(probability_up, 4))
             return None
 

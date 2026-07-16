@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     SELL_PROBABILITY: float = 0.45
     LABEL_HORIZON_DAYS: int = 10
 
+    # Daily monitoring loop (plan ML-3): resolve matured outcomes → drift check
+    SIGNAL_AGGREGATOR_URL: str = "http://signal-aggregator:8000"
+    MONITOR_INTERVAL_S: float = 86_400.0  # daily, per the monitoring requirements
+    MONITOR_INITIAL_DELAY_S: float = 3_600.0  # first run 1h after boot
+    INFERENCE_LOG_MAXLEN: int = 2000
+    OUTCOME_DROP_AFTER_DAYS: int = 42  # unresolved votes dropped past ~3× horizon
+
     @property
     def redis_url(self) -> str:
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""

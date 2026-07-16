@@ -57,8 +57,13 @@ class DriftDetector:
         """
         eps = 1e-6
 
-        # Use common bin edges from reference distribution
+        # Common bin edges from the reference distribution, with the OUTER bins
+        # opened to ±inf: current values outside the reference support are the
+        # strongest drift signal there is — np.histogram with closed edges would
+        # silently drop them and report a PSI of ~0 for a total shift.
         _, bin_edges = np.histogram(reference, bins=bins)
+        bin_edges[0] = -np.inf
+        bin_edges[-1] = np.inf
 
         ref_counts, _ = np.histogram(reference, bins=bin_edges)
         cur_counts, _ = np.histogram(current, bins=bin_edges)

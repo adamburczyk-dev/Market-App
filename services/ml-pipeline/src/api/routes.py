@@ -56,6 +56,37 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/serving")
+async def serving_status(service: MLPipelineService = Depends(get_service)) -> dict:
+    engine = service.serving
+    if engine is None:
+        return {"active": False, "paused": False, "model_id": None}
+    return {"active": engine.active, "paused": engine.paused, "model_id": engine.model_id}
+
+
+@router.post("/serving/pause")
+async def pause_serving(service: MLPipelineService = Depends(get_service)) -> dict:
+    """Force HOLD-only serving (manual ops action — plan §9)."""
+    if service.serving is None:
+        raise HTTPException(status_code=503, detail="serving engine unavailable")
+    service.serving.pause()
+    return {"paused": True, "model_id": service.serving.model_id}
+
+
+@router.post("/serving/resume")
+async def resume_serving(service: MLPipelineService = Depends(get_service)) -> dict:
+    if service.serving is None:
+        raise HTTPException(status_code=503, detail="serving engine unavailable")
+    service.serving.resume()
+    return {"paused": False, "model_id": service.serving.model_id}
+
+
+@router.post("/monitor/run")
+async def run_monitor(service: MLPipelineService = Depends(get_service)) -> dict:
+    """Run the daily monitor now (ops; the scheduler runs it daily anyway)."""
+    return await service.run_daily_monitor()
+
+
 @router.post("/models/versions/{version}/promote")
 async def promote(version: str, service: MLPipelineService = Depends(get_service)) -> dict:
     """Point the ``production`` alias at a version (manual gate sign-off).

@@ -5,15 +5,19 @@ from pathlib import Path
 import nats
 import structlog
 from fastapi import FastAPI
+from trading_common.scheduler import PeriodicTask
 
 from src.api import router as api_router
 from src.config import settings
+from src.core.aggregator_client import HttpAggregatorClient
 from src.core.feature_client import HttpFeatureClient
+from src.core.inference_log import InferenceLog
 from src.core.macro_client import HttpMacroClient
 from src.core.market_data_client import HttpMarketDataClient
 from src.core.model_store import MlflowModelStore
 from src.core.monitoring.drift_detector import DriftDetector
 from src.core.observability import setup_observability
+from src.core.outcomes import OutcomeResolver
 from src.core.registry import ModelRegistry
 from src.core.service import MLPipelineService
 from src.core.serving import ServingEngine
@@ -58,6 +62,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     feature_client = HttpFeatureClient(settings.FEATURE_ENGINE_URL)
     macro_client = HttpMacroClient(settings.MACRO_DATA_URL)
+    aggregator_client = HttpAggregatorClient(settings.SIGNAL_AGGREGATOR_URL)
+    inference_log = InferenceLog(maxlen=settings.INFERENCE_LOG_MAXLEN)
     serving = ServingEngine(
         publisher,
         feature_client,
@@ -67,9 +73,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         sell_threshold=settings.SELL_PROBABILITY,
         serve_interval=settings.SERVE_INTERVAL,
         horizon_days=settings.LABEL_HORIZON_DAYS,
+        inference_log=inference_log,
     )
     if serving.reload() is None:
         logger.info("Serving inactive until a model version is promoted")
+    resolver = OutcomeResolver(
+        market_client,
+        inference_log,
+        drop_after_days=settings.OUTCOME_DROP_AFTER_DAYS,
+    )
 
     service = MLPipelineService(
         detector,
@@ -78,8 +90,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         market_client=market_client,
         model_store=model_store,
         serving=serving,
+        inference_log=inference_log,
+        resolver=resolver,
+        aggregator_client=aggregator_client,
+        horizon_days=settings.LABEL_HORIZON_DAYS,
     )
     app.state.service = service
+
+    async def _daily_monitor() -> None:
+        await service.run_daily_monitor()
+
+    monitor = PeriodicTask(
+        "ml-daily-monitor",
+        interval_s=settings.MONITOR_INTERVAL_S,
+        job=_daily_monitor,
+        initial_delay_s=settings.MONITOR_INITIAL_DELAY_S,
+    )
+    monitor.start()
 
     subscriber: EventSubscriber | None = None
     if nats_client is not None:
@@ -106,6 +133,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
+    await monitor.stop()
     if subscriber is not None:
         await subscriber.stop()
     if nats_client is not None:
@@ -114,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await market_client.aclose()
     await feature_client.aclose()
     await macro_client.aclose()
+    await aggregator_client.aclose()
 
 
 app = FastAPI(

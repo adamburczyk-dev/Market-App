@@ -76,7 +76,9 @@ def build_engine(promoted_store, features, regime=None, publisher=None, **kwargs
         store,
         **kwargs,
     )
-    assert engine.reload() == "global_v1@v1"
+    # the production alias may have moved (hot-reload test promotes v2) —
+    # assert against the store's CURRENT production version, not a literal
+    assert engine.reload() == f"global_v1@v{store.production_version()}"
     return engine
 
 
@@ -109,7 +111,7 @@ async def test_infer_publishes_actionable_vote(promoted_store):
     assert event is not None
     assert event.event_type == EventType.ML_SIGNAL_GENERATED
     assert event.signal in ("BUY", "SELL")
-    assert event.model_id == "global_v1@v1"
+    assert event.model_id.startswith("global_v1@v")
     assert event.model_stack == "global_v1"
     assert 0.0 <= event.probability_up <= 1.0
     assert 0.0 <= event.confidence <= 1.0
@@ -285,3 +287,78 @@ async def test_promote_hot_reloads_serving(promoted_store, tmp_path, monkeypatch
     result = service.promote(v2)
     assert result["serving_model_id"] == f"global_v1@v{v2}"
     assert engine.model_id == f"global_v1@v{v2}"
+
+
+@pytest.mark.asyncio
+async def test_paused_serving_is_silent_and_resumable(promoted_store):
+    _store, model, _ds = promoted_store
+    publisher = NullPublisher()
+    engine = build_engine(
+        promoted_store,
+        strong_vector(model, 0.95),
+        publisher=publisher,
+        buy_threshold=0.5001,
+        sell_threshold=0.4999,
+    )
+    engine.pause()
+    assert engine.paused
+    assert await engine.infer_symbol("AAPL", Interval.D1) is None
+    assert publisher.published == []
+    engine.resume()
+    assert not engine.paused
+    assert await engine.infer_symbol("AAPL", Interval.D1) is not None
+
+
+@pytest.mark.asyncio
+async def test_every_inference_lands_in_the_log(promoted_store):
+    from src.core.inference_log import InferenceLog
+    from src.core.serving import ServingEngine
+
+    store, model, _ds = promoted_store
+    log = InferenceLog()
+    # dead zone forced → HOLD, still logged (real model output feeds drift windows)
+    engine = ServingEngine(
+        NullPublisher(),
+        FakeFeatureClient(strong_vector(model, 0.9)),
+        FakeMacroClient(),
+        store,
+        buy_threshold=1.01,
+        sell_threshold=-0.01,
+        inference_log=log,
+    )
+    engine.reload()
+    assert await engine.infer_symbol("AAPL", Interval.D1) is None
+    counts = log.counts(engine.model_id)
+    assert counts["total"] == 1
+    assert counts["pending"] == 0  # HOLD never awaits an outcome
+    window = log.feature_window(engine.model_id)
+    assert set(window) == set(model.feature_names)  # assembled row logged by name
+
+
+@pytest.mark.asyncio
+async def test_aggregator_client_posts_and_degrades():
+    import httpx
+
+    from src.core.aggregator_client import HttpAggregatorClient
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"recorded": True, "weights": {}})
+
+    client = HttpAggregatorClient("http://signal-aggregator:8000")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert await client.record_outcome("ml", 0.0123) is True
+    assert captured == {"source": "ml", "daily_return": 0.0123}
+    await client.aclose()
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("aggregator down")
+
+    broken = HttpAggregatorClient("http://signal-aggregator:8000")
+    broken._client = httpx.AsyncClient(transport=httpx.MockTransport(boom))
+    assert await broken.record_outcome("ml", 0.01) is False  # graceful degradation
+    await broken.aclose()
