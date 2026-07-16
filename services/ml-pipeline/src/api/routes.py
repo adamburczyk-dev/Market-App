@@ -58,11 +58,14 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
 
 @router.post("/models/versions/{version}/promote")
 async def promote(version: str, service: MLPipelineService = Depends(get_service)) -> dict:
-    """Point the ``production`` alias at a version (manual gate sign-off)."""
-    if service.model_store is None:
-        raise HTTPException(status_code=503, detail="model store unavailable")
-    service.model_store.promote(version)
-    return {"model": service.model_store.model_name, "production_version": version}
+    """Point the ``production`` alias at a version (manual gate sign-off).
+
+    Hot-reloads the serving engine, so the new model starts voting on the next
+    ``features.ready`` without a restart."""
+    try:
+        return service.promote(version)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/models/{model_id}/baseline")

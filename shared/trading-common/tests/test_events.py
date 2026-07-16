@@ -12,6 +12,7 @@ from trading_common.events import (
     FundamentalsUpdatedEvent,
     MacroUpdatedEvent,
     MarketDataUpdatedEvent,
+    MlSignalGeneratedEvent,
     ModelDriftDetectedEvent,
     ModelRetrainedEvent,
     ModelTrainedEvent,
@@ -415,7 +416,7 @@ class TestEventTypes:
         assert EventType.SIGNAL_AGGREGATED == "signal.aggregated"
 
     def test_event_type_count(self):
-        assert len(EventType) == 23
+        assert len(EventType) == 24
 
     def test_order_requested_event(self):
         e = OrderRequestedEvent(
@@ -505,3 +506,33 @@ class TestMlExtensionEvents:
         restored = SignalAggregatedEvent.model_validate(e.model_dump())
         assert restored.final_signal == e.final_signal
         assert restored.components_count == e.components_count
+
+
+class TestMlSignalGeneratedEvent:
+    def make(self, **kwargs):
+        defaults = {
+            "symbol": "AAPL",
+            "model_id": "global_v1@v3",
+            "model_stack": "global_v1",
+            "signal": "BUY",
+            "confidence": 0.4,
+            "probability_up": 0.7,
+            "horizon_days": 10,
+        }
+        return MlSignalGeneratedEvent(**{**defaults, **kwargs})
+
+    def test_valid_event(self):
+        e = self.make()
+        assert e.event_type == EventType.ML_SIGNAL_GENERATED
+        assert e.source_service == "ml-pipeline"
+        assert e.model_id == "global_v1@v3"
+
+    def test_subject(self):
+        assert self.make().subject() == "ml.signal_generated"
+
+    def test_serialization_roundtrip(self):
+        e = self.make(signal="SELL", probability_up=0.31)
+        restored = MlSignalGeneratedEvent.model_validate_json(e.model_dump_json())
+        assert restored.signal == "SELL"
+        assert restored.probability_up == 0.31
+        assert restored.horizon_days == 10

@@ -24,6 +24,7 @@ class EventType(StrEnum):
     MODEL_TRAINED = "ml.model_trained"
     MODEL_DRIFT_DETECTED = "ml.drift_detected"
     MODEL_RETRAINED = "ml.model_retrained"
+    ML_SIGNAL_GENERATED = "ml.signal_generated"
     ALERT_TRIGGERED = "alert.triggered"
     BACKTEST_COMPLETED = "backtest.completed"
     STRATEGY_REVALIDATED = "backtest.strategy_revalidated"
@@ -275,6 +276,27 @@ class FeaturesReadyEvent(BaseEvent):
     features_count: int
     tier: int | None = None
     source_service: str = "feature-engine"
+
+
+class MlSignalGeneratedEvent(BaseEvent):
+    """Per-symbol ML vote — ml-pipeline → signal-aggregator (plan §8).
+
+    Deliberately carries NO protective levels: an ML-only aggregate cannot
+    become an order (risk-mgmt blocks orders without a stop), so ML modulates
+    strategy-led decisions rather than trading alone. ``probability_up`` is the
+    calibrated P(up-barrier-first); ``confidence`` = 2·|p − 0.5| after the
+    dead-zone mapping to BUY/SELL/HOLD.
+    """
+
+    event_type: EventType = EventType.ML_SIGNAL_GENERATED
+    symbol: str
+    model_id: str  # registry id, e.g. "global_v1@v3"
+    model_stack: str  # routed stack name, e.g. "global_v1"
+    signal: str  # "BUY" | "SELL" | "HOLD"
+    confidence: float
+    probability_up: float
+    horizon_days: int
+    source_service: str = "ml-pipeline"
 
 
 class SignalAggregatedEvent(BaseEvent):

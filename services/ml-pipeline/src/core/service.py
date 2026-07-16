@@ -22,6 +22,7 @@ from src.core.market_data_client import MarketDataClient
 from src.core.model_store import MlflowModelStore
 from src.core.monitoring.drift_detector import DriftDetector, DriftReport
 from src.core.registry import ModelBaseline, ModelRegistry
+from src.core.serving import ServingEngine
 from src.core.training import TrainingParams, run_training
 from src.events.publisher import Publisher
 
@@ -38,12 +39,14 @@ class MLPipelineService:
         publisher: Publisher,
         market_client: MarketDataClient | None = None,
         model_store: MlflowModelStore | None = None,
+        serving: ServingEngine | None = None,
     ) -> None:
         self._detector = detector
         self._registry = registry
         self._publisher = publisher
         self._market = market_client
         self._store = model_store
+        self._serving = serving
 
     @property
     def registry(self) -> ModelRegistry:
@@ -52,6 +55,22 @@ class MLPipelineService:
     @property
     def model_store(self) -> MlflowModelStore | None:
         return self._store
+
+    @property
+    def serving(self) -> ServingEngine | None:
+        return self._serving
+
+    def promote(self, version: str) -> dict[str, Any]:
+        """Manual gate sign-off: alias the version as production + hot-reload serving."""
+        if self._store is None:
+            raise RuntimeError("model store not configured")
+        self._store.promote(version)
+        serving_model = self._serving.reload() if self._serving is not None else None
+        return {
+            "model": self._store.model_name,
+            "production_version": version,
+            "serving_model_id": serving_model,
+        }
 
     # --- training (plan ML-1) ---
 

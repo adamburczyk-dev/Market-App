@@ -21,12 +21,15 @@ class Settings(BaseSettings):
     NATS_MACRO_STREAM: str = "MACRO"
     NATS_MACRO_SUBJECT: str = "macro.regime_changed"
     NATS_MACRO_DURABLE: str = "signal-aggregator-regime"
+    # Consume ML votes (plan §8 — activates the pre-provisioned "ml" source)
+    NATS_ML_STREAM: str = "ML"
+    NATS_ML_SUBJECT: str = "ml.signal_generated"
+    NATS_ML_DURABLE: str = "signal-aggregator-ml"
 
-    # Signal sources combined (rules-based + ML + macro regime).
-    # NOTE (R11): "ml" is configured ahead of its producer — ml-pipeline does not
-    # emit per-symbol signals yet, so live aggregation is effectively 2-source
-    # (strategy + macro); weights renormalize over the present sources, so the
-    # absent "ml" costs nothing until it ships.
+    # Signal sources combined (rules-based + ML + macro regime). The "ml"
+    # source went live with plan ML-2 (`ml.signal_generated` subscription);
+    # weights renormalize over the sources present per aggregation, so a
+    # silent/paused model costs nothing (closes R11).
     SIGNAL_SOURCES: str = "strategy,ml,macro"
     BUY_THRESHOLD: float = 0.2  # weighted-score magnitude for BUY/SELL
     BASE_EDGE_BPS: float = 200.0  # confidence → expected edge for the cost gate

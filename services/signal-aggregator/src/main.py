@@ -35,8 +35,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         nats_client = await nats.connect(settings.NATS_URL)
         js = nats_client.jetstream()
         await ensure_stream(js, settings.NATS_SIGNALS_STREAM, [settings.NATS_SIGNALS_SUBJECTS])
-        # Ensure the macro stream too so the regime subscription is start-order independent.
+        # Ensure the source streams too so subscriptions are start-order independent.
         await ensure_stream(js, settings.NATS_MACRO_STREAM, ["macro.>"])
+        await ensure_stream(js, settings.NATS_ML_STREAM, ["ml.>"])
         publisher = NatsPublisher(js)
     except Exception as exc:  # noqa: BLE001
         logger.warning("NATS/JetStream unavailable, events disabled", error=str(exc))
@@ -74,7 +75,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 max_deliver=settings.NATS_MAX_DELIVER,
             )
             await regime_sub.start()
-            subscribers = [signal_sub, regime_sub]
+            ml_sub = EventSubscriber(
+                nats_client.jetstream(),
+                settings.NATS_ML_SUBJECT,
+                settings.NATS_ML_DURABLE,
+                service.handle_ml_signal,
+                max_deliver=settings.NATS_MAX_DELIVER,
+            )
+            await ml_sub.start()
+            subscribers = [signal_sub, regime_sub, ml_sub]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not subscribe to source events", error=str(exc))
             subscribers = []

@@ -264,6 +264,9 @@ services:
       # training pulls the universe history over HTTP; models persist to the volume
       MARKET_DATA_URL: http://market-data:8000
       MLFLOW_TRACKING_URI: sqlite:////app/mlruns/mlflow.db
+      # serving: features.ready → ranked vector + macro regime → ml.signal_generated
+      FEATURE_ENGINE_URL: http://feature-engine:8000
+      MACRO_DATA_URL: http://macro-data:8000
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     volumes:
       - ml_mlruns:/app/mlruns

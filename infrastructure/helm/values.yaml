@@ -110,6 +110,9 @@ services:
       # ephemeral without a PVC (retrain after restart), volume is the scale-up
       MARKET_DATA_URL: http://market-data:8000
       MLFLOW_TRACKING_URI: sqlite:////app/mlruns/mlflow.db
+      # serving: features.ready → ranked vector + macro regime → ml.signal_generated
+      FEATURE_ENGINE_URL: http://feature-engine:8000
+      MACRO_DATA_URL: http://macro-data:8000
 
   risk-mgmt:
     enabled: true

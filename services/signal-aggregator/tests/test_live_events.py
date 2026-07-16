@@ -219,3 +219,103 @@ async def test_replayed_old_event_expires_by_emit_timestamp():
     await service.handle_signal_generated(stale.model_dump_json().encode())
     assert publisher.published == []  # pruned on arrival, never aggregated
     assert await service.aggregate_symbol("AAPL") is None
+
+
+# --- ML votes (plan ML-2 — activates R11) ---
+
+
+def ml_event(
+    symbol: str = "AAPL",
+    side: str = "BUY",
+    confidence: float = 0.8,
+    ts: datetime | None = None,
+):
+    from trading_common.events import MlSignalGeneratedEvent
+
+    kwargs = {"timestamp": ts} if ts is not None else {}
+    return MlSignalGeneratedEvent(
+        symbol=symbol,
+        model_id="global_v1@v1",
+        model_stack="global_v1",
+        signal=side,
+        confidence=confidence,
+        probability_up=0.5 + (confidence / 2 if side == "BUY" else -confidence / 2),
+        horizon_days=10,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_ml_vote_joins_strategy_component():
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    await service.handle_signal_generated(signal_event(side="BUY").model_dump_json().encode())
+    await service.handle_ml_signal(ml_event(side="BUY", confidence=0.8).model_dump_json().encode())
+    event = publisher.published[-1]
+    assert event.components_count == 2  # strategy + ml
+    assert event.final_signal == "BUY"
+    assert event.price == 100.0  # levels still come from the strategy component
+
+
+@pytest.mark.asyncio
+async def test_ml_veto_dampens_strategy_buy():
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    await service.handle_signal_generated(
+        signal_event(side="BUY", confidence=0.6).model_dump_json().encode()
+    )
+    await service.handle_ml_signal(ml_event(side="SELL", confidence=0.9).model_dump_json().encode())
+    event = publisher.published[-1]
+    # 0.5*0.6 (BUY) − 0.5*0.9 (SELL) = −0.15 → inside the ±0.2 threshold → HOLD
+    assert event.final_signal == "HOLD"
+    assert event.price is None  # no levels on a non-actionable aggregate
+
+
+@pytest.mark.asyncio
+async def test_ml_vote_alone_never_aggregates():
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    await service.handle_ml_signal(ml_event().model_dump_json().encode())
+    assert publisher.published == []  # ML cannot trade alone (plan §1.3)
+    assert await service.aggregate_symbol("AAPL") is None
+
+
+@pytest.mark.asyncio
+async def test_expired_ml_vote_drops_out():
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
+    clock = FakeClock(now)
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher, signal_ttl_s=3600.0, clock=clock)
+    await service.handle_signal_generated(signal_event(ts=now).model_dump_json().encode())
+    stale_ml = ml_event(ts=now - timedelta(days=2))  # replayed history
+    await service.handle_ml_signal(stale_ml.model_dump_json().encode())
+    event = publisher.published[-1]
+    assert event.components_count == 1  # stale ML vote pruned, strategy remains
+
+
+@pytest.mark.asyncio
+async def test_newer_ml_vote_replaces_older():
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    await service.handle_signal_generated(signal_event(side="BUY").model_dump_json().encode())
+    await service.handle_ml_signal(ml_event(side="SELL", confidence=0.9).model_dump_json().encode())
+    await service.handle_ml_signal(ml_event(side="BUY", confidence=0.9).model_dump_json().encode())
+    event = publisher.published[-1]
+    assert event.components_count == 2
+    assert event.final_signal == "BUY"  # latest ML vote agrees with strategy
+
+
+@pytest.mark.asyncio
+async def test_strategy_ml_and_macro_make_three_components():
+    publisher = NullPublisher()
+    service = build_service(publisher=publisher)
+    await service.handle_regime_changed(
+        regime_event(old="slowdown", new="expansion").model_dump_json().encode()
+    )
+    await service.handle_signal_generated(signal_event(side="BUY").model_dump_json().encode())
+    await service.handle_ml_signal(ml_event(side="BUY").model_dump_json().encode())
+    event = publisher.published[-1]
+    assert event.components_count == 3
+    assert event.final_signal == "BUY"

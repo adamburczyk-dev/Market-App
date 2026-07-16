@@ -18,6 +18,18 @@ class Settings(BaseSettings):
     MLFLOW_TRACKING_URI: str = "sqlite:///mlruns/mlflow.db"
     MODEL_NAME: str = "global_v1"
 
+    # Serving (plan ML-2): features.ready → infer → ml.signal_generated
+    FEATURE_ENGINE_URL: str = "http://feature-engine:8000"
+    MACRO_DATA_URL: str = "http://macro-data:8000"
+    NATS_FEATURES_STREAM: str = "FEATURES"
+    NATS_FEATURES_SUBJECT: str = "features.ready"
+    NATS_FEATURES_DURABLE: str = "ml-pipeline-features"
+    NATS_MAX_DELIVER: int = 5
+    SERVE_INTERVAL: str = "1d"
+    BUY_PROBABILITY: float = 0.55  # dead zone between the two thresholds is silent
+    SELL_PROBABILITY: float = 0.45
+    LABEL_HORIZON_DAYS: int = 10
+
     @property
     def redis_url(self) -> str:
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""

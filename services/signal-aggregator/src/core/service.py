@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 import structlog
 from trading_common.cost_filter import CostAwareFilter
 from trading_common.events import (
+    MlSignalGeneratedEvent,
     RegimeChangedEvent,
     SignalAggregatedEvent,
     SignalGeneratedEvent,
@@ -46,6 +47,15 @@ class BufferedSignal:
     at: datetime
 
 
+@dataclass
+class BufferedMlSignal:
+    """Latest ML vote for a symbol (no levels — ML cannot trade alone)."""
+
+    component: SignalComponent
+    model_id: str
+    at: datetime
+
+
 class SignalAggregatorService:
     def __init__(
         self,
@@ -66,8 +76,9 @@ class SignalAggregatorService:
         self._ttl_s = signal_ttl_s
         self._clock = clock or (lambda: datetime.now(UTC))
         self._company = company_client
-        # live event state: latest strategy signal per symbol + market-wide macro bias
+        # live event state: latest strategy + ML signals per symbol + macro bias
         self._buffer: dict[str, BufferedSignal] = {}
+        self._ml_buffer: dict[str, BufferedMlSignal] = {}
         self._macro: SignalComponent | None = None
 
     def weights(self) -> dict[str, float]:
@@ -99,6 +110,23 @@ class SignalAggregatorService:
         )
         await self.aggregate_symbol(event.symbol)
 
+    async def handle_ml_signal(self, data: bytes) -> None:
+        """An ML vote (plan §8, activates R11) → buffer it, re-aggregate its symbol.
+
+        ML entries age from the event's emit timestamp like strategy signals;
+        a symbol with only an ML vote never aggregates (strategy is required —
+        ML modulates strategy-led decisions, it cannot trade alone).
+        """
+        event = MlSignalGeneratedEvent.model_validate_json(data)
+        self._ml_buffer[event.symbol] = BufferedMlSignal(
+            component=SignalComponent(
+                source="ml", signal=event.signal, confidence=event.confidence
+            ),
+            model_id=event.model_id,
+            at=event.timestamp,
+        )
+        await self.aggregate_symbol(event.symbol)
+
     async def handle_regime_changed(self, data: bytes) -> None:
         """A macro regime change → update the market-wide bias, re-aggregate all symbols."""
         event = RegimeChangedEvent.model_validate_json(data)
@@ -107,14 +135,16 @@ class SignalAggregatorService:
         for symbol in list(self._buffer):
             await self.aggregate_symbol(symbol)
 
-    def _expired(self, entry: BufferedSignal) -> bool:
+    def _expired(self, entry: BufferedSignal | BufferedMlSignal) -> bool:
         return (self._clock() - entry.at).total_seconds() > self._ttl_s
 
     async def aggregate_symbol(self, symbol: str) -> AggregationResult | None:
-        """Aggregate a symbol from its buffered strategy signal + the macro bias.
+        """Aggregate a symbol from its buffered strategy + ML signals + macro bias.
 
-        The strategy component is required (the macro bias alone never emits a
-        per-symbol signal); an expired entry is pruned and yields None.
+        The strategy component is required (neither the macro bias nor an ML
+        vote alone emits a tradable per-symbol signal); expired entries are
+        pruned — an expired strategy signal yields None, an expired ML vote
+        just drops out of the component list.
         """
         entry = self._buffer.get(symbol)
         if entry is not None and self._expired(entry):
@@ -125,6 +155,13 @@ class SignalAggregatorService:
             return None
 
         components = [entry.component]
+        ml_entry = self._ml_buffer.get(symbol)
+        if ml_entry is not None and self._expired(ml_entry):
+            logger.info("Buffered ML vote expired", symbol=symbol, model_id=ml_entry.model_id)
+            del self._ml_buffer[symbol]
+            ml_entry = None
+        if ml_entry is not None:
+            components.append(ml_entry.component)
         if self._macro is not None:
             components.append(self._macro)
         sector = await self._company.get_sector(symbol) if self._company is not None else None

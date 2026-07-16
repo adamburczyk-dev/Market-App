@@ -27,7 +27,7 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (run locally on Python 3.12 — not from memory):
-- `shared/trading-common`: 178 tests green, `ruff` + `mypy --strict` clean. Contracts present:
+- `shared/trading-common`: 181 tests green, `ruff` + `mypy --strict` clean. Contracts present:
   `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, ML/AI contracts (`CompanyProfile`,
   `FinancialStatements`, `MacroSnapshot`, `SentimentSnapshot`, `FeatureVector`), full `EventType`
   set incl. ML/AI extension + `STRATEGY_REVALIDATED` (backtest→strategy), `RiskEnvelope`, and the shared
@@ -35,6 +35,8 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `SignalAggregatedEvent` carries `sector` (R8); `StrategyStatusChangedEvent` metrics are optional
   (a revalidation-driven change has no 30d PF). `FinancialStatements` carries balance-sheet detail
   (`current_assets`/`current_liabilities`/`shares_outstanding`) for the full 9-signal Piotroski.
+  **ML-2**: `MlSignalGeneratedEvent` (`ml.signal_generated`) — the per-symbol ML vote (model_id,
+  signal, calibrated probability_up, horizon; deliberately NO levels — ML cannot trade alone).
   Shared utilities: `RiskEnvelope`, `CostAwareFilter`, and **`scheduler.PeriodicTask`** (in-process
   asyncio periodic jobs, exception-isolated, + `seconds_until_weekday_hour` for calendar alignment).
   **ML-0**: the pure feature/rank definitions moved here — `trading_common.features`
@@ -157,9 +159,20 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `POST /models/versions/{v}/promote`, `GET /models` (+registry versions). torch+mlflow deps
   (ml-pipeline only; build images with the CPU wheel index — PyPI default bundles CUDA); compose:
   `ml_mlruns` volume + MARKET_DATA_URL/MLFLOW_TRACKING_URI (Helm env mirrored, PVC = scale-up).
-  86 tests green (gate PASSES on a blatant trend universe, FAILS on driftless random walks —
-  the anti-luck check); ruff + mypy clean; uvicorn lifespan smoke with the real store on a real
-  `nats-server`; earlier live NATS verification of the drift path still applies.
+  **ML-2 landed** (serving): `core/serving.py` — `ServingEngine` runs ONLY the production-aliased
+  model; on `features.ready` (durable `ml-pipeline-features`, interval-filtered) it pulls the
+  symbol's **ranked** vector (new `HttpFeatureClient`) + the macro regime (`HttpMacroClient`,
+  10-min TTL cache, degrades to the all-zeros "unknown" one-hot), assembles the input row in the
+  metadata's exact feature order (missing Tier-2 attr → neutral 0.5 like training; MAJORITY of
+  expected features missing → **inference refused** — schema drift, not sparsity), and publishes
+  `MlSignalGeneratedEvent` only outside the dead zone (p≥0.55 BUY / p≤0.45 SELL; HOLD is silent,
+  mirroring strategy semantics — stale votes TTL-expire in the aggregator). `service.promote()`
+  **hot-reloads** serving (no restart to swap models). 99 tests green (gate anti-luck checks +
+  serving/refusal/dead-zone/hot-reload); ruff + mypy clean; uvicorn lifespan smoke (serving
+  inactive until promotion, features durable subscribed) + **live ML-2 chain verified on a real
+  `nats-server`** (real trained+promoted model from a real sqlite registry: `features.ready` →
+  infer → `ml.signal_generated` in the ML stream → aggregator re-aggregates 1→2 components with
+  strategy levels intact).
 - `notification` is now **functionally implemented** (closes the monitoring loop — first multi-stream
   consumer): durable `EventSubscriber`s on the 5 alert-worthy events across their streams —
   `CircuitBreakerTriggeredEvent` (RISK), `OrderFilledEvent` (ORDERS), `StrategyRevalidatedEvent`
@@ -249,9 +262,14 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   company-classifier `GET /api/v1/company-classifier/companies/{symbol}`, positive-cached, degrades to
   None), which **risk-mgmt consumes and sizes into orders** honoring the regime's sector caps.
   `POST /aggregate` is documented as ops/testing only (R9 — bypasses buffer/macro/sector enrichment).
-  74 tests; ruff + format + mypy clean; live-verified on a real `nats-server` (full chain: signal →
-  aggregated BUY+levels → sized order → fill; crisis → re-aggregated HOLD → no order; sector enriched
-  from a real uvicorn company-classifier over HTTP). **This closes the full 13-service architecture.**
+  **The "ml" source is LIVE (ML-2, closes R11 for real)**: a third durable subscriber
+  (`signal-aggregator-ml`) on `ml.signal_generated` buffers the latest per-symbol ML vote (aged from
+  the emit timestamp, same TTL); an ML vote joins the strategy component in aggregation but **never
+  aggregates alone** (strategy required — ML modulates strategy-led decisions). 80 tests; ruff +
+  format + mypy clean; live-verified on a real `nats-server` (full chain: signal → aggregated
+  BUY+levels → sized order → fill; crisis → re-aggregated HOLD → no order; sector enriched from a
+  real uvicorn company-classifier over HTTP; ML vote → 2-component re-aggregation).
+  **This closes the full 13-service architecture.**
 
 **Direction (where the project should go, in order):**
 1. ✅ **DONE — Foundation:** `market-data` fetch → validate → store → cache → publish event
@@ -723,12 +741,28 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   trend universe, fails on driftless random walks. ml-pipeline 86 (+26) → **all 14 suites green
   (850)**; ruff + format + mypy clean; uvicorn lifespan smoke (real nats + real sqlite store) PASS.
 
-**Next:** ML plan continues: **ML-2** (serving: `MlSignalGeneratedEvent` contract +
-`features.ready` → infer → publish; aggregator ml subscription — activates R11; serving refuses on
-feature-list mismatch per the metadata contract), **ML-3** (daily drift schedule + delayed-label
-outcomes → `record_outcome`). Then: real-data bootstrap + first true training run (needs market-data
-backfill of the configured universe); deeper persistence (event-log/DB; pull/queue-group consumers
-for multi-replica HA); notification digest (scheduler-driven, now trivial via `PeriodicTask`).
+- 2026-07-16 — **ML-2 landed** (serving per the plan — **activates R11 for real**): contracts-first
+  `MlSignalGeneratedEvent` (`ml.signal_generated`, ML stream; NO levels — ML cannot trade alone).
+  ml-pipeline `core/serving.py` (`ServingEngine`: production-alias model only; `features.ready`
+  durable `ml-pipeline-features`, interval-filtered → ranked vector via new `HttpFeatureClient` +
+  macro regime via `HttpMacroClient` with 10-min TTL cache → input row in the metadata's exact
+  feature order — missing attr → neutral 0.5 like training, MAJORITY missing → **refusal** (schema
+  drift ≠ sparsity) → dead-zone-silent publish at p≥0.55/p≤0.45); `service.promote()` hot-reloads
+  serving. signal-aggregator: third durable `signal-aggregator-ml` buffers the latest per-symbol ML
+  vote (emit-timestamp TTL) — joins strategy in aggregation, **never aggregates alone**;
+  `ensure_stream(ML)`. compose+Helm: FEATURE_ENGINE_URL/MACRO_DATA_URL for ml-pipeline. Counts:
+  shared 181 (+3), ml-pipeline 99 (+13), signal-aggregator 80 (+6) → **all 14 suites green (872)**;
+  ruff + format + mypy clean. **Live ML-2 chain on a real `nats-server`** (real trained+promoted
+  model from a real sqlite registry): `features.ready` → infer (p_up 1.0 on the engineered vector)
+  → `ml.signal_generated` in ML → aggregator 1→2-component re-aggregation with strategy levels
+  intact; uvicorn lifespan smoke (serving inactive until promotion; features durable subscribed).
+
+**Next:** ML plan finishes with **ML-3** (daily drift schedule via `PeriodicTask` — the deferred
+monitoring item, now that serving accumulates live vectors/predictions; delayed-label outcome
+resolution → aggregator `record_outcome` + decay detection; `POST /models/{id}/pause`). Then:
+real-data bootstrap + first true training run (needs market-data backfill of the configured
+universe); deeper persistence (event-log/DB; pull/queue-group consumers for multi-replica HA);
+notification digest (scheduler-driven, now trivial via `PeriodicTask`).
 
 ## Architecture rules (non-negotiable)
 
