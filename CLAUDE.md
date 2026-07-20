@@ -386,6 +386,10 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   secret refs, prod deep-merge). No HPA yet — deliberate until consumers can scale.
 - [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
 - [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
+- [env] Market-data egress is blocked from the sandbox (query1/query2.finance.yahoo.com and
+  stooq.com → curl 000 through the proxy, like SEC/pytorch.org before). A REAL backfill/training
+  run must happen on a Docker-capable machine (`make up` → `make bootstrap-universe`); in-sandbox
+  rehearsals substitute a synthetic fetcher inside a real market-data app (smoke2/md_runner pattern).
 - [env] Docker CLI + daemon are available (start `dockerd` as root if the socket is missing). Under
   the **Trusted** egress policy, Docker Hub *registry* hosts are allowlisted but NOT the blob CDN
   Docker actually redirects to (`production.cloudfront.docker.com` → 403; the allowlist only has the
@@ -801,12 +805,33 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   exactly 1 `ml.drift_detected` (feature_drift/critical) landed in the ML stream; uvicorn lifespan
   smoke (monitor armed/stopped cleanly, pause round-trip, honest inactive skip).
 
-**Next:** **real-data bootstrap + first true training run** — market-data backfill of the
-configured universe (~20–50 symbols, ≥5y daily), then `POST /models/train` on real history, gate
-review, manual promote, and the paper loop runs with a live ML vote (drift monitor now watches it
-end-to-end). Then: deeper persistence (event-log/DB; pull/queue-group consumers for multi-replica
-HA); notification digest (scheduler-driven, now trivial via `PeriodicTask`); v2 ML items from the
-plan (meta-labeling, GBDT challenger, per-style stacks once universe ≥ 200).
+- 2026-07-20 — **Real-data bootstrap tooling + full rehearsal** (the "first true training run" is
+  now a two-command user action — sandbox egress to Yahoo/Stooq is blocked, so the REAL run must
+  happen on a Docker-capable machine): new **`scripts/bootstrap-universe.py`** (+
+  `make bootstrap-universe ARGS="…"`) — HTTP-only orchestration of the RUNNING stack (market-data
+  owns fetch/validate/store/publish; the script never imports yfinance or touches the DB):
+  default 34-symbol GICS-spread large-cap universe (equities only, no ETFs), `--years 6` (≥945
+  sessions needed for holdout+fold split), per-symbol `POST /fetch` with politeness pause +
+  failure tolerance, read-back **coverage validation** (session count, span, >5-business-day gap
+  check), `--train` → `POST /models/train` + printed gate report; promotion stays a manual
+  sign-off — the promote curl is printed ONLY when the gate passes. **Rehearsed end-to-end in the
+  sandbox on a real `nats-server`**: real market-data app (only the engine→sqlite and
+  fetcher→synthetic-GBM substituted; routes/validation/merge-upsert/JetStream real) + real
+  UNPATCHED ml-pipeline (real MLflow sqlite): 34/34 symbols × 1565 sessions backfilled (53 210
+  rows), 34 `market_data.updated` events read back from the stream, coverage clean, then a real
+  training pass over HTTP — 50 865 pooled samples, 9 walk-forward folds + holdout → **MLflow v1
+  logged + drift baseline auto-registered**, and the activation gate **honestly FAILED** on the
+  no-signal synthetic universe ("only 1/3 recent folds clear sharpe 0.5" despite holdout Sharpe
+  1.45 — the anti-luck fold condition doing its job; fold AUCs ≈ 0.5 as expected on GBM noise) →
+  promote correctly withheld. Ops note: cold ml-pipeline boot takes ~2.5 min (torch+mlflow
+  import) — health-check timeouts must allow it.
+
+**Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
+`make bootstrap-universe ARGS="--train"` → review the printed gate report → if passed, promote
+(curl printed by the script; serving hot-reloads) → the paper loop runs with a live ML vote and
+the daily monitor watching it. Then: deeper persistence (event-log/DB; pull/queue-group consumers
+for multi-replica HA); notification digest (scheduler-driven, now trivial via `PeriodicTask`);
+v2 ML items from the plan (meta-labeling, GBDT challenger, per-style stacks once universe ≥ 200).
 
 ## Architecture rules (non-negotiable)
 

@@ -1,5 +1,5 @@
 .PHONY: up down build test lint logs seed help verify-jetstream \
-        helm-install helm-template helm-diff
+        bootstrap-universe helm-install helm-template helm-diff
 
 # .env leży w root projektu; compose file w infrastructure/ —
 # przekazujemy --env-file jawnie, bo Compose v2 szuka .env
@@ -52,6 +52,9 @@ setup:       ## Skonfiguruj środowisko deweloperskie
 
 verify-jetstream:  ## Sprawdź NATS JetStream end-to-end (spawnuje izolowany nats-server)
 	python scripts/verify-jetstream.py
+
+bootstrap-universe:  ## Backfill ~6 lat OHLCV dla uniwersum (wymaga `make up`); ARGS="--train" itd.
+	python scripts/bootstrap-universe.py $(ARGS)
 
 # ============================================================
 # Kubernetes / Helm
