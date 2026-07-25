@@ -10,6 +10,7 @@ compare current feature/prediction distributions against a model's registered
 baseline and publish ModelDriftDetectedEvent when the verdict is actionable.
 """
 
+from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -32,6 +33,32 @@ logger = structlog.get_logger()
 
 BASELINE_SAMPLE_CAP = 500  # reference values kept per feature for drift PSI
 NEUTRAL_ACCURACY = 0.5  # used when too few resolved outcomes exist to measure
+
+
+def _dataset_diagnostics(dataset: Dataset, requested: list[str]) -> dict[str, Any]:
+    """What the model was actually trained on — the context a gate report needs.
+
+    A failed gate is only interpretable next to this: too few sessions, a
+    lopsided base rate or symbols silently dropped for want of history are
+    data problems, not model problems.
+    """
+    sessions = sorted(set(dataset.dates))
+    present = sorted(set(dataset.symbols))
+    rows_per_session: dict[datetime, int] = {}
+    for session in dataset.dates:
+        rows_per_session[session] = rows_per_session.get(session, 0) + 1
+    per_session = np.array(list(rows_per_session.values()), dtype=float)
+    return {
+        "symbols_requested": len(requested),
+        "symbols_with_rows": len(present),
+        "symbols_missing": sorted(set(requested) - set(present)),
+        "sessions": len(sessions),
+        "first_session": sessions[0].isoformat() if sessions else None,
+        "last_session": sessions[-1].isoformat() if sessions else None,
+        "positive_rate": round(float(dataset.y.mean()), 4) if dataset.n_samples else None,
+        "rows_per_session_median": float(np.median(per_session)) if len(per_session) else 0.0,
+        "n_features": len(dataset.feature_names),
+    }
 
 
 class MLPipelineService:
@@ -205,6 +232,7 @@ class MLPipelineService:
             "model_id": model_id,
             "samples": dataset.n_samples,
             "features": dataset.feature_names,
+            "dataset": _dataset_diagnostics(dataset, symbols),
             "gate": report.as_dict(),
         }
 

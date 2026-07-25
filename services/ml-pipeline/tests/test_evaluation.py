@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 import pytest
 
-from src.core.evaluation import auc, brier, top_quantile_portfolio
+from src.core.evaluation import auc, brier, selection_diagnostics, top_quantile_portfolio
 
 D0 = datetime(2024, 6, 3, tzinfo=UTC)
 
@@ -72,3 +72,31 @@ def test_empty_inputs_yield_zero_result():
     result = top_quantile_portfolio([], [], np.array([]), np.array([]))
     assert result.n_sessions == 0
     assert result.sharpe == 0.0
+
+
+def test_selection_lift_is_positive_when_ranking_works():
+    dates, _symbols, probs, _rets = portfolio_inputs()
+    # the top-ranked name (A) is the winner on both sessions
+    y = np.array([1, 0, 0, 0, 1, 0, 0, 0], dtype=float)
+    diag = selection_diagnostics(dates, y, probs, quantile=0.25)
+    assert diag.base_rate == pytest.approx(0.25)
+    assert diag.selected_hit_rate == 1.0  # every pick was a winner
+    assert diag.lift == pytest.approx(0.75)
+    assert diag.pred_p10 < diag.pred_p90
+
+
+def test_selection_lift_is_zero_when_ranking_is_useless():
+    dates, _symbols, probs, _rets = portfolio_inputs()
+    # winners are the LOWEST-ranked names → selecting the top quantile misses them
+    y = np.array([0, 0, 0, 1, 0, 0, 0, 1], dtype=float)
+    diag = selection_diagnostics(dates, y, probs, quantile=0.25)
+    assert diag.selected_hit_rate == 0.0
+    assert diag.lift < 0  # worse than picking at random — an honest negative signal
+
+
+def test_degenerate_predictions_have_no_spread():
+    dates, _symbols, _probs, _rets = portfolio_inputs()
+    flat = np.full(8, 0.5)
+    diag = selection_diagnostics(dates, np.zeros(8), flat, quantile=0.25)
+    assert diag.pred_std == 0.0  # collapsed model — the report must show it
+    assert diag.pred_p10 == diag.pred_p90 == 0.5

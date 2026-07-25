@@ -58,6 +58,58 @@ class PortfolioResult:
     avg_turnover: float  # fraction of the book replaced per session
 
 
+@dataclass(frozen=True)
+class SelectionDiagnostics:
+    """Why a fold scored what it scored — read alongside the Sharpe.
+
+    Sharpe on a short window is noisy; these say whether the model actually
+    discriminates. ``lift`` is the edge that the portfolio monetizes: how much
+    more often the SELECTED rows (the same per-session top quantile the
+    portfolio holds) went up than the population. Zero lift with a high Sharpe
+    means luck, not signal. The prediction spread catches the other failure
+    mode — a collapsed model that outputs one constant probability.
+    """
+
+    base_rate: float  # share of label==1 over all rows
+    selected_hit_rate: float  # share of label==1 among top-quantile picks
+    lift: float  # selected_hit_rate − base_rate
+    pred_mean: float
+    pred_std: float  # ≈0 → degenerate model, no ranking information
+    pred_p10: float
+    pred_p90: float
+
+
+def selection_diagnostics(
+    dates: list[datetime],
+    y_true: np.ndarray,
+    probs: np.ndarray,
+    quantile: float = 0.2,
+) -> SelectionDiagnostics:
+    """Label statistics of the per-session top-quantile selection."""
+    y = np.asarray(y_true, dtype=float)
+    p = np.asarray(probs, dtype=float)
+    by_date: dict[datetime, list[int]] = defaultdict(list)
+    for i, d in enumerate(dates):
+        by_date[d].append(i)
+
+    selected: list[int] = []
+    for rows in by_date.values():
+        k = max(1, math.ceil(quantile * len(rows)))
+        selected.extend(sorted(rows, key=lambda i: float(p[i]), reverse=True)[:k])
+
+    base_rate = float(y.mean()) if len(y) else 0.0
+    hit_rate = float(y[selected].mean()) if selected else 0.0
+    return SelectionDiagnostics(
+        base_rate=base_rate,
+        selected_hit_rate=hit_rate,
+        lift=hit_rate - base_rate,
+        pred_mean=float(p.mean()) if len(p) else 0.0,
+        pred_std=float(p.std()) if len(p) else 0.0,
+        pred_p10=float(np.quantile(p, 0.1)) if len(p) else 0.0,
+        pred_p90=float(np.quantile(p, 0.9)) if len(p) else 0.0,
+    )
+
+
 def top_quantile_portfolio(
     dates: list[datetime],
     symbols: list[str],

@@ -86,10 +86,18 @@ def test_state_dict_round_trip_without_registry(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        from src.core.evaluation import PortfolioResult
+        from src.core.evaluation import PortfolioResult, SelectionDiagnostics
         from src.core.training import FoldReport, GateReport
 
-        empty = FoldReport("holdout", 80, 40, 0.5, 0.25, PortfolioResult(0, 0, 0, 0, 0))
+        empty = FoldReport(
+            "holdout",
+            80,
+            40,
+            0.5,
+            0.25,
+            PortfolioResult(0, 0, 0, 0, 0),
+            SelectionDiagnostics(0.5, 0.5, 0.0, 0.5, 0.0, 0.5, 0.5),
+        )
         version = store.log_training(model, GateReport([], empty, False, ["synthetic"]))
         loaded, _ = store.load(version)
         assert np.allclose(loaded.predict_proba(x[:10]), model.predict_proba(x[:10]), atol=1e-6)

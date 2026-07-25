@@ -52,6 +52,21 @@ def test_gate_passes_on_a_blatant_trend_universe():
     assert report.passed, report.reasons
 
 
+def test_diagnostics_show_the_edge_on_a_learnable_universe():
+    """The review artifact must distinguish signal from luck: on a universe the
+    model genuinely ranks, the selected top quantile hits above the base rate
+    and predictions actually spread."""
+    ds = synthetic_dataset()
+    _, report = run_training(ds, SMALL)
+    diag = report.holdout.diagnostics
+    assert diag.lift > 0, "selection carries no edge over the base rate"
+    assert diag.selected_hit_rate > diag.base_rate
+    assert diag.pred_std > 0.01, "collapsed predictions — no ranking information"
+    assert diag.pred_p10 <= diag.pred_mean <= diag.pred_p90
+    fold = report.as_dict()["holdout"]
+    assert {"lift", "base_rate", "selected_hit_rate", "pred_std"} <= set(fold)
+
+
 def test_too_small_dataset_raises():
     ds = synthetic_dataset(n=120)  # not enough sessions for holdout + a fold
     with pytest.raises(ValueError, match="sessions"):

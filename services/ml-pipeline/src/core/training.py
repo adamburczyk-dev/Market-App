@@ -16,7 +16,14 @@ import numpy as np
 import structlog
 
 from src.core.dataset import Dataset
-from src.core.evaluation import PortfolioResult, auc, brier, top_quantile_portfolio
+from src.core.evaluation import (
+    PortfolioResult,
+    SelectionDiagnostics,
+    auc,
+    brier,
+    selection_diagnostics,
+    top_quantile_portfolio,
+)
 from src.core.model import TrainConfig, TrainedModel, train_classifier
 from src.core.splits import purged_walk_forward
 
@@ -45,6 +52,7 @@ class FoldReport:
     auc: float
     brier: float
     portfolio: PortfolioResult
+    diagnostics: SelectionDiagnostics
 
 
 @dataclass(frozen=True)
@@ -65,6 +73,16 @@ class GateReport:
                 "sharpe": round(f.portfolio.sharpe, 4),
                 "mean_daily_return": round(f.portfolio.mean_daily_return, 6),
                 "avg_turnover": round(f.portfolio.avg_turnover, 4),
+                "avg_positions": round(f.portfolio.avg_positions, 2),
+                "n_portfolio_sessions": f.portfolio.n_sessions,
+                # discrimination diagnostics — separate real edge from luck
+                "base_rate": round(f.diagnostics.base_rate, 4),
+                "selected_hit_rate": round(f.diagnostics.selected_hit_rate, 4),
+                "lift": round(f.diagnostics.lift, 4),
+                "pred_mean": round(f.diagnostics.pred_mean, 4),
+                "pred_std": round(f.diagnostics.pred_std, 4),
+                "pred_p10": round(f.diagnostics.pred_p10, 4),
+                "pred_p90": round(f.diagnostics.pred_p90, 4),
             }
 
         return {
@@ -114,8 +132,9 @@ def _score(
 ) -> FoldReport:
     mask = _mask(ds.dates, test_dates)
     probs = model.predict_proba(ds.x[mask])
+    dates = [d for d, m in zip(ds.dates, mask, strict=True) if m]
     portfolio = top_quantile_portfolio(
-        [d for d, m in zip(ds.dates, mask, strict=True) if m],
+        dates,
         [s for s, m in zip(ds.symbols, mask, strict=True) if m],
         probs,
         ds.next_returns[mask],
@@ -129,6 +148,7 @@ def _score(
         auc=auc(ds.y[mask], probs),
         brier=brier(ds.y[mask], probs),
         portfolio=portfolio,
+        diagnostics=selection_diagnostics(dates, ds.y[mask], probs, quantile=params.quantile),
     )
 
 

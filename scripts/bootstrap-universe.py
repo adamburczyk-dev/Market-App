@@ -30,6 +30,7 @@ requested, completed — a FAILED gate is still a completed, honest result);
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -172,9 +173,7 @@ def validate_coverage(
             report[symbol] = {"sessions": 0, "ok": False, "note": "no stored bars"}
             continue
         stamps = [datetime.fromisoformat(b["timestamp"]).date() for b in bars]
-        max_gap = max(
-            ((b - a).days for a, b in zip(stamps, stamps[1:], strict=False)), default=0
-        )
+        max_gap = max(((b - a).days for a, b in itertools.pairwise(stamps)), default=0)
         note = []
         if len(stamps) < MIN_SESSIONS_FOR_TRAINING:
             note.append(
@@ -192,7 +191,21 @@ def validate_coverage(
     return report
 
 
-def run_training(ml_url: str, symbols: list[str], limit: int, timeout_s: float) -> int:
+def _print_fold(fold: dict) -> None:
+    print(
+        f"  {fold['name']:<8} sharpe {fold.get('sharpe'):>8}  auc {fold.get('auc'):>7}  "
+        f"brier {fold.get('brier'):>7}  lift {fold.get('lift'):>8}  "
+        f"pred σ {fold.get('pred_std'):>7}"
+    )
+
+
+def run_training(
+    ml_url: str,
+    symbols: list[str],
+    limit: int,
+    timeout_s: float,
+    report: dict | None = None,
+) -> int:
     print(f"\nTraining on {len(symbols)} symbols (sync — can take minutes)...")
     try:
         status, body = _request(
@@ -203,26 +216,36 @@ def run_training(ml_url: str, symbols: list[str], limit: int, timeout_s: float) 
         )
     except OSError as exc:
         print(f"Training request failed: {exc}")
+        if report is not None:
+            report["training_error"] = str(exc)
         return 1
     if status != 200:
         print(f"Training failed: HTTP {status}: {body.get('detail', body)}")
+        if report is not None:
+            report["training_error"] = f"HTTP {status}: {body.get('detail', body)}"
         return 1
+    if report is not None:
+        report["training"] = body  # full response — the reviewable artifact
 
     gate = body.get("gate", {})
     holdout = gate.get("holdout", {})
+    data = body.get("dataset", {})
     print(f"\nModel: {body.get('model_id')}  (samples: {body.get('samples')})")
+    print(
+        f"  data: {data.get('symbols_with_rows')}/{data.get('symbols_requested')} symbols, "
+        f"{data.get('sessions')} sessions {data.get('first_session', '')[:10]} → "
+        f"{data.get('last_session', '')[:10]}, "
+        f"positive rate {data.get('positive_rate')}, {data.get('n_features')} features"
+    )
+    if data.get("symbols_missing"):
+        print(f"  symbols without usable history: {', '.join(data['symbols_missing'])}")
     print(f"Gate PASSED: {gate.get('passed')}")
     for reason in gate.get("reasons", []):
         print(f"  - {reason}")
-    print(
-        f"  holdout: sharpe {holdout.get('sharpe')}  auc {holdout.get('auc')}  "
-        f"brier {holdout.get('brier')}  (n_test {holdout.get('n_test')})"
-    )
+    print("  (lift = hit-rate edge of the selected top quantile; 0 ≈ no signal)")
+    _print_fold({"name": "holdout", **holdout})
     for fold in gate.get("folds", []):
-        print(
-            f"  {fold['name']:<8} sharpe {fold['sharpe']:>8}  auc {fold['auc']:>7}  "
-            f"brier {fold['brier']:>7}"
-        )
+        _print_fold(fold)
 
     version = body.get("version")
     if version is not None:
@@ -276,6 +299,14 @@ def main() -> int:
         "--ml-pipeline-url",
         default=os.environ.get("ML_PIPELINE_URL", "http://localhost:8005"),
     )
+    parser.add_argument(
+        "--report-out",
+        default=None,
+        help=(
+            "Write a self-contained JSON report (coverage + full gate/diagnostics) "
+            "to this path — the artifact to share for an off-machine review"
+        ),
+    )
     args = parser.parse_args()
 
     if args.symbols is None:
@@ -291,6 +322,14 @@ def main() -> int:
     market_url = args.market_data_url.rstrip("/")
     end = datetime.now(UTC).date()
     start = end - timedelta(days=round(args.years * 365.25))
+
+    report: dict = {
+        "report_version": 1,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "universe": symbols,
+        "years": args.years,
+        "range": {"start": start.isoformat(), "end": end.isoformat()},
+    }
 
     _check_service(market_url, "market-data")
     print(
@@ -313,6 +352,9 @@ def main() -> int:
         note = f"  ({info['note']})" if info["note"] else ""
         print(f"  {flag} {symbol:<6} {info['sessions']:>5} sessions  {span}{note}")
 
+    report["backfill"] = {"rows_by_symbol": rows, "failed": failed}
+    report["coverage"] = coverage
+
     exit_code = 1 if failed else 0
     if args.train:
         trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
@@ -320,8 +362,18 @@ def main() -> int:
         _check_service(ml_url, "ml-pipeline")
         exit_code = max(
             exit_code,
-            run_training(ml_url, trainable, args.train_limit, args.train_timeout),
+            run_training(
+                ml_url, trainable, args.train_limit, args.train_timeout, report=report
+            ),
         )
+
+    if args.report_out:
+        path = os.path.abspath(args.report_out)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2, sort_keys=False)
+        print(f"\nReport written to {path}")
+        print("Share this file (commit it or paste it) for a review of the run.")
     return exit_code
 
 

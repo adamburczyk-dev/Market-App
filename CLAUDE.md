@@ -826,12 +826,30 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   promote correctly withheld. Ops note: cold ml-pipeline boot takes ~2.5 min (torch+mlflow
   import) — health-check timeouts must allow it.
 
+- 2026-07-25 — **Reviewable training report** (the run happens on the user's machine — this is how
+  it gets assessed off-machine): new `evaluation.selection_diagnostics` → `SelectionDiagnostics`
+  (base rate, **selected_hit_rate** and **lift** of the per-session top quantile the portfolio
+  actually holds, + prediction spread mean/std/p10/p90). Sharpe on a 63-session fold is noisy;
+  **lift ≈ 0 with a high Sharpe = luck, not signal**, and `pred_std ≈ 0` = a collapsed model —
+  the two failure modes the gate alone cannot name. `FoldReport` carries them, `GateReport.as_dict`
+  emits them per fold (+ avg_positions, n_portfolio_sessions). `service.train()` adds a `dataset`
+  block (symbols requested/with-rows/**missing**, sessions, first/last session, positive rate,
+  rows-per-session median, n_features) — a failed gate is only interpretable next to what the model
+  was actually fed. `scripts/bootstrap-universe.py --report-out PATH` writes a self-contained JSON
+  (universe, range, per-symbol backfill + coverage, full training response incl. gate +
+  diagnostics; `training_error` when the run fails) — **that file is the review artifact**: commit
+  or paste it. Console summary now prints the dataset line, per-fold `lift` + `pred σ`, and the
+  holdout as a fold row. ml-pipeline 120 tests (+4: lift positive/negative/degenerate-spread,
+  end-to-end diagnostics on a learnable universe); ruff + format + mypy clean; verified live
+  (real market-data + real unpatched ml-pipeline + real MLflow on a real `nats-server`).
+
 **Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
-`make bootstrap-universe ARGS="--train"` → review the printed gate report → if passed, promote
-(curl printed by the script; serving hot-reloads) → the paper loop runs with a live ML vote and
-the daily monitor watching it. Then: deeper persistence (event-log/DB; pull/queue-group consumers
-for multi-replica HA); notification digest (scheduler-driven, now trivial via `PeriodicTask`);
-v2 ML items from the plan (meta-labeling, GBDT challenger, per-style stacks once universe ≥ 200).
+`make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that
+JSON for review → if the gate passed, promote (curl printed by the script; serving hot-reloads) →
+the paper loop runs with a live ML vote and the daily monitor watching it. Then: deeper
+persistence (event-log/DB; pull/queue-group consumers for multi-replica HA); notification digest
+(scheduler-driven, now trivial via `PeriodicTask`); v2 ML items from the plan (meta-labeling,
+GBDT challenger, per-style stacks once universe ≥ 200).
 
 ## Architecture rules (non-negotiable)
 
