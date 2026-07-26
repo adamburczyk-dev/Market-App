@@ -883,6 +883,23 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   serwisów, z zachowaniem wolumenu `ml_mlruns` (rejestr MLflow). Reszta repo czysta: zero śmieci
   w gicie, `.gitignore` pokrywa cache/mlruns/.env.
 
+- 2026-07-26 — **Traefik nie wstawał na maszynie użytkownika** (zgłoszone z logów pierwszego
+  `make up`): `providerName=docker error="Error response from daemon: "` — **pusta** treść błędu w
+  pętli retry. Traefik połączył się z gniazdem, ale demon odrzucił żądanie: obraz był przypięty do
+  **v3.0** (kwiecień 2024), którego wbudowany klient Dockera żąda API 1.24, a Docker Engine 29
+  usunął obsługę API < 1.44. Naprawa: tag major `traefik:v3` (spójnie z `redis:7-alpine` /
+  `nats:2-alpine`; komentarz podaje `DOCKER_API_VERSION=1.44` jako furtkę dla starszego demona) +
+  **`--ping=true` i healthcheck** (`traefik healthcheck --ping`) — dotąd brama była JEDYNYM
+  kontenerem bez healthchecku, więc awaria providera widoczna była wyłącznie w logach.
+  Przy okazji **dwa błędy w mojej nakładce prod z 2026-07-25**: (1) `ports: !reset` na traefiku
+  KASUJE wartość zamiast ją podmienić — brama nie publikowałaby ani 80, ani 443, czyli w produkcji
+  nic nie byłoby osiągalne; poprawione na `!override` (zweryfikowane empirycznie: `!reset` → pusto,
+  `!override` → podmiana). (2) `command` w nakładce zastępuje listę bazową w całości, więc `--ping`
+  ginął i healthcheck bramy zawsze by padał — powtórzony jawnie. Zweryfikowane `docker compose
+  config` (dev + prod): brama publikuje 80/443, żaden inny serwis nie publikuje nic, dashboard
+  Traefika nie jest wystawiony w prod. Samego uruchomienia obrazu nie dało się sprawdzić (brak
+  egressu do rejestru).
+
 **Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
 `make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that
 JSON for review → if the gate passed, promote (curl printed by the script; serving hot-reloads) →

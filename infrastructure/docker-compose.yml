@@ -96,10 +96,15 @@ services:
   # ==================== API GATEWAY ====================
 
   traefik:
-    image: traefik:v3.0
+    # Tag major, nie v3.0: klient Dockera wbudowany w v3.0 żąda API 1.24, a
+    # Docker Engine 29 usunął obsługę API < 1.44 — provider zwracał wtedy
+    # `Error response from daemon:` z pustą treścią i wpadał w pętlę retry.
+    # Gdyby demon był starszy niż klient, wymuś wersję: DOCKER_API_VERSION=1.44.
+    image: traefik:v3
     container_name: ts-gateway
     command:
       - "--api.insecure=true"
+      - "--ping=true"          # /ping na entrypoincie traefik — źródło healthchecku
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
@@ -109,10 +114,15 @@ services:
       - "8080:8080"   # Traefik dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      # bez tego awaria providera była widoczna wyłącznie w logach
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   # ==================== APPLICATION SERVICES ====================
-  # Serwisy uruchamiane gdy ich Dockerfile / kod są gotowe.
-  # Odkomentuj dany blok po zaimplementowaniu serwisu.
 
   market-data:
     build:

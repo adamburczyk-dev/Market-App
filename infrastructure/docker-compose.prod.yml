@@ -33,7 +33,11 @@ services:
     ports: !reset []
 
   traefik:
+    # command zastępuje listę z pliku bazowego w całości — dlatego `--ping`
+    # musi być powtórzony, inaczej healthcheck (traefik healthcheck --ping)
+    # zawsze zawiedzie. Brak --api.insecure: dashboard nie jest wystawiony.
     command:
+      - "--ping=true"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
@@ -41,7 +45,9 @@ services:
       - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}"
       - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
       - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
-    ports: !reset
+    # !override (nie !reset) — `!reset` KASUJE wartość, więc brama nie
+    # publikowałaby żadnego portu; tu chodzi o podmianę 8080 (dashboard) na 443.
+    ports: !override
       - "80:80"
       - "443:443"
     volumes:
