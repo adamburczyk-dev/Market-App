@@ -23,3 +23,14 @@ repos:
         types_or: [python, pyi]
       - id: ruff-format
         types_or: [python, pyi]
+
+  # Windows PowerShell 5.1 czyta pliki .ps1 BEZ BOM-u jako ANSI, więc każdy
+  # bajt spoza ASCII rozwala parsowanie (myślnik "—" → "â€”" i błąd składni).
+  # Trzymamy skrypty .ps1 w czystym ASCII — działa w każdej wersji i kodowaniu.
+  - repo: local
+    hooks:
+      - id: ps1-ascii-only
+        name: skrypty .ps1 muszą być czystym ASCII
+        entry: python scripts/check-ps1-ascii.py
+        language: system
+        files: \.ps1$

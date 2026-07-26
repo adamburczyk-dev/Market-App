@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Odpowiednik Makefile'a dla Windowsa — GNU Make nie jest tam wbudowany.
+    Odpowiednik Makefile'a dla Windowsa - GNU Make nie jest tam wbudowany.
 
 .DESCRIPTION
     Te same cele co w Makefile, bez instalowania czegokolwiek:
@@ -24,7 +24,7 @@ param(
     [string]$Target = 'help',
 
     # Wszystko po nazwie celu leci dalej (flagi bootstrapu, nazwa serwisu itp.).
-    # Nie nazywac tego $Args — to zmienna automatyczna PowerShella.
+    # Nie nazywac tego $Args - to zmienna automatyczna PowerShella.
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
     [string[]]$Rest = @()
 )
@@ -39,7 +39,7 @@ $script:PythonPrefix = @()
 
 function Invoke-Compose([string[]]$ComposeArgs) {
     if (-not (Test-Path $EnvFile)) {
-        throw "Brak pliku .env w $Repo — utworz go: Copy-Item .env.example .env, potem uzupelnij hasla."
+        throw "Brak pliku .env w $Repo - utworz go: Copy-Item .env.example .env, potem uzupelnij hasla."
     }
     & docker compose -f $ComposeFile --env-file $EnvFile @ComposeArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
