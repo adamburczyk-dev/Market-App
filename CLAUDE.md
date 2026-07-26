@@ -43,12 +43,14 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   (`compute_feature_vector`) + `trading_common.ranking` (`cross_sectional_rank`) — so ml-pipeline
   training reproduces feature-engine serving bit-for-bit (numpy is now a trading-common dependency).
 - All 13 services functionally implemented (`/health` `/ready` `/metrics` green; no skeletons left).
-- Framework-supplement components still **orphaned** (tested but not wired into FastAPI/NATS):
-  feature-engine only (`earnings_decay`, `cross_asset`). (`decay_monitor`+`cost_filter` now wired into
-  strategy; `adaptive_weights` moved to signal-aggregator; `cost_filter` moved to trading-common;
-  `adaptive_sizing`+`regime_allocator` now wired into risk-mgmt; `continuous_validation` wired into
-  backtest; `drift_detector` wired into ml-pipeline; `vol_regime` is VIX/market-wide — it belongs in
-  the macro/regime context, not single-symbol realized vol.)
+- Framework-supplement components: **none orphaned any more**. Wired: `decay_monitor`+`cost_filter`
+  → strategy; `adaptive_weights` → signal-aggregator; `cost_filter` → trading-common;
+  `adaptive_sizing`+`regime_allocator` → risk-mgmt; `continuous_validation` → backtest;
+  `drift_detector` → ml-pipeline. **Deleted 2026-07-25** (dead code, nothing imported them):
+  feature-engine's `core/calculators/` — `earnings_decay`, `cross_asset` (belong to later services,
+  not the single-symbol path) and `vol_regime` (VIX/market-wide — that role now lives in macro-data's
+  regime detection). Their reference implementations remain verbatim in `docs/framework_supplement.md`
+  (+ git history), so nothing is lost if a later service needs them.
 - `market-data` is now **functionally implemented** (Direction #1 done): Yahoo + Alpha Vantage
   fetchers, async storage (SQLAlchemy/asyncpg, idempotent upsert), Redis cache (in-memory fallback),
   `MarketDataUpdatedEvent` publishing over **NATS JetStream** (msg-id dedup), wired through FastAPI
@@ -66,8 +68,9 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   (incl. cross-sectional f_score percentile). Attribute updates deliberately do NOT publish
   `features.ready` (no strategy re-evaluation on a fundamentals refresh — the ML tier reads the
   merged vectors). Pure feature/rank definitions now imported from **trading-common** (ML-0 —
-  training/serving parity); the service keeps orchestration, store and API. 84 tests green
-  (pure-function tests moved to shared); live-verified end-to-end (real uvicorn fundamental-data +
+  training/serving parity); the service keeps orchestration, store and API. 38 tests green
+  (pure-function tests moved to shared; 46 tests removed with the dead `calculators/` package);
+  live-verified end-to-end (real uvicorn fundamental-data +
   company-classifier: ingest → f_score 7 merged; classify → growth encoding; 2-symbol universe
   ranks f_score 1.0/0.0).
 - `strategy` is now **functionally implemented** (Direction #2): JetStream subscriber on
@@ -861,6 +864,24 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   ignored it): build now passes `--extra-index-url .../whl/cpu`. `make` script targets use
   `$(PYTHON)` (default `python3`). Compose validated with a real `docker compose config`; image
   builds themselves remain **unverified** here (no registry egress).
+
+- 2026-07-25 — **README przepisany + sprzątanie repo** (audyt na życzenie użytkownika). README opisywał
+  9 serwisów-szkieletów i workflow `develop`; teraz opisuje **stan faktyczny**: 13 serwisów, diagram
+  realnej ścieżki zdarzeniowej (agregator jako węzeł decyzyjny, ML jako głos bez poziomów), tabela
+  11 strumieni JetStream, sekcja bootstrapu/treningu z interpretacją bramki (`lift`, `pred_std`),
+  twarde reguły ryzyka, tabela testów per komponent (847, zweryfikowana przebiegiem), Helm jako
+  generyczny chart. Wszystkie 40 linków i kotwic sprawdzone programowo. **Usunięty martwy kod**:
+  `feature-engine/src/core/calculators/` (`vol_regime`, `earnings_decay`, `cross_asset`) + ich testy
+  — nic w `src/` ich nie importowało (feature-engine 84 → 38 testów; łącznie 893 → 847). Referencyjne
+  implementacje zostają w `docs/framework_supplement.md` i w historii gita. **Dwie luki w CI**:
+  paths-filter obejmował 9 serwisów zamiast 13 (fundamental-data, macro-data, company-classifier,
+  signal-aggregator — 182 testy — nigdy nie uruchamiały się w CI), a `build-images.yml` budował
+  9 z 13 obrazów; oba uzupełnione. **Defekt bezpieczeństwa w `docker-compose.prod.yml`**: Compose
+  **scala** listy, więc `ports: []`/`volumes: []` były no-opami — „produkcja" nadal wystawiała port
+  bazy na hosta i montowała kod z hosta (zweryfikowane `docker compose config`). Przepisane na
+  znacznik `!reset` (kotwice YAML go gubią — trzeba jawnie per serwis), rozszerzone z 4 na 13
+  serwisów, z zachowaniem wolumenu `ml_mlruns` (rejestr MLflow). Reszta repo czysta: zero śmieci
+  w gicie, `.gitignore` pokrywa cache/mlruns/.env.
 
 **Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
 `make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that

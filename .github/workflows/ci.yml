@@ -49,6 +49,18 @@ jobs:
             dashboard:
               - 'services/dashboard/**'
               - 'shared/**'
+            fundamental-data:
+              - 'services/fundamental-data/**'
+              - 'shared/**'
+            macro-data:
+              - 'services/macro-data/**'
+              - 'shared/**'
+            company-classifier:
+              - 'services/company-classifier/**'
+              - 'shared/**'
+            signal-aggregator:
+              - 'services/signal-aggregator/**'
+              - 'shared/**'
 
   # ============================================================
   # Testy shared library (wymagana przez wszystkie serwisy)

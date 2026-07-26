@@ -1,5 +1,12 @@
 # Production overrides — używaj razem z docker-compose.yml:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# UWAGA na składnię: Compose SCALA listy między plikami, więc zwykłe `ports: []`
+# niczego nie usuwa (baza dalej byłaby wystawiona na hosta). Do skasowania
+# wartości z pliku bazowego służy znacznik `!reset` — i tylko on tu działa.
+#
+# Zasada: żaden serwis nie publikuje portu na hosta. Ruch wchodzi wyłącznie
+# przez Traefika (80/443), reszta komunikuje się po sieci wewnętrznej Compose.
 name: trading-system
 
 services:
@@ -8,15 +15,22 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # W produkcji: brak eksponowania portu na zewnątrz
-    ports: []
+    ports: !reset []
 
   redis:
-    ports: []
+    ports: !reset []
 
   nats:
-    ports:
-      - "4222:4222"   # tylko client port; monitoring wyłączony
+    ports: !reset []   # także monitoring (8222) niedostępny z zewnątrz
+
+  prometheus:
+    ports: !reset []
+
+  grafana:
+    ports: !reset []
+
+  loki:
+    ports: !reset []
 
   traefik:
     command:
@@ -27,31 +41,80 @@ services:
       - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}"
       - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
       - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
-    ports:
+    ports: !reset
       - "80:80"
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - letsencrypt_data:/letsencrypt
 
+  # --- serwisy aplikacyjne (13) ---
+
   market-data:
-    # Brak hot-reload volume w produkcji
-    volumes: []
+    ports: !reset []
     environment:
       LOG_LEVEL: INFO
+    volumes: !reset []   # jedyny serwis z hot-reload w dev — w prod kod z obrazu
 
   feature-engine:
-    volumes: []
+    ports: !reset []
     environment:
       LOG_LEVEL: INFO
 
   strategy:
-    volumes: []
+    ports: !reset []
     environment:
       LOG_LEVEL: INFO
 
   backtest:
-    volumes: []
+    ports: !reset []
+    environment:
+      LOG_LEVEL: INFO
+
+  ml-pipeline:
+    ports: !reset []
+    environment:
+      LOG_LEVEL: INFO
+    # UWAGA: bez `volumes: !reset` — wolumen ml_mlruns musi przetrwać,
+    # to jest rejestr modeli MLflow (utrata = utrata wytrenowanych wersji).
+
+  risk-mgmt:
+    ports: !reset []
+    environment:
+      LOG_LEVEL: INFO
+
+  execution:
+    ports: !reset []
+    environment:
+      LOG_LEVEL: INFO
+
+  notification:
+    ports: !reset []
+    environment:
+      LOG_LEVEL: INFO
+
+  fundamental-data:
+    ports: !reset []
+    environment:
+      LOG_LEVEL: INFO
+
+  macro-data:
+    ports: !reset []
+    environment:
+      LOG_LEVEL: INFO
+
+  company-classifier:
+    ports: !reset []
+    environment:
+      LOG_LEVEL: INFO
+
+  signal-aggregator:
+    ports: !reset []
+    environment:
+      LOG_LEVEL: INFO
+
+  dashboard:
+    ports: !reset []
     environment:
       LOG_LEVEL: INFO
 

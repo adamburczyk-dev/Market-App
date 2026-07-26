@@ -32,6 +32,10 @@ jobs:
           - execution
           - notification
           - dashboard
+          - fundamental-data
+          - macro-data
+          - company-classifier
+          - signal-aggregator
     steps:
       - uses: actions/checkout@v5
 

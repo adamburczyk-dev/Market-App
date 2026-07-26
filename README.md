@@ -1,16 +1,24 @@
 # Trading System — Architektura Mikroserwisowa
 
-System tradingowy oparty na mikroserwisach: event-driven, Kubernetes-ready od dnia 1, z pełnym observability stackiem. Realizuje 24-tygodniowy plan rozwoju zawarty w [`Plan_Rozwoju_Systemu_Tradingowego_2.md`](Plan_Rozwoju_Systemu_Tradingowego_2.md).
+System tradingowy oparty na mikroserwisach: event-driven, Kubernetes-ready od dnia 1, z pełnym observability stackiem. Realizuje plan rozwoju z [`Plan_Rozwoju_Systemu_Tradingowego_2.md`](Plan_Rozwoju_Systemu_Tradingowego_2.md).
+
+**Stan: 13 serwisów, wszystkie funkcjonalnie zaimplementowane** (brak szkieletów). Działa pełna pętla paper tradingu — od pobrania danych rynkowych, przez cechy, sygnały reguł i głos modelu ML, agregację, kontrolę ryzyka, aż po symulowane wypełnienia i sprzężenie zwrotne do portfela. Warstwa ML (trening, rejestr MLflow, serwowanie, dzienny monitoring driftu) jest kompletna; pierwszy trening na realnych danych uruchamia się dwiema komendami — patrz [Bootstrap danych i trening](#bootstrap-danych-i-pierwszy-trening).
+
+> Kontekst projektu, historia decyzji i bieżące priorytety: [`CLAUDE.md`](CLAUDE.md).
+> Projekt fazy ML (etykiety, walidacja, bramka aktywacji): [`docs/ml_integration_plan.md`](docs/ml_integration_plan.md).
 
 ---
 
 ## Spis treści
 
-- [Architektura](#architektura)
+- [Jak to działa](#jak-to-działa)
 - [Serwisy](#serwisy)
+- [Zdarzenia i strumienie](#zdarzenia-i-strumienie)
 - [Infrastruktura](#infrastruktura)
 - [Shared Library](#shared-library)
 - [Uruchamianie](#uruchamianie)
+- [Bootstrap danych i pierwszy trening](#bootstrap-danych-i-pierwszy-trening)
+- [Reguły ryzyka](#reguły-ryzyka)
 - [Testowanie](#testowanie)
 - [Git Workflow](#git-workflow)
 - [CI/CD](#cicd)
@@ -19,73 +27,102 @@ System tradingowy oparty na mikroserwisach: event-driven, Kubernetes-ready od dn
 
 ---
 
-## Architektura
+## Jak to działa
+
+Ścieżka decyzyjna jest w całości sterowana zdarzeniami (NATS JetStream); zapytania punktowe idą po HTTP.
 
 ```
-                      ┌──────────────────────────────────┐
-                      │   API GATEWAY (Traefik :80/443)  │
-                      │  routing · rate-limit · auth      │
-                      └──┬────┬────┬────┬────┬───────────┘
-                         │    │    │    │    │
-              ┌──────────┘  ┌─┘  ┌─┘  ┌─┘  └─────────┐
-              ▼             ▼    ▼    ▼                ▼
-        ┌──────────┐  ┌────────┐ ┌────────┐  ┌──────────┐
-        │ market-  │  │feature-│ │strategy│  │ backtest │
-        │ data     │  │engine  │ │        │  │          │
-        └────┬─────┘  └───┬────┘ └───┬────┘  └────┬─────┘
-             │            │          │              │
-             └────────────┴──────────┴──────────────┘
-                                   │
-                     ┌─────────────▼──────────────┐
-                     │   Message Broker (NATS)     │
-                     │   event-driven pipeline     │
-                     └────┬──────────┬─────────────┘
-                          │          │
-                ┌─────────▼──┐  ┌────▼──────┐
-                │ml-pipeline │  │ risk-mgmt │
-                └────────────┘  └───────────┘
-                          │          │
-                     ┌────▼──────────▼────┐
-                     │  execution-svc     │
-                     │ (paper / live)     │
-                     └────────────────────┘
-                                │
-                      ┌─────────▼──────────┐
-                      │  notification-svc  │
-                      │ Telegram/email/... │
-                      └────────────────────┘
+  market-data ──market_data.updated──▶ feature-engine ──features.ready──┬──▶ strategy
+       ▲                                     ▲                          │       │
+       │                          fundamentals.updated                  │  signal.generated
+       │                          company.classified                    │       │
+       │                                     │                          ▼       ▼
+  (Yahoo / Alpha Vantage)          fundamental-data              ml-pipeline    │
+                                   company-classifier         ml.signal_generated
+                                                                       │       │
+                                                                       ▼       ▼
+   macro-data ──macro.regime_changed──────────────────────▶  signal-aggregator
+        │                                                              │
+        │                                                     signal.aggregated
+        │                                                              ▼
+        └──────────────macro.regime_changed───────────────────▶   risk-mgmt
+                                                                       │
+                                                                order.requested
+                                                                       ▼
+                                                                  execution
+                                                                       │
+                                              order.filled ────────────┤
+                                                                       ▼
+                                    (HTTP: metryki portfela z powrotem do risk-mgmt)
 
-  ┌────────────────────────────────────────────┐
-  │  INFRASTRUKTURA WSPÓŁDZIELONA              │
-  │  PostgreSQL + TimescaleDB · Redis · NATS   │
-  │  Prometheus · Grafana · Loki · Traefik     │
-  └────────────────────────────────────────────┘
+  backtest ──backtest.strategy_revalidated──▶ strategy      notification ◀── 5 strumieni alertów
+  dashboard ── (HTTP, tylko odczyt) ──▶ risk-mgmt · execution · notification · ml-pipeline
 ```
+
+Kluczowe zasady, które ta ścieżka realizuje:
+
+- **signal-aggregator jest węzłem decyzyjnym.** Sygnał ze `strategy` i głos ML to *komponenty*; agregator łączy je wagami adaptacyjnymi z reżimem makro i przepuszcza przez filtr kosztów. Dopiero `signal.aggregated` trafia do risk-mgmt.
+- **ML nigdy nie handluje samo.** `ml.signal_generated` celowo nie zawiera poziomów SL/TP i nie jest agregowany bez komponentu strategii — to modulacja decyzji, nie decyzja.
+- **Ryzyko jest bramą, nie sugestią.** Każdy sygnał przechodzi `RiskEnvelope`; wielkość pozycji liczy risk-mgmt (budżet zależny od obsunięcia, limity ekspozycji i sektorowe wg reżimu, maks. 5% na pozycję). Wyłącznik bezpieczeństwa jest uzbrojony 24/7.
+- **Uczenie się z realnych wyników.** Dojrzały głos ML jest rozliczany tą samą regułą triple-barrier co trening; zrealizowany zwrot wraca do wag adaptacyjnych agregatora i do wykrywania degradacji modelu.
 
 ### Zasady komunikacji
 
 | Typ | Protokół | Kiedy |
 |-----|----------|-------|
-| Synchroniczna | HTTP/REST (FastAPI) | Zapytania on-demand, dashboard → serwis |
-| Asynchroniczna | NATS JetStream | Sygnały, eventy rynkowe, pipeline ML |
+| Asynchroniczna | NATS JetStream (durable, dedup po `Nats-Msg-Id`) | Zdarzenia rynkowe, sygnały, zlecenia, alerty |
+| Synchroniczna | HTTP/REST (FastAPI) | Zapytania on-demand, dashboard → serwis, sprzężenie portfela |
 
 ---
 
 ## Serwisy
 
-| Serwis | Port (dev) | Faza | Opis |
-|--------|-----------|------|------|
-| [`market-data`](services/market-data/) | 8001 | 1 – tydzień 2 | Pobieranie, walidacja i przechowywanie OHLCV |
-| [`feature-engine`](services/feature-engine/) | 8002 | 1 – tydzień 3 | Wskaźniki techniczne i feature engineering |
-| [`strategy`](services/strategy/) | 8003 | 2 – tydzień 5 | Definicja strategii, generowanie sygnałów |
-| [`backtest`](services/backtest/) | 8004 | 2 – tydzień 7 | Silnik backtestingu, optymalizacja, walk-forward |
-| [`ml-pipeline`](services/ml-pipeline/) | 8005 | 3 – tydzień 13 | Training, inference, model registry (MLflow) |
-| [`risk-mgmt`](services/risk-mgmt/) | 8006 | 4 – tydzień 19 | Position sizing, portfolio optimization, VaR |
-| [`execution`](services/execution/) | 8007 | 5 – tydzień 22 | Paper trading / live trading, order management |
-| [`notification`](services/notification/) | 8008 | 5 – tydzień 23 | Alerty: Telegram, email, Slack |
-| [`dashboard`](services/dashboard/) | 8501 | 4 – tydzień 21 | UI (Streamlit lub Next.js) |
+### Rdzeń (9)
 
-Każdy serwis posiada identyczną strukturę wewnętrzną — patrz [Struktura serwisu](#struktura-serwisu).
+| Serwis | Port | Rola |
+|--------|------|------|
+| [`market-data`](services/market-data/) | 8001 | Pobieranie OHLCV (Yahoo → Alpha Vantage), walidacja, TimescaleDB, cache Redis, publikacja zdarzeń |
+| [`feature-engine`](services/feature-engine/) | 8002 | Cechy techniczne + wzbogacenie fundamentami/stylem, **rangi przekrojowe** (`/ranked`) |
+| [`strategy`](services/strategy/) | 8003 | Reguła momentum na rangach, `RiskEnvelope`, filtr kosztów, monitor degradacji strategii |
+| [`backtest`](services/backtest/) | 8004 | Silnik long/flat bez podglądania przyszłości, walk-forward, cotygodniowa rewalidacja |
+| [`ml-pipeline`](services/ml-pipeline/) | 8005 | Trening (PyTorch), rejestr MLflow, serwowanie głosu ML, dzienny monitoring driftu |
+| [`risk-mgmt`](services/risk-mgmt/) | 8006 | Wielkość pozycji, limity reżimowe i sektorowe, wyłącznik bezpieczeństwa, stan portfela |
+| [`execution`](services/execution/) | 8007 | Paper trading: wypełnienia, ochronne wyjścia SL/TP, idempotencja, sprzężenie do risk-mgmt |
+| [`notification`](services/notification/) | 8008 | Alerty z 5 strumieni: log, Slack, Telegram, e-mail (SMTP) |
+| [`dashboard`](services/dashboard/) | 8501 | Backend-for-frontend (FastAPI) + strona `/ui` bez kroku budowania |
+
+### Rozszerzenie ML/AI (4)
+
+| Serwis | Port | Rola |
+|--------|------|------|
+| [`fundamental-data`](services/fundamental-data/) | 8009 | SEC EDGAR, sprawozdania roczne, pełny 9-sygnałowy F-Score Piotroskiego |
+| [`macro-data`](services/macro-data/) | 8010 | FRED (krzywa, spready, PMI), regułowa detekcja reżimu rynkowego |
+| [`company-classifier`](services/company-classifier/) | 8011 | Profil spółki → styl inwestycyjny i routing stosu modeli |
+| [`signal-aggregator`](services/signal-aggregator/) | 8012 | Łączenie sygnałów (reguły + ML + makro) w jedną decyzję, wagi adaptacyjne |
+
+Każdy serwis ma własny `Dockerfile`, `pyproject.toml`, testy i identyczną strukturę wewnętrzną — patrz [Struktura serwisu](#struktura-serwisu-wzorzec). Serwis A **nigdy** nie importuje z serwisu B; typy współdzielone mieszkają w `trading-common`.
+
+---
+
+## Zdarzenia i strumienie
+
+Strumienie JetStream (tworzone idempotentnie przez `ensure_stream` przy starcie, więc kolejność uruchamiania serwisów nie ma znaczenia):
+
+| Strumień | Subjects | Główne zdarzenia |
+|----------|----------|------------------|
+| `MARKET_DATA` | `market_data.>` | `market_data.updated` |
+| `FEATURES` | `features.>` | `features.ready` |
+| `SIGNALS` | `signal.>` | `signal.generated`, `signal.aggregated` |
+| `ORDERS` | `order.>` | `order.requested`, `order.filled`, `order.rejected` |
+| `RISK` | `risk.>` | `risk.circuit_breaker`, `risk.limit_breached` |
+| `ML` | `ml.>` | `ml.signal_generated`, `ml.drift_detected`, `ml.model_trained` |
+| `BACKTEST` | `backtest.>` | `backtest.completed`, `backtest.strategy_revalidated` |
+| `STRATEGY` | `strategy.>` | `strategy.status_changed` |
+| `MACRO` | `macro.>` | `macro.updated`, `macro.regime_changed` |
+| `FUNDAMENTALS` | `fundamentals.>` | `fundamentals.updated` |
+| `COMPANY` | `company.>` | `company.classified` |
+
+Subskrypcje są **durable** z `max_deliver`; komunikat trwale błędny jest terminowany (`term`), przejściowy błąd → `nak` i ponowne dostarczenie.
 
 ---
 
@@ -93,53 +130,43 @@ Każdy serwis posiada identyczną strukturę wewnętrzną — patrz [Struktura s
 
 Pliki konfiguracyjne w [`infrastructure/`](infrastructure/).
 
-### Komponenty
-
 | Komponent | Obraz | Port | Rola |
 |-----------|-------|------|------|
-| PostgreSQL + TimescaleDB | `timescale/timescaledb:latest-pg16` | 5432 | Baza danych; OHLCV jako hypertable |
-| Redis | `redis:7-alpine` | 6379 | Cache + pub/sub |
+| PostgreSQL + TimescaleDB | `timescale/timescaledb:latest-pg16` | 5432 | Baza; OHLCV jako hypertable |
+| Redis | `redis:7-alpine` | 6379 | Cache + trwałość stanu (portfel, broker, cechy) |
 | NATS | `nats:2-alpine` | 4222 / 8222 | Event bus (JetStream) |
-| Traefik | `traefik:v3.0` | 80 / 8080 | API Gateway, dashboard |
+| Traefik | `traefik:v3.0` | 80 / 8080 | API Gateway |
 | Prometheus | `prom/prometheus` | 9090 | Metryki |
 | Grafana | `grafana/grafana` | 3000 | Dashboardy |
 | Loki | `grafana/loki` | 3100 | Logi strukturalne |
 
-### Baza danych
+Schemat bazy inicjalizuje [`init-db.sql`](infrastructure/init-db.sql): schematy izolowane per-serwis, `market_data.ohlcv` jako hypertable z kluczem naturalnym `(symbol, interval, ts)` (umożliwia idempotentny upsert) i kompresją danych starszych niż 7 dni.
 
-Schemat inicjalizowany przez [`infrastructure/init-db.sql`](infrastructure/init-db.sql):
-
-- Schematy izolowane per-serwis: `market_data`, `feature_engine`, `strategy`, `backtest`, `risk_mgmt`, `execution`
-- `market_data.ohlcv` — TimescaleDB hypertable, kompresja danych > 7 dni
-- `strategy.signals`, `backtest.results`, `risk_mgmt.positions`
+> **Produkcja:** [`docker-compose.prod.yml`](infrastructure/docker-compose.prod.yml) to warstwa nakładkowa — zdejmuje publikację portów na hosta (ruch wyłącznie przez Traefika z TLS) i wycisza logi do `INFO`. Używa znacznika `!reset`, bo Compose **scala** listy: samo `ports: []` niczego nie usuwa.
 
 ---
 
 ## Shared Library
 
-[`shared/trading-common/`](shared/trading-common/) — biblioteka Pydantic installowalna przez `pip install -e`.
-
-### Moduły
+[`shared/trading-common/`](shared/trading-common/) — biblioteka instalowalna przez `pip install -e`. Kontrakty definiuje się **tutaj, zanim** powstanie kod ich używający.
 
 | Moduł | Zawartość |
 |-------|-----------|
-| [`schemas.py`](shared/trading-common/src/trading_common/schemas.py) | `OHLCVBar`, `TradingSignal`, `PortfolioMetrics`, `Signal`, `Interval` |
-| [`events.py`](shared/trading-common/src/trading_common/events.py) | Kontrakty NATS: `MarketDataUpdatedEvent`, `SignalGeneratedEvent`, `OrderFilledEvent`, `RiskLimitBreachedEvent` itd. |
-| [`constants.py`](shared/trading-common/src/trading_common/constants.py) | Porty serwisów, symbole domyślne, NATS subjects, limity ryzyka |
+| [`schemas.py`](shared/trading-common/src/trading_common/schemas.py) | `OHLCVBar`, `TradingSignal` (wymusza `stop_loss`), `PortfolioMetrics`, `FeatureVector`, `CompanyProfile`, `FinancialStatements`, `MacroSnapshot` |
+| [`events.py`](shared/trading-common/src/trading_common/events.py) | `EventType` (24 wartości) + klasy zdarzeń NATS |
+| [`features.py`](shared/trading-common/src/trading_common/features.py) | `compute_feature_vector` — **wspólna** definicja cech dla treningu i serwowania |
+| [`ranking.py`](shared/trading-common/src/trading_common/ranking.py) | `cross_sectional_rank` — percentylowa ranga przekrojowa (odporna na remisy) |
+| [`risk_envelope.py`](shared/trading-common/src/trading_common/risk_envelope.py) | `RiskEnvelope` — brama, przez którą przechodzi każdy sygnał |
+| [`cost_filter.py`](shared/trading-common/src/trading_common/cost_filter.py) | `CostAwareFilter` — odsiewa sygnały o przewadze mniejszej niż koszty |
+| [`scheduler.py`](shared/trading-common/src/trading_common/scheduler.py) | `PeriodicTask` — zadania cykliczne w pętli asyncio, izolowane od wyjątków |
+| [`constants.py`](shared/trading-common/src/trading_common/constants.py) | Porty, symbole domyślne, subjects, limity ryzyka |
 | [`utils.py`](shared/trading-common/src/trading_common/utils.py) | `utcnow()`, `to_utc()`, `symbol_to_topic()` |
 
-### Instalacja
+> `features.py` i `ranking.py` są współdzielone celowo: ml-pipeline liczy cechy do treningu **tym samym kodem**, którym feature-engine liczy je na produkcji. Zgodność trening/serwowanie jest strukturalna, nie deklaratywna.
 
 ```bash
 pip install -e shared/trading-common          # runtime
 pip install -e "shared/trading-common[dev]"   # + narzędzia testowe
-```
-
-### Import w serwisie
-
-```python
-from trading_common.schemas import OHLCVBar, TradingSignal
-from trading_common.events import SignalGeneratedEvent, EventType
 ```
 
 ---
@@ -148,116 +175,121 @@ from trading_common.events import SignalGeneratedEvent, EventType
 
 ### Wymagania
 
-- Docker Desktop (z Compose v2)
-- Python 3.12 (do lokalnych testów)
+Docker + Compose v2, ~15 GB dysku, `python3` (skrypty używają wyłącznie biblioteki standardowej). Python 3.12 tylko do testów lokalnych.
 
 ### Pierwsze uruchomienie
 
 ```bash
-# 1. Skopiuj i uzupełnij sekrety
-cp .env.example .env
-# → edytuj .env: ustaw DB_PASSWORD i REDIS_PASSWORD
-
-# 2. Uruchom stack (infrastruktura + serwisy fazy 1)
-make up
-
-# 3. Sprawdź logi
-make logs
+cp .env.example .env     # ustaw DB_PASSWORD i REDIS_PASSWORD
+make build               # 13 obrazów; pierwszy raz 10–30 min
+make up                  # infrastruktura + 13 serwisów
 ```
 
-> **Uwaga:** `.env` musi być w katalogu root (`Market_App/`), nie w `infrastructure/`.
-> Makefile przekazuje `--env-file .env` do compose automatycznie.
-
-### Status infrastruktury (oczekiwany — weryfikowalny po `make up`; brak Dockera w sandbox/CI)
-
-| Komponent | Status | Weryfikacja |
-|-----------|--------|-------------|
-| PostgreSQL + TimescaleDB | ✓ healthy | `pg_isready` + schematy z `init-db.sql` |
-| Redis | ✓ healthy | `PONG` na ping |
-| NATS + JetStream | ✓ healthy | `store_dir: /data/jetstream` aktywny |
-| Prometheus | ✓ ready | `/‑/ready` → 200 |
-| Grafana | ✓ running | `/api/health` → `ok` |
-| Loki | ✓ ready | `/ready` → 200 |
-| Traefik | ✓ running | `/api/overview` → 200 |
+> `.env` musi leżeć w katalogu root — Makefile przekazuje `--env-file .env` do Compose.
+> **ml-pipeline potrzebuje ~2,5 min na start** (import torch + mlflow) i przez ten czas ma status `starting`. To poprawne, nie awaria — healthcheck ma na to zapas (`start_period: 300s`).
 
 ### Dostęp do usług (dev)
 
 | Usługa | URL |
 |--------|-----|
-| API Gateway | http://localhost:80 |
-| Traefik dashboard | http://localhost:8080 |
-| market-data API | http://localhost:8001/docs |
-| feature-engine API | http://localhost:8002/docs |
-| strategy API | http://localhost:8003/docs |
-| backtest API | http://localhost:8004/docs |
-| Grafana | http://localhost:3000 (admin / wartość z `.env`) |
-| Prometheus | http://localhost:9090 |
-| NATS monitoring | http://localhost:8222 |
+| **Dashboard** | http://localhost:8501 (przekierowuje na `/api/v1/dashboard/ui`) |
+| API Gateway (Traefik) | http://localhost:80 · dashboard: http://localhost:8080 |
+| market-data / feature-engine / strategy | :8001 · :8002 · :8003 (`/docs`) |
+| backtest / ml-pipeline / risk-mgmt | :8004 · :8005 · :8006 (`/docs`) |
+| execution / notification | :8007 · :8008 (`/docs`) |
+| fundamental-data / macro-data | :8009 · :8010 (`/docs`) |
+| company-classifier / signal-aggregator | :8011 · :8012 (`/docs`) |
+| Grafana · Prometheus · NATS monitoring | :3000 · :9090 · :8222 |
+
+Każdy serwis eksponuje `GET /health` (liveness), `GET /ready` (realne sprawdzenie zależności — DB/Redis/NATS/serwisy nadrzędne) i `GET /metrics` (Prometheus). Logi w JSON (structlog).
 
 ### Pomocne komendy
 
 ```bash
-make up               # Uruchom wszystkie serwisy
-make down             # Zatrzymaj
-make build            # Zbuduj obrazy
-make build-market-data  # Zbuduj konkretny serwis
-make logs             # Śledź logi
-make logs-market-data   # Logi konkretnego serwisu
-make seed             # Załaduj dane testowe
+make up / down / build         # cykl życia stacku
+make build-market-data         # pojedynczy obraz
+make logs / logs-ml-pipeline   # logi
+make test                      # testy wszystkich komponentów
+make verify-jetstream          # end-to-end NATS bez Dockera (spawnuje własny nats-server)
+make bootstrap-universe        # backfill danych + opcjonalny trening (patrz niżej)
 ```
+
+---
+
+## Bootstrap danych i pierwszy trening
+
+Skrypt [`scripts/bootstrap-universe.py`](scripts/bootstrap-universe.py) steruje **działającym** stackiem wyłącznie po HTTP — nie dotyka bazy i nie importuje `yfinance`. Pobieranie, walidacja, zapis i publikacja zdarzeń zostają po stronie market-data.
+
+```bash
+make bootstrap-universe ARGS="--train --report-out reports/first-training.json"
+```
+
+Co się dzieje po kolei:
+
+1. **Backfill** — dla ~34 dużych spółek rozłożonych po sektorach GICS: 6 lat świec dziennych → walidacja → idempotentny upsert → jedno `market_data.updated` na symbol. Każde takie zdarzenie budzi żywą pętlę, więc po backfillu zobaczysz pierwsze **papierowe** pozycje na dashboardzie.
+2. **Kontrola pokrycia** — odczyt zapisanych świec i sprawdzenie liczby sesji, zakresu i luk dłuższych niż 5 dni sesyjnych.
+3. **Trening** (`--train`) — zbiór przekrojowy dla całego uniwersum, etykiety triple-barrier, purged walk-forward z embargiem, bramka aktywacji. Model trafia do MLflow **niezależnie od wyniku bramki**; baseline driftu rejestruje się automatycznie.
+4. **Raport** (`--report-out`) — samowystarczalny JSON: pokrycie, kontekst zbioru (ile symboli miało historię, ile sesji, `positive_rate`) i pełny raport bramki z diagnostyką każdego foldu.
+
+Bramka przepuszcza model tylko wtedy, gdy Sharpe po kosztach przekracza 0,5 na holdoucie **i** na ≥2 z 3 ostatnich foldów, przy kalibracji nie gorszej niż wskaźnik bazowy. Obok Sharpe'a raport podaje **`lift`** (o ile częściej rosły spółki faktycznie wybrane przez model) i **`pred_std`** — bo wysoki Sharpe przy zerowym lifcie to fart, a `pred_std ≈ 0` to model, który się zapadł.
+
+Promocja jest **ręczna** — skrypt wypisuje gotową komendę tylko przy zdanej bramce:
+
+```bash
+curl -X POST localhost:8005/api/v1/ml-pipeline/models/versions/1/promote
+```
+
+Serwowanie przeładowuje się na gorąco (bez restartu), a dzienny monitor zaczyna rozliczać dojrzałe głosy modelu i pilnować driftu.
+
+---
+
+## Reguły ryzyka
+
+Twarde, nienegocjowalne reguły wbudowane w kod (nie w dokumentację):
+
+- Żadne zlecenie bez `stop_loss` — wymuszone walidacją `TradingSignal` i ponownie przez `RiskEnvelope`.
+- Maks. **5%** portfela na pozycję, maks. **80%** łącznej ekspozycji.
+- Wielkość pozycji zależna od obsunięcia: pełne 2% ryzyka do DD 5%, potem liniowo do zera przy DD 15%.
+- Reżim makro steruje limitem ekspozycji (kryzys → 15%, kontrakcja → 35%) i dopuszczalnymi sektorami.
+- Strata dzienna > 5% → wstrzymanie handlu do następnego dnia. Obsunięcie > 15% → zamknięcie pozycji.
+- Wyłącznik bezpieczeństwa uzbrojony 24/7; jego stan przeżywa restart (odtwarzany z Redisa).
+- Żadna strategia nie idzie na żywo bez walidacji walk-forward OOS i Sharpe'a > 0,5.
 
 ---
 
 ## Testowanie
 
-### Uruchom wszystkie testy
-
 ```bash
-make test
-# lub bezpośrednio:
-bash scripts/run-all-tests.sh
+make test                 # wszystkie komponenty
+make test-market-data     # pojedynczy serwis
+cd services/ml-pipeline && python -m pytest tests/ -v
 ```
 
-### Testy konkretnego serwisu / biblioteki
+Stan na 2026-07-25: **847 testów, wszystkie zielone** na Pythonie 3.12; `ruff` + `ruff format` + `mypy` czyste (`--strict` dla `trading-common`). Rozkład:
 
-```bash
-make test-market-data
-make test-shared       # (cd shared/trading-common && pytest)
-```
+| Komponent | Testów | Co jest testowane |
+|-----------|:---:|-------------------|
+| `trading-common` | 181 | Kontrakty, zdarzenia, `RiskEnvelope`, `CostAwareFilter`, cechy, rangi, scheduler |
+| `ml-pipeline` | 120 | Etykiety triple-barrier, podziały purged, trening, bramka, rejestr MLflow, serwowanie, monitoring |
+| `risk-mgmt` | 104 | Wielkość pozycji, limity reżimowe/sektorowe, wyłącznik, trwałość stanu |
+| `signal-aggregator` | 80 | Łączenie sygnałów, wagi adaptacyjne, bufory TTL, filtr kosztów |
+| `strategy` | 56 | Reguła momentum, brama ryzyka, degradacja, rewalidacja z backtestu |
+| `execution` | 44 | Wypełnienia, idempotencja, wyjścia ochronne, tylko long, trwałość |
+| `backtest` | 41 | Silnik bez podglądania przyszłości, walk-forward, rewalidacja |
+| `macro-data` | 41 | Detekcja reżimu, klient FRED, zdarzenia przejścia |
+| `feature-engine` | 38 | Orkiestracja cech, wzbogacanie atrybutami, magazyn, API rang |
+| `fundamental-data` | 36 | F-Score Piotroskiego (9 sygnałów), klient EDGAR, ingest |
+| `notification` | 33 | Mapowanie zdarzeń na alerty, kanały, izolacja awarii |
+| `market-data` | 30 | Fetchery, upsert, cache, publikacja zdarzeń |
+| `company-classifier` | 25 | Klasyfikacja stylu, routing modeli |
+| `dashboard` | 18 | Agregacja z 4 źródeł, tolerancja braku serwisu |
 
-### Testy lokalne bez Dockera
+### Wzorzec konfiguracji testów
 
-```bash
-# Zainstaluj zależności (Windows: --user, Linux/Mac: wirtualne środowisko)
-bash scripts/setup-dev.sh
-
-# Uruchom testy jednego serwisu
-cd services/market-data
-python -m pytest tests/ -v --cov=src --cov-report=term-missing
-```
-
-> **Windows:** `pip install --user` jest wymagane jeśli Python jest zainstalowany w `C:\Program Files\` (brak uprawnień zapisu). Skrypt `setup-dev.sh` obsługuje to automatycznie.
-
-### Co jest testowane
-
-> Liczby testów są orientacyjne (rosną wraz z kodem) — źródłem prawdy jest `make test`.
-> Stan na 2026-06-25: ~330 testów, wszystkie zielone na Pythonie 3.12.
-
-| Komponent | Co jest testowane | Orientacyjnie |
-|-----------|-------------------|:---:|
-| `trading-common` | Kontrakty Pydantic (schemas), eventy NATS, `RiskEnvelope`, utils | ~126 |
-| `market-data` | Szkielet: /health, /ready, /metrics, /ohlcv, /fetch, /symbols | 7 |
-| `strategy` | `decay_monitor`, `cost_filter`, `adaptive_weights` + health | ~66 |
-| `risk-mgmt` | `adaptive_sizing`, `regime_allocator` + health | ~57 |
-| `feature-engine` | `vol_regime`, `earnings_decay`, `cross_asset` + health | ~50 |
-| pozostałe serwisy | health + komponenty `framework_supplement` | rośnie |
-
-### Znane wzorce konfiguracji testów
-
-Serwisy z wymaganym `DB_PASSWORD` w `config.py` potrzebują ustawienia env przed importem:
+Serwisy z wymaganym `DB_PASSWORD` potrzebują env **przed** importem `src.*`:
 
 ```python
-# tests/conftest.py — MUSI być przed importem src.*
+# tests/conftest.py
 import os
 os.environ.setdefault("DB_PASSWORD", "test_password")
 os.environ.setdefault("REDIS_PASSWORD", "test_redis")
@@ -265,265 +297,145 @@ os.environ.setdefault("REDIS_PASSWORD", "test_redis")
 from src.main import app  # dopiero tutaj
 ```
 
-### Reguła testowania
+### Reguła
 
-> Każdy nowy kod musi mieć testy. Nowy endpoint → test HTTP. Nowa funkcja biznesowa → test jednostkowy. Nowy event → test kontraktu.
+> Każdy nowy kod musi mieć testy. Nowy endpoint → test HTTP. Nowa funkcja biznesowa → test jednostkowy. Nowy event → test kontraktu. Zmiana ścieżki zdarzeniowej → weryfikacja na prawdziwym `nats-server`.
 
 ---
 
 ## Git Workflow
 
-### Strategia branchy
-
 ```
-main        ← produkcja; chroniony przez hook (brak bezpośrednich commitów)
-│
-└── develop ← integracja; bieżąca gałąź robocza
-    │
-    ├── feat/market-data-fetcher   ← nowa funkcja
-    ├── fix/ohlcv-validator-high-low
-    └── chore/update-dependencies
+main                    ← gałąź główna; bezpośredni commit blokowany przez pre-commit
+└── feat/… fix/… data/… ← praca; scalane do main po przejściu testów
 ```
-
-### Codzienny cykl pracy
 
 ```bash
-# 1. Utwórz branch z develop
-git checkout develop
 git checkout -b feat/nazwa-funkcji
-
-# 2. Pracuj i commituj (pre-commit lint uruchomi się automatycznie)
-git add services/market-data/src/...
-git commit -m "feat(market-data): add OHLCV fetcher via yfinance"
-
-# 3. Scal do develop po zakończeniu
-git checkout develop
-git merge --no-ff feat/nazwa-funkcji
-git branch -d feat/nazwa-funkcji
-
-# 4. Do main przez PR (GitHub) — CI musi przejść
+git add . && git commit -m "feat(zakres): opis"   # pre-commit: ruff + ruff-format
+git push -u origin feat/nazwa-funkcji
 ```
 
-### Format commitów (Conventional Commits)
+Format commitów (Conventional Commits): `<typ>(<zakres>): <opis>`, gdzie typ to `feat | fix | chore | docs | test | refactor | perf`, a zakres to nazwa serwisu, `shared`, `infra` lub `ci`.
 
-```
-<typ>(<zakres>): <opis>
-
-typ:    feat | fix | chore | docs | test | refactor | perf
-zakres: market-data | feature-engine | strategy | shared | infra | ci
-```
-
-Przykłady:
-```
-feat(market-data): implement OHLCV fetch from yfinance
-fix(shared): replace deprecated datetime.utcnow with timezone-aware
-test(market-data): add integration tests for DB layer
-chore(deps): bump pydantic to 2.12
-```
-
-### Pre-commit hooks (automatyczne przy `git commit`)
+### Pre-commit hooks
 
 | Hook | Akcja |
 |------|-------|
-| `trailing-whitespace` | Usuwa trailing whitespace |
-| `end-of-file-fixer` | Zapewnia newline na końcu pliku |
-| `check-yaml` / `check-toml` | Walidacja składni |
+| `trailing-whitespace`, `end-of-file-fixer` | Higiena plików |
+| `check-yaml` (`--unsafe`), `check-toml` | Walidacja składni (`--unsafe` przepuszcza znaczniki Helma) |
+| `check-merge-conflict` | Blokuje niedokończone scalenia |
 | `check-added-large-files` | Blokuje pliki > 500 KB |
 | `no-commit-to-branch` | Blokuje bezpośredni commit na `main` |
-| `ruff` | Lint + auto-fix |
-| `ruff-format` | Formatowanie kodu |
-
-Konfiguracja: [`.pre-commit-config.yaml`](.pre-commit-config.yaml)
+| `ruff`, `ruff-format` | Lint z auto-fixem i formatowanie |
 
 ```bash
-# Ręczne uruchomienie na wszystkich plikach
-python -m pre_commit run --all-files
-
-# Reinstalacja hooków (np. po klonowaniu)
-python -m pre_commit install
+python -m pre_commit install         # po sklonowaniu
+python -m pre_commit run --all-files # ręcznie
 ```
-
-### Podłączenie remote (GitHub)
-
-```bash
-# 1. Utwórz repo na GitHub (bez inicjalizacji — repo jest już lokalnie)
-# 2. Podłącz remote i wypchnij
-git remote add origin https://github.com/<user>/<repo>.git
-git push -u origin main
-git push -u origin develop
-```
-
-> Ustaw ochronę brancha `main` w GitHub: Settings → Branches → Add rule → wymagaj PR + CI pass.
 
 ---
 
 ## CI/CD
 
-Pipeline GitHub Actions w [`.github/workflows/`](.github/workflows/).
+| Workflow | Wyzwalacz | Co robi |
+|----------|-----------|---------|
+| [`ci.yml`](.github/workflows/ci.yml) | push na `main`/`develop`, PR do `main` | Wykrywa zmienione serwisy (13 + `shared`) i uruchamia dla nich lint + mypy + pytest. Zmiana w `shared/**` testuje wszystko. |
+| [`build-images.yml`](.github/workflows/build-images.yml) | merge do `main` | Buduje i publikuje 13 obrazów do `ghcr.io` z cache warstw |
+| [`deploy.yml`](.github/workflows/deploy.yml) | po udanym buildzie | `helm upgrade` na klaster (staging domyślnie) |
 
-### Workflow: CI ([`ci.yml`](.github/workflows/ci.yml))
-
-Wyzwalany przy każdym push i pull request:
-
-1. **detect-changes** — wykrywa które serwisy zmieniły się (nie testuje wszystkich przy zmianie jednego)
-2. **test-shared** — lint + mypy + pytest dla `trading-common` (blokujące)
-3. **test-services** — matrix: lint + mypy + pytest dla każdego zmienionego serwisu
-
-### Workflow: Build ([`build-images.yml`](.github/workflows/build-images.yml))
-
-Wyzwalany przy merge do `main`:
-- Buduje i pushuje obrazy Docker do `ghcr.io`
-- Cache warstw przez GitHub Actions cache
-
-### Workflow: Deploy ([`deploy.yml`](.github/workflows/deploy.yml))
-
-Wyzwalany po udanym `build-images.yml`:
-- Helm upgrade do klastra K8s
-- `staging` (domyślnie) lub `production`
+> Gałęzie robocze **nie mają CI** dopóki nie powstanie PR do `main` — weryfikuj lokalnie przed wypchnięciem.
 
 ---
 
 ## Kubernetes / Helm
 
-### Helm chart
+Chart jest **generyczny**: jeden szablon renderuje Deployment + Service dla wszystkich 13 serwisów na podstawie mapy `services:` w `values.yaml` (klucz = nazwa w k8s = nazwa w Compose).
 
 ```bash
-# Podgląd (dry-run)
-make helm-template
-
-# Deploy
-make helm-install
-
-# Deploy produkcyjny
+make helm-template     # podgląd (dry-run)
+make helm-install      # deploy
 helm upgrade --install trading-system ./infrastructure/helm \
-  -f infrastructure/helm/values.yaml \
-  -f infrastructure/helm/values-prod.yaml \
+  -f infrastructure/helm/values.yaml -f infrastructure/helm/values-prod.yaml \
   --namespace trading-system --create-namespace
 ```
 
-### Pliki
-
 | Plik | Opis |
 |------|------|
-| [`helm/values.yaml`](infrastructure/helm/values.yaml) | Domyślne wartości (dev) |
-| [`helm/values-prod.yaml`](infrastructure/helm/values-prod.yaml) | Produkcyjne overrides (repliki, logi) |
-| [`helm/templates/market-data-deployment.yaml`](infrastructure/helm/templates/market-data-deployment.yaml) | Wzorzec deploymentu (kopiuj dla nowych serwisów) |
-| [`helm/templates/postgres-statefulset.yaml`](infrastructure/helm/templates/postgres-statefulset.yaml) | StatefulSet dla PostgreSQL |
-| [`k8s/secrets.yaml.example`](infrastructure/k8s/secrets.yaml.example) | Wzorzec K8s Secret (nie commituj z prawdziwymi wartościami!) |
+| [`helm/values.yaml`](infrastructure/helm/values.yaml) | Mapa 13 serwisów: obraz, port, env, `needsDb`, `startupSeconds` |
+| [`helm/values-prod.yaml`](infrastructure/helm/values-prod.yaml) | Overrides produkcyjne (repliki tylko dla serwisów bez subskrypcji, logi `INFO`) |
+| [`helm/templates/services.yaml`](infrastructure/helm/templates/services.yaml) | Generyczny Deployment + Service (sondy, adnotacje Prometheusa, sekrety) |
+| [`helm/templates/ingress.yaml`](infrastructure/helm/templates/ingress.yaml) | 13 tras `/api/v1/{serwis}` — lustro etykiet Traefika z Compose |
+| [`helm/templates/postgres-statefulset.yaml`](infrastructure/helm/templates/postgres-statefulset.yaml) | StatefulSet PostgreSQL |
+| [`k8s/secrets.yaml.example`](infrastructure/k8s/secrets.yaml.example) | Wzorzec Secret (nie commituj prawdziwych wartości) |
+
+`startupProbe` (per serwis, `startupSeconds`) wstrzymuje sondy liveness/readiness do końca startu — bez tego ml-pipeline z importem torcha wpadałby w crashloop. Replik > 1 używają tylko serwisy **bez** subskrypcji zdarzeń: konsumenci push nie rozkładają obciążenia, a risk-mgmt i execution są jedynymi pisarzami swojego stanu.
 
 ---
 
 ## Struktura plików
 
 ```
-Market_App/
-├── .env.example                          # Szablon sekretów — skopiuj do .env
-├── .gitignore
-├── Makefile                              # Skróty deweloperskie
+Market-App/
+├── CLAUDE.md                        # Kontekst projektu, status, priorytety (czytaj najpierw)
+├── Makefile                         # Skróty deweloperskie
+├── .env.example                     # Szablon sekretów
 │
-├── .github/workflows/
-│   ├── ci.yml                            # Lint + test na każdym PR
-│   ├── build-images.yml                  # Build + push Docker images
-│   └── deploy.yml                        # Deploy do K8s
+├── docs/
+│   ├── ml_integration_plan.md       # Wiążący projekt fazy ML (ML-0…ML-4)
+│   └── framework_supplement.md      # Specyfikacje 12 komponentów frameworku
+│
+├── .github/workflows/               # ci.yml · build-images.yml · deploy.yml
 │
 ├── infrastructure/
-│   ├── docker-compose.yml                # Dev environment
-│   ├── docker-compose.prod.yml           # Production overrides
-│   ├── init-db.sql                       # Inicjalizacja TimescaleDB
-│   ├── helm/                             # Kubernetes Helm chart
-│   │   ├── Chart.yaml
-│   │   ├── values.yaml
-│   │   ├── values-prod.yaml
-│   │   └── templates/
-│   ├── k8s/                              # Raw K8s manifesty
-│   ├── monitoring/
-│   │   ├── prometheus.yml
-│   │   ├── alertmanager.yml
-│   │   └── grafana-dashboards/
-│   └── terraform/                        # IaC (przyszłość)
+│   ├── docker-compose.yml           # Środowisko dev (13 serwisów + infra)
+│   ├── docker-compose.prod.yml      # Nakładka produkcyjna (!reset portów, TLS)
+│   ├── init-db.sql                  # Inicjalizacja TimescaleDB
+│   ├── helm/                        # Generyczny chart (values.yaml jako mapa serwisów)
+│   ├── k8s/                         # namespace.yaml, secrets.yaml.example
+│   └── monitoring/                  # prometheus.yml, alertmanager.yml, dashboardy Grafany
 │
-├── shared/
-│   └── trading-common/                   # Pip-installable shared library
-│       ├── src/trading_common/
-│       │   ├── schemas.py                # Pydantic contracts
-│       │   ├── events.py                 # NATS event definitions
-│       │   ├── constants.py
-│       │   └── utils.py
-│       └── tests/
+├── shared/trading-common/           # Biblioteka kontraktów (pip install -e)
 │
-├── services/                             # 9 mikroserwisów
-│   ├── market-data/      # port 8001
-│   ├── feature-engine/   # port 8002
-│   ├── strategy/         # port 8003
-│   ├── backtest/         # port 8004
-│   ├── ml-pipeline/      # port 8005
-│   ├── risk-mgmt/        # port 8006
-│   ├── execution/        # port 8007
-│   ├── notification/     # port 8008
-│   └── dashboard/        # port 8501
-│
-│   # Każdy serwis:
-│   # ├── Dockerfile          (multi-stage, non-root user)
-│   # ├── pyproject.toml      (hatchling, [dev] extras)
-│   # ├── src/
-│   # │   ├── main.py         (FastAPI + lifespan)
-│   # │   ├── config.py       (pydantic-settings)
-│   # │   ├── api/            (routers)
-│   # │   ├── core/
-│   # │   │   └── observability.py  (/health /ready /metrics)
-│   # │   ├── models/
-│   # │   └── events/
-│   # └── tests/
-│   #     ├── conftest.py     (AsyncClient fixture)
-│   #     └── test_health.py
+├── services/                        # 13 mikroserwisów (9 rdzenia + 4 ML/AI)
 │
 └── scripts/
-    ├── setup-dev.sh          # Instalacja zależności lokalnie
-    ├── run-all-tests.sh      # Testy wszystkich komponentów z raportem
-    └── seed-data.sh          # Ładowanie danych testowych
+    ├── bootstrap-universe.py        # Backfill uniwersum + pierwszy trening + raport
+    ├── verify-jetstream.py          # End-to-end NATS bez Dockera
+    ├── run-all-tests.sh             # Testy wszystkich komponentów
+    ├── setup-dev.sh                 # Zależności lokalnie
+    └── seed-data.sh                 # Dane testowe
 ```
 
 ### Struktura serwisu (wzorzec)
 
 ```
 services/{nazwa}/
-├── Dockerfile              multi-stage build (builder + runtime), non-root user
-├── pyproject.toml          hatchling, wymaga Python 3.12+, [dev] extras
-└── src/
-    ├── main.py             FastAPI app, lifespan hooks (init/cleanup połączeń)
-    ├── config.py           pydantic-settings: DB, Redis, NATS, service-specific
-    ├── api/
-    │   ├── __init__.py     Rejestracja routerów
-    │   └── routes.py       HTTP endpoints
-    ├── core/
-    │   └── observability.py  setup_observability(app, name) → /health /ready /metrics
-    ├── models/             SQLAlchemy modele + Pydantic schemas (per-serwis)
-    └── events/             NATS publishers i subscribers
+├── Dockerfile              multi-stage (builder + runtime), użytkownik non-root
+├── pyproject.toml          hatchling, Python 3.12+, extras [dev]
+├── src/
+│   ├── main.py             FastAPI + lifespan (połączenia, subskrypcje, scheduler)
+│   ├── config.py           pydantic-settings
+│   ├── api/                routery HTTP
+│   ├── core/               logika biznesowa + observability.py (/health /ready /metrics)
+│   ├── events/             publisher.py (NATS) + subscriber.py (durable)
+│   └── models/             SQLAlchemy ORM + re-eksport schematów z trading-common
+└── tests/
 ```
 
 ---
 
 ## Zmienne środowiskowe
 
-Minimalne wymagane w `.env`:
+Minimum w `.env`:
 
 ```env
-DB_PASSWORD=...      # WYMAGANE — docker compose nie wystartuje bez tej zmiennej
+DB_PASSWORD=...      # WYMAGANE — Compose nie wystartuje bez tej zmiennej
 REDIS_PASSWORD=...   # WYMAGANE
 ```
 
-Pełny szablon: [`.env.example`](.env.example)
+Opcjonalne, włączające funkcje (brak klucza = funkcja wyłączona, serwis działa dalej):
+`ALPHA_VANTAGE_API_KEY` (zapasowe źródło OHLCV) · `FRED_API_KEY` (makro) · `SEC_USER_AGENT` (EDGAR) ·
+`SLACK_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `SMTP_HOST`+`EMAIL_FROM`+`EMAIL_TO` (kanały alertów).
 
----
-
-## Obserwability
-
-Każdy serwis eksponuje od dnia 1:
-
-| Endpoint | Opis |
-|----------|------|
-| `GET /health` | Liveness probe — serwis żyje |
-| `GET /ready` | Readiness probe — serwis gotowy (sprawdza DB/Redis/NATS) |
-| `GET /metrics` | Prometheus metrics (prometheus-fastapi-instrumentator) |
-
-Logi w formacie JSON (structlog) — zbierane przez Loki, wizualizowane w Grafanie.
+Pełny szablon: [`.env.example`](.env.example).
