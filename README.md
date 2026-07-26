@@ -185,6 +185,29 @@ make build               # 13 obrazów; pierwszy raz 10–30 min
 make up                  # infrastruktura + 13 serwisów
 ```
 
+### Windows (bez `make`)
+
+GNU Make nie jest częścią Windowsa. Repo zawiera [`make.ps1`](make.ps1) — te same cele w PowerShellu, bez instalowania czegokolwiek:
+
+```powershell
+Copy-Item .env.example .env        # uzupełnij hasła
+.\make.ps1 build
+.\make.ps1 up
+.\make.ps1 bootstrap-universe --train --report-out reports/first-training.json
+.\make.ps1 help                    # lista celów
+```
+
+> Jeśli PowerShell zablokuje skrypt (ExecutionPolicy), uruchom raz:
+> `powershell -ExecutionPolicy Bypass -File .\make.ps1 up`, albo odblokuj na czas sesji:
+> `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`.
+
+Skrypt sam wykrywa interpreter Pythona (`python`, `py -3`, `python3`). Nic nie stoi też na przeszkodzie, by wołać narzędzia wprost — `make.ps1` jest tylko skrótem:
+
+```powershell
+docker compose -f infrastructure/docker-compose.yml --env-file .env up -d
+python scripts/bootstrap-universe.py --train --report-out reports/first-training.json
+```
+
 > `.env` musi leżeć w katalogu root — Makefile przekazuje `--env-file .env` do Compose.
 > **ml-pipeline potrzebuje ~2,5 min na start** (import torch + mlflow) i przez ten czas ma status `starting`. To poprawne, nie awaria — healthcheck ma na to zapas (`start_period: 300s`).
 
