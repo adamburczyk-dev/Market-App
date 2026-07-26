@@ -64,7 +64,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         checks: dict[str, bool] = {}
         try:
             async with engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
+                # Not just SELECT 1: query the actual table, so a missing
+                # schema / unapplied init-db.sql / wrong search_path shows up
+                # as "not ready" instead of a 500 on the first fetch.
+                await conn.execute(text("SELECT 1 FROM ohlcv LIMIT 1"))
             checks["database"] = True
         except Exception:  # noqa: BLE001
             checks["database"] = False

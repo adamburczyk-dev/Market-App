@@ -52,6 +52,13 @@ async def trigger_fetch(
     except FetchError as exc:
         logger.error("Fetch failed", symbol=symbol, error=str(exc))
         raise HTTPException(status_code=502, detail=f"fetch failed: {exc}") from exc
+    except Exception as exc:
+        # Storage / cache / event failures used to escape as a bare 500 with an
+        # EMPTY body (Starlette answers unhandled errors in plain text), so the
+        # caller saw "HTTP 500:" and nothing else. Name the cause instead — this
+        # is an internal service, the message is worth more than the opacity.
+        logger.exception("Fetch-and-store failed", symbol=symbol, interval=interval.value)
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     return {"status": "ok", "symbol": symbol.upper(), "interval": interval.value, "rows": rows}
 
 

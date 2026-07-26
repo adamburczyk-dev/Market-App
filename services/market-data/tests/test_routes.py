@@ -46,3 +46,25 @@ async def test_ohlcv_limit_validation(wired: tuple[AsyncClient, MarketDataServic
     client, _ = wired
     resp = await client.get("/api/v1/market-data/ohlcv/AAPL", params={"limit": 0})
     assert resp.status_code == 422  # limit musi być >= 1
+
+
+@pytest.mark.asyncio
+async def test_unexpected_failure_names_its_cause(wired: tuple[AsyncClient, MarketDataService]):
+    """A storage/cache/event failure must not surface as a bare 500.
+
+    Starlette answers unhandled exceptions with an EMPTY plain-text body, so
+    the caller (e.g. the bootstrap script) printed "HTTP 500:" and nothing
+    else — undiagnosable from the outside. The route names the cause instead.
+    """
+    client, service = wired
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError('relation "ohlcv" does not exist')
+
+    service.fetch_and_store = boom  # type: ignore[method-assign]
+
+    resp = await client.post("/api/v1/market-data/fetch/AAPL")
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "RuntimeError" in detail
+    assert 'relation "ohlcv" does not exist' in detail

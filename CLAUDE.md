@@ -900,6 +900,24 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   Traefika nie jest wystawiony w prod. Samego uruchomienia obrazu nie dało się sprawdzić (brak
   egressu do rejestru).
 
+- 2026-07-26 — **Bootstrap na maszynie użytkownika: `HTTP 500:` z PUSTĄ treścią dla wszystkich 34
+  symboli.** Diagnoza z samego kodu: `FallbackFetcher` łapie każdy wyjątek i zamienia na
+  `FetchError` → to dałoby **502**, więc 500 pochodzi z zapisu/cache'a/publikacji, nie z pobierania.
+  Pusta treść to Starlette: nieobsłużony wyjątek zwraca `Internal Server Error` jako **plain text**,
+  więc `json.loads` w skrypcie leci na `{}` i `detail` jest puste. **Zainstalowałem w sandboxie
+  prawdziwego PostgreSQL-a** (dotąd market-data testowany był wyłącznie na sqlite!) i sprawdziłem
+  dwie hipotezy: (a) naiwne znaczniki czasu z yfinance vs `TIMESTAMPTZ` — **OBALONA**, asyncpg
+  przyjmuje naiwne daty; (b) cała ścieżka realnych routes + `OHLCVRepository` + Postgres z realnym
+  schematem z `init-db.sql` — **działa**, łącznie z idempotentnym ponowieniem. Root cause zostaje
+  po stronie środowiska (traceback czeka w logach kontenera), ale ujawnił **realny defekt
+  diagnostyczny u nas**: `POST /fetch` obsługiwał tylko `FetchError`, więc każdy inny błąd stawał
+  się nieczytelnym 500. Teraz łapie `Exception`, loguje z tracebackiem i zwraca
+  `detail="TypBłędu: komunikat"`. Dodatkowo `/ready` odpytuje **realną tabelę**
+  (`SELECT 1 FROM ohlcv LIMIT 1`) zamiast `SELECT 1` — brak schematu / niewykonany `init-db.sql` /
+  zły `search_path` daje teraz uczciwe "not ready" zamiast 500 przy pierwszym pobraniu.
+  Zweryfikowane na prawdziwym Postgresie: po zniknięciu tabeli `/ready` → 503, a `POST /fetch` →
+  `ProgrammingError: ... relation "ohlcv" does not exist`. market-data 31 testów (+1 regresyjny).
+
 **Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
 `make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that
 JSON for review → if the gate passed, promote (curl printed by the script; serving hot-reloads) →
