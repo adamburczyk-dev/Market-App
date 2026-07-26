@@ -97,6 +97,7 @@ services:
       name: ml-pipeline
       tag: latest
     port: 8000
+    startupSeconds: 300  # cold boot imports torch + mlflow (~2.5 min)
     resources:
       requests:
         memory: "1Gi"

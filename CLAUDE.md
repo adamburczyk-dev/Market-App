@@ -843,6 +843,25 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   end-to-end diagnostics on a learnable universe); ruff + format + mypy clean; verified live
   (real market-data + real unpatched ml-pipeline + real MLflow on a real `nats-server`).
 
+- 2026-07-25 — **Deployment blockers found while writing the operator runbook** (all three would
+  have hit the very first real `make up`; none was reachable in the sandbox before, since Docker
+  Hub egress is blocked): **(1)** every app service's compose healthcheck ran `curl -f`, but the
+  images are `python:3.12-slim` — **no curl binary** → all 13 containers would sit `unhealthy`
+  forever, and the three `depends_on: condition: service_healthy` edges (market-data ×3,
+  feature-engine, risk-mgmt) would **stall `docker compose up`**. Replaced with a stdlib
+  `python -c urllib.request` probe (exit 0/1 verified live against a live and a dead port) +
+  `start_period: 40s`. **(2)** ml-pipeline needs ~2.5 min to boot (torch+mlflow import) against a
+  ~40 s healthcheck budget → permanently unhealthy; `start_period: 300s` in compose and
+  `--start-period=300s` on the image HEALTHCHECK. Helm had the same defect in a k8s shape (liveness
+  would kill the pod at ~40 s → crashloop): added a per-service **`startupProbe`**
+  (`startupSeconds`, 10 s granularity, default 60 s; ml-pipeline 300 s) which gates
+  liveness/readiness until boot completes — render-verified (13 Deployments, ml-pipeline
+  failureThreshold 30, dev+prod). **(3)** ml-pipeline's Dockerfile installed torch from default
+  PyPI (~2.5 GB of CUDA the service never uses — pyproject documented the CPU index but the build
+  ignored it): build now passes `--extra-index-url .../whl/cpu`. `make` script targets use
+  `$(PYTHON)` (default `python3`). Compose validated with a real `docker compose config`; image
+  builds themselves remain **unverified** here (no registry egress).
+
 **Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
 `make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that
 JSON for review → if the gate passed, promote (curl printed by the script; serving hot-reloads) →

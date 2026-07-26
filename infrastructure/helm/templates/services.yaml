@@ -65,6 +65,15 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+          # startupProbe holds liveness/readiness off until boot finishes, so a
+          # slow starter (ml-pipeline imports torch + mlflow) is not killed by
+          # the liveness probe. startupSeconds is per-service, 10s granularity.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: {{ div (default 60 $svc.startupSeconds) 10 }}
           livenessProbe:
             httpGet:
               path: /health

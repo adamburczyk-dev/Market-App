@@ -4,6 +4,8 @@
 # .env leży w root projektu; compose file w infrastructure/ —
 # przekazujemy --env-file jawnie, bo Compose v2 szuka .env
 # relatywnie do compose file, nie do CWD.
+PYTHON ?= python3
+
 COMPOSE = docker compose -f infrastructure/docker-compose.yml --env-file .env
 
 # ============================================================
@@ -51,10 +53,10 @@ setup:       ## Skonfiguruj środowisko deweloperskie
 	bash scripts/setup-dev.sh
 
 verify-jetstream:  ## Sprawdź NATS JetStream end-to-end (spawnuje izolowany nats-server)
-	python scripts/verify-jetstream.py
+	$(PYTHON) scripts/verify-jetstream.py
 
 bootstrap-universe:  ## Backfill ~6 lat OHLCV dla uniwersum (wymaga `make up`); ARGS="--train" itd.
-	python scripts/bootstrap-universe.py $(ARGS)
+	$(PYTHON) scripts/bootstrap-universe.py $(ARGS)
 
 # ============================================================
 # Kubernetes / Helm
