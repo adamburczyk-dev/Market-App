@@ -124,9 +124,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             subscriber = None
 
     async def _readiness() -> tuple[bool, dict[str, bool]]:
-        # ml-pipeline publishes drift events → NATS is required.
+        # ml-pipeline publishes drift events → NATS is required. The model
+        # registry is reported but does not gate readiness: without it the
+        # service still serves and monitors, it just cannot persist or promote
+        # a trained model — a degraded state that must be VISIBLE, because a
+        # training run then completes and silently keeps nothing.
         nats_ok = nats_client is not None and nats_client.is_connected
-        return nats_ok, {"nats": nats_ok}
+        return nats_ok, {"nats": nats_ok, "model_registry": model_store is not None}
 
     app.state.readiness_check = _readiness
 

@@ -963,6 +963,24 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   zweryfikowany w obie strony: przechodzi na naprawionym drzewie, a po usunięciu `httpx` z
   signal-aggregatora wskazuje dokładnie ten brak. Bateria 849 testów zielona.
 
+- 2026-07-26 — **PIERWSZY PRAWDZIWY TRENING na danych z rynku** (34 symbole × 1505 sesji, 48 827
+  próbek, 1438 sesji 2020-10-19 → 2026-07-15, positive_rate 0.552, 13 cech). **Bramka słusznie
+  odrzuciła model**: holdout Sharpe **−1.07**, AUC 0.483. Kluczowy wniosek płynie z diagnostyki
+  dodanej dzień wcześniej, nie z samego Sharpe'a: **AUC foldów średnio 0.504**, **lift średnio
+  +0.008 przy odchyleniu 0.033 i zmiennych znakach** (−+−−+−++), a `pred_std` 0.004–0.019 — model
+  praktycznie nie różnicuje spółek. Foldy z wysokim Sharpe'em to **rynek, nie model**: fold_0 ma
+  Sharpe 3.85 przy **ujemnym** lifcie −0.013 i base_rate 0.677 (dwie trzecie spółek rosło, więc
+  dowolny portfel long zarabiał); tak samo fold_2 (1.81 / −0.007) i fold_3 (1.72 / **−0.054**).
+  Gdyby nie `lift`, raport wyglądałby jak „6 z 8 foldów dodatnich" — czyli fałszywy sukces.
+  Warunek „≥2 z 3 ostatnich foldów" przeszedł; obalił model dopiero holdout. **Znaleziony przy
+  okazji defekt: `version: null` — MLflow NIE zapisał biegu.** `/app/mlruns` nie istniał w obrazie,
+  więc Docker tworzył punkt montowania nazwanego wolumenu jako root, a kontener działa jako
+  `appuser` → sqlite nie mógł założyć pliku → `model_store=None` i trening niczego nie utrwalał
+  (a bez rejestru promocja jest niemożliwa). Naprawione w Dockerfile (`mkdir` + `chown` przed
+  `USER`); istniejący wolumen trzeba skasować, bo Docker inicjalizuje go tylko raz. Dodatkowo
+  `/ready` ml-pipeline raportuje teraz `model_registry` (nie bramkuje gotowości — degradacja ma być
+  WIDOCZNA), a skrypt bootstrapu głośno ostrzega przy `version: null`.
+
 **Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
 `make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that
 JSON for review → if the gate passed, promote (curl printed by the script; serving hot-reloads) →

@@ -19,7 +19,13 @@ FROM python:3.12-slim AS runtime
 COPY --from=builder /install /usr/local
 WORKDIR /app
 COPY services/ml-pipeline/src /app/src
-RUN adduser --disabled-password --gecos "" appuser
+# /app/mlruns MUSI istnieć w obrazie i należeć do appusera: Docker inicjalizuje
+# nazwany wolumen zawartością i uprawnieniami tego katalogu. Bez tego punkt
+# montowania powstaje jako root, kontener (non-root) nie może założyć pliku
+# sqlite i rejestr MLflow po cichu nie działa — trening nie zapisuje wersji.
+RUN adduser --disabled-password --gecos "" appuser \
+    && mkdir -p /app/mlruns \
+    && chown -R appuser:appuser /app/mlruns
 USER appuser
 EXPOSE 8000
 # start-period covers the cold torch + mlflow import (~2.5 min) — without it the

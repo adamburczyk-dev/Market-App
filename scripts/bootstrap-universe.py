@@ -252,6 +252,13 @@ def run_training(
         print(
             f"\nVersion v{version} logged to MLflow (drift baseline auto-registered)."
         )
+    else:
+        # A run nobody can inspect or promote later is a wasted run — say so.
+        print(
+            "\n!! NIE ZAPISANO w MLflow (version: null) — rejestr modeli jest "
+            "niedostepny, wiec tego biegu nie da sie pozniej obejrzec ani "
+            "promowac.\n   Sprawdz: curl localhost:8005/ready  -> model_registry"
+        )
     if not gate.get("passed"):
         print(
             "Gate FAILED — an honest result, not an error. Do NOT promote; "
