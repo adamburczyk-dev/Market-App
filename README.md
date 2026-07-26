@@ -226,6 +226,16 @@ python scripts/bootstrap-universe.py --train --report-out reports/first-training
 
 Każdy serwis eksponuje `GET /health` (liveness), `GET /ready` (realne sprawdzenie zależności — DB/Redis/NATS/serwisy nadrzędne) i `GET /metrics` (Prometheus). Logi w JSON (structlog).
 
+### Diagnostyka
+
+Gdy coś nie działa, [`scripts/diagnose.py`](scripts/diagnose.py) zbiera cały obraz sytuacji w jednym przebiegu — stan kontenerów, `/health` i `/ready` wszystkich 13 serwisów, schemat bazy, Redis, strumienie NATS, próbny fetch z prawdziwym komunikatem błędu i ostatni traceback z market-data:
+
+```bash
+python scripts/diagnose.py
+```
+
+Używa wyłącznie biblioteki standardowej, nigdy nie drukuje haseł i przeżywa każdą awarię (martwy stack też da czytelny raport). Wynik nadaje się do wklejenia w zgłoszeniu.
+
 ### Pomocne komendy
 
 ```bash
