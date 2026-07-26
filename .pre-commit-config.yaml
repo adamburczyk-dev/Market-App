@@ -34,3 +34,13 @@ repos:
         entry: python scripts/check-ps1-ascii.py
         language: system
         files: \.ps1$
+
+      # Testy działają ze [dev] extras, obraz instaluje tylko runtime — pakiet
+      # importowany, a niezadeklarowany, przechodzi lokalnie i zabija kontener
+      # przy starcie (tak signal-aggregator pojechał bez httpx).
+      - id: runtime-deps-declared
+        name: każdy import runtime musi być zadeklarowany
+        entry: python scripts/check-dependencies.py
+        language: system
+        pass_filenames: false
+        files: (pyproject\.toml|/src/.*\.py)$

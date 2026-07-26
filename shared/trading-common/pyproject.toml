@@ -12,6 +12,8 @@ dependencies = [
     "pydantic-settings>=2.2",
     # shared feature definitions (trading_common.features) are numpy-based
     "numpy>=1.26",
+    # trading_common.scheduler loguje przez structlog przy imporcie
+    "structlog>=24.1",
 ]
 
 [project.optional-dependencies]

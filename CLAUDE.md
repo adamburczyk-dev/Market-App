@@ -950,6 +950,19 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   **1505** → ponowny odczyt 250 nadal poprawny). market-data 32 testy (+1). Błąd był niewidoczny w
   próbie generalnej, bo tam market-data działał sam — bez feature-engine nikt nie zatruwał cache'a.
 
+- 2026-07-26 — **signal-aggregator nie wstawał: `ModuleNotFoundError: No module named 'httpx'`.**
+  `httpx` był zadeklarowany tylko w `[dev]`, a `core/company_client.py` importuje go w runtime (R8) —
+  testy przechodziły (środowisko dev ma extras), obraz instaluje wyłącznie zależności runtime, więc
+  kontener ginął przy imporcie. To klasa błędu, nie pojedynczy przypadek, więc **przeskanowałem
+  wszystkie 14 komponentów** (AST-owy zrzut importów z `src/` kontra `[project] dependencies`) i
+  znalazłem jeszcze: **`trading-common` nie deklarował `structlog`**, choć `scheduler.py` importuje
+  go przy imporcie modułu (`pip install trading-common` samodzielnie by się wywalił), oraz
+  **11 serwisów importowało `pydantic` bezpośrednio**, mając go wyłącznie tranzytywnie przez
+  fastapi/pydantic-settings. Wszystko dodane jawnie. Audyt utrwalony jako
+  **`scripts/check-dependencies.py`** + hook pre-commit + osobny job w CI (`check-dependencies`) —
+  zweryfikowany w obie strony: przechodzi na naprawionym drzewie, a po usunięciu `httpx` z
+  signal-aggregatora wskazuje dokładnie ten brak. Bateria 849 testów zielona.
+
 **Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
 `make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that
 JSON for review → if the gate passed, promote (curl printed by the script; serving hot-reloads) →

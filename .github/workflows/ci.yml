@@ -63,6 +63,20 @@ jobs:
               - 'shared/**'
 
   # ============================================================
+  # Kontrakt zależności: import w runtime = wpis w [project] dependencies.
+  # Testy widzą [dev] extras, obraz nie — bez tego brak pakietu wychodzi
+  # dopiero jako ModuleNotFoundError przy starcie kontenera.
+  # ============================================================
+  check-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/check-dependencies.py
+
+  # ============================================================
   # Testy shared library (wymagana przez wszystkie serwisy)
   # ============================================================
   test-shared:
