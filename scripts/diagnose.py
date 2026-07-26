@@ -115,7 +115,9 @@ def check_environment() -> None:
 
 def check_containers() -> None:
     section("KONTENERY")
-    code, out = compose("ps", "--format", "json")
+    # --all, bo bez tego kontener, ktory sie wywrocil, po prostu ZNIKA z listy
+    # i wyglada jak nieistniejacy zamiast jak awaria.
+    code, out = compose("ps", "--all", "--format", "json")
     if code != 0:
         print(out.strip()[:800])
         return
@@ -126,14 +128,26 @@ def check_containers() -> None:
         except json.JSONDecodeError:
             continue
     if not rows:
-        print("brak dzialajacych kontenerow (czy stack jest podniesiony?)")
+        print("brak kontenerow (czy stack jest podniesiony?)")
         return
+    seen = set()
     for row in sorted(rows, key=lambda r: r.get("Service", "")):
         name = row.get("Service", "?")
+        seen.add(name)
         state = row.get("State", "?")
         health = row.get("Health") or "-"
+        exit_code = row.get("ExitCode")
         flag = "OK " if state == "running" and health in ("healthy", "-") else "!! "
-        print(f"  {flag}{name:<20} {state:<10} health={health}")
+        suffix = (
+            f" exit={exit_code}" if state != "running" and exit_code is not None else ""
+        )
+        print(f"  {flag}{name:<20} {state:<10} health={health}{suffix}")
+    missing = sorted(set(SERVICES) - seen)
+    if missing:
+        print(f"  !! BRAK KONTENERA w ogole: {', '.join(missing)}")
+        print(
+            "     (nie zbudowany albo usuniety - sprawdz: docker compose logs <serwis>)"
+        )
 
 
 def check_services() -> None:

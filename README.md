@@ -226,6 +226,13 @@ python scripts/bootstrap-universe.py --train --report-out reports/first-training
 
 Każdy serwis eksponuje `GET /health` (liveness), `GET /ready` (realne sprawdzenie zależności — DB/Redis/NATS/serwisy nadrzędne) i `GET /metrics` (Prometheus). Logi w JSON (structlog).
 
+> **Uwaga na hasło do bazy.** `POSTGRES_PASSWORD` działa **wyłącznie przy pierwszym tworzeniu wolumenu**. Jeśli zmienisz `DB_PASSWORD` w `.env` po pierwszym starcie, baza dalej ma stare hasło, a serwisy wysyłają nowe — każdy zapis kończy się wtedy `password authentication failed for user "trader"`. Naprawa bez utraty danych:
+> ```bash
+> docker compose -f infrastructure/docker-compose.yml --env-file .env exec postgres \
+>   psql -U trader -d trading_db -c "ALTER USER trader WITH PASSWORD 'hasło-z-.env';"
+> ```
+> Albo od zera (kasuje dane): `docker compose ... down -v` i ponowny `up`.
+
 ### Diagnostyka
 
 Gdy coś nie działa, [`scripts/diagnose.py`](scripts/diagnose.py) zbiera cały obraz sytuacji w jednym przebiegu — stan kontenerów, `/health` i `/ready` wszystkich 13 serwisów, schemat bazy, Redis, strumienie NATS, próbny fetch z prawdziwym komunikatem błędu i ostatni traceback z market-data:

@@ -918,6 +918,22 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   Zweryfikowane na prawdziwym Postgresie: po zniknięciu tabeli `/ready` → 503, a `POST /fetch` →
   `ProgrammingError: ... relation "ohlcv" does not exist`. market-data 31 testów (+1 regresyjny).
 
+- 2026-07-26 — **Root cause tych 500: niezgodne hasło do Postgresa** (`InvalidPasswordError:
+  password authentication failed for user "trader"`), wskazane wprost przez nowy
+  `scripts/diagnose.py` w pierwszym przebiegu. `POSTGRES_PASSWORD` działa **tylko przy tworzeniu
+  wolumenu** — zmiana `DB_PASSWORD` w `.env` po pierwszym starcie zostawia w bazie stare hasło.
+  Ujawniło to **dwa defekty maskujące**: (1) healthcheck Postgresa używał `pg_isready`, który
+  **nie uwierzytelnia** — kontener raportował `healthy`, podczas gdy każdy zapis padał; teraz
+  loguje się po TCP (`PGPASSWORD=... psql -h 127.0.0.1 -c 'SELECT 1'`, `$$` = escape compose'a),
+  więc niezgodne hasło = `unhealthy`. Składnia zweryfikowana na prawdziwym Postgresie (poprawny
+  użytkownik → exit 0, zły → exit 2). (2) `diagnose.py` wołał `compose ps` bez `--all`, więc
+  **kontener, który się wywrócił, po prostu znikał z listy** — u użytkownika brakowało w ten sposób
+  signal-aggregatora; teraz `--all`, kod wyjścia i jawna lista brakujących serwisów. README
+  dokumentuje pułapkę z hasłem wraz z naprawą przez `ALTER USER` (bez utraty danych). Potwierdzenie
+  skuteczności wcześniejszych poprawek z tego dnia: `/ready` market-daty pokazał `database:false`
+  (nowa kontrola realnej tabeli), a `POST /fetch` zwrócił nazwany błąd zamiast pustego 500 —
+  dokładnie po to powstały.
+
 **Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
 `make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that
 JSON for review → if the gate passed, promote (curl printed by the script; serving hot-reloads) →

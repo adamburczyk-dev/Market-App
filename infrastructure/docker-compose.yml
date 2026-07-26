@@ -17,10 +17,18 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trader} -d ${DB_NAME:-trading_db}"]
+      # pg_isready NIE uwierzytelnia — serwer z niepasującym hasłem raportował
+      # `healthy`, podczas gdy każdy zapis z aplikacji leciał na
+      # "password authentication failed". Logujemy się po TCP, tak jak serwisy.
+      # (POSTGRES_PASSWORD dziala tylko przy TWORZENIU wolumenu: zmiana .env
+      # pozniej wymaga ALTER USER albo skasowania wolumenu — patrz README.)
+      test:
+        - CMD-SHELL
+        - PGPASSWORD=$$POSTGRES_PASSWORD psql -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB -c 'SELECT 1' > /dev/null
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 5
+      start_period: 30s
 
   redis:
     image: redis:7-alpine
