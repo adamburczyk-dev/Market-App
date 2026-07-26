@@ -39,7 +39,13 @@ class MarketDataService:
         cacheable = start is None and end is None
         if cacheable:
             cached = await self._cache.get_bars(symbol, interval)
-            if cached is not None:
+            # The cache key is (symbol, interval) — it carries no limit — while the
+            # cached window was itself produced by SOME limit. Serving a larger
+            # request from a shorter window would silently return fewer bars than
+            # asked for: feature-engine's limit=250 read used to poison the entry
+            # and training then received 250 bars instead of the 2000 it requested.
+            # A cached window may only answer requests it actually covers.
+            if cached is not None and len(cached) >= limit:
                 return cached[-limit:]
 
         bars = await self._repository.get_bars(symbol, interval, start, end, limit)

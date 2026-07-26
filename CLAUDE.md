@@ -934,6 +934,22 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   (nowa kontrola realnej tabeli), a `POST /fetch` zwrócił nazwany błąd zamiast pustego 500 —
   dokładnie po to powstały.
 
+- 2026-07-26 — **Trening widział 183 sesje zamiast 1443 — błąd cache'a w market-data (nasz kod).**
+  Backfill u użytkownika zapisał 34×1505 świec (kontrola pokrycia czysta), ale `POST /models/train`
+  zwrócił `dataset has 183 sessions; needs >= 945`. Diagnoza: `MarketDataService.get_ohlcv`
+  kluczuje cache samym `(symbol, interval)` — **bez `limit`** — a przechowuje wynik już **przycięty
+  do `limit`**, więc `return cached[-limit:]` oddaje najwyżej tyle, ile przypadkiem trafiło do
+  cache'a. Sekwencja: fetch zapisuje 1505 → publikuje `market_data.updated` → **feature-engine**
+  odpytuje historię ze swoim domyślnym `limit=250` → 250 świec ląduje w cache'u → trening prosi o
+  2000 i dostaje **250** (250 świec → 191 sesji minus horyzont ≈ 183 — liczba zgadza się co do
+  jednego). Poprawka: cache odpowiada **tylko na zapytania, które faktycznie pokrywa**
+  (`len(cached) >= limit`); większe żądanie idzie do bazy i nadpisuje wpis dłuższym oknem, które
+  dalej obsługuje krótkie odczyty. Zweryfikowane trzystopniowo: test regresyjny **pada** na starym
+  kodzie (5 != 20) i przechodzi na nowym; zbiór z 1505 świec daje 1443 sesje (nie 183); pełna
+  sekwencja odtworzona na **prawdziwym Postgresie** (fetch 1505 → odczyt 250 → odczyt treningu
+  **1505** → ponowny odczyt 250 nadal poprawny). market-data 32 testy (+1). Błąd był niewidoczny w
+  próbie generalnej, bo tam market-data działał sam — bez feature-engine nikt nie zatruwał cache'a.
+
 **Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
 `make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that
 JSON for review → if the gate passed, promote (curl printed by the script; serving hot-reloads) →
