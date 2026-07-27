@@ -1004,6 +1004,33 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   deduplikacji per symbol/sesja → po pierwszej promocji modelu głos ML dołoży **drugie zlecenie
   i podwoi pozycję** (dziś uśpione, bo ML milczy). Oba wchodzą do planu przed pracą nad ML.
 
+- 2026-07-27 — **Tier 0 audytu zamknięty** (7 zadań, 7 commitów; ml-pipeline 141 testów, bateria
+  **870**). Naprawiony jest teraz POMIAR, nie model. **T0-7**: `momentum_20` (dosłowny duplikat
+  `return_20d`) poza wejściem modelu; test porównuje kolumny po wartościach i wymaga 25-symbolowego
+  przekroju, bo przy trzech rangi się sklejają. **T0-2**: kolumny o zerowej wariancji **wypadają z
+  kontraktu cech** — zweryfikowane end-to-end, że wytrenowany model nie zna `macro_*`, więc serving
+  ich nie poda (rozjazd F5 zamknięty). **T0-1**: `core/data_contract.py` — twarde asercje na
+  KSZTAŁCIE danych (sesje, próbki, szerokość przekroju, kolumny stałe, udział wypełnień neutralną
+  rangą, zgodność sesji z otrzymanymi świecami); naruszenie → wyjątek i HTTP 422 z pełnym raportem.
+  Świadoma decyzja: porównujemy z **faktycznie otrzymanymi świecami**, nie z `limit` żądania —
+  inaczej byłby fałszywy alarm zawsze, gdy baza ma mniej historii; incydent z cache'em łapie próg
+  `min_sessions=1000`. Dataset raportuje też rozstrzygnięcia etykiet (wejście do T2-4). **T0-6**:
+  `min_universe` 2 → 20; testy zabawkowe deklarują założenia jawnie (`TOY_PARAMS`/`TOY_CONTRACT`)
+  zamiast rozluźniać progi produkcyjne — stąd wstrzykiwalne parametry zbioru i kontrakt.
+  **T0-3**: `auc_train` + diagnostyka fitu (epoki, powód zatrzymania, straty, temperatura,
+  `pred_std` PRZED i PO kalibracji). Zademonstrowane na dwóch skrajnościach: uczące się uniwersum
+  daje `std_pre` 0.427, czysty szum 0.027 (realny bieg: **0.0073** — sygnatura zapadnięcia), a po
+  kalibracji różnica znika. Dodatkowo `effective_sample_size` **mierzy** tezę audytu §2.1: dzieli
+  oś czasu przez horyzont i przekrój przez średnią korelację par (N/(1+(N−1)ρ)). **T0-5**: IC/ICIR,
+  benchmark equal-weight, `sharpe_active`, `sharpe_long_short`, gross/net, koszt, obrót + baseline
+  IC surowej cechy („model, który nie bije rangi jednej cechy, nie zasługuje na warstwę ML").
+  Test-pułapka odtwarza fold_0 z realnego biegu: szum w hossie → long-only Sharpe **3.96**, ale
+  active **−1.40**, long-short −0.25, IC −0.0002. **T0-4**: nakładające się transze `1/h`
+  (Jegadeesh-Titman) — zmierzone na 34 nazwach/252 sesjach: obrót 80% → 8%, koszt 10.0%/rok →
+  1.0%/rok; `tranches=1` odtwarza poprzednie zachowanie co do wartości. Uzasadnienie T0-4 to
+  zgodność horyzontów, NIE odzysk kosztów — korekta §2.4 audytu stoi (dryf kosztowy realnego biegu
+  to 0.14 jedn. Sharpe'a, nie 0.6).
+
 **Next:** plan przestawiony po audycie zewnętrznym — **`docs/backlog_2026_07_27.md` jest teraz
 listą roboczą** (audyt + moja weryfikacja jego twierdzeń + 2 znaleziska własne). Reguła nadrzędna:
 **żadnego kolejnego treningu przed zamknięciem całego Tier 0** — pierwszy bieg nie tyle pokazał
@@ -1011,13 +1038,13 @@ brak sygnału, co *nie mógł niczego pokazać* (metryka bez mocy statystycznej,
 krótkoterminowych, 34 nazwy, 6 lat jednego reżimu).
 
 Kolejność:
-1. **Tier 0** (nie wymaga żadnych decyzji): T0-1 kontrakt danych treningowych + raport
+1. ✅ **Tier 0 ZAMKNIĘTY 2026-07-27** (szczegóły w logu wyżej): T0-1 kontrakt danych treningowych + raport
    rozstrzygnięć etykiet; T0-2 usunięcie cech o zerowej wariancji (makro — **potwierdzony rozjazd
    trening/serwowanie**); T0-3 diagnostyka „niedouczenie vs brak sygnału" (`auc_train`, `pred_std`
    przed/po kalibracji, temperatura); T0-5 metryki relatywne (IC/ICIR, benchmark EW, long-short,
    gross/net, baseline'y) — **to jest sedno naprawy pomiaru**; T0-4 nakładające się transze `1/h`;
    T0-7 duplikat `momentum_20`; T0-6 `min_universe` → 20.
-2. **Dwa błędy poprawności** (znaleziska własne, niezależne od ML): **N1** — BLACK publikuje
+2. ← **TERAZ: dwa błędy poprawności** (znaleziska własne, niezależne od ML): **N1** — BLACK publikuje
    `action="flatten_all"`, ale **nikt tego nie konsumuje poza notification**, więc reguła
    „DD > 15% → zamknij pozycje" jest dziś alertem, nie akcją; **N2** — agregator publikuje
    `signal.aggregated` przy KAŻDYM komponencie, a risk-mgmt nie deduplikuje, więc po pierwszej
