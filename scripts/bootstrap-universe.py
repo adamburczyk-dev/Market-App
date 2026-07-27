@@ -191,11 +191,104 @@ def validate_coverage(
     return report
 
 
+def _num(value: object, width: int = 7) -> str:
+    """Format a metric, keeping a missing one visibly missing (never as 0)."""
+    if isinstance(value, int | float):
+        return f"{value:>{width}.4f}"
+    return f"{'n/a':>{width}}"
+
+
+FOLD_HEADER = (
+    f"  {'fold':<8} {'IC':>8} {'ICIR':>7} {'net':>7} {'active':>7} "
+    f"{'AUCval':>7} {'AUCtr':>7} {'lift':>7} {'predσ':>7}"
+)
+
+
 def _print_fold(fold: dict) -> None:
     print(
-        f"  {fold['name']:<8} sharpe {fold.get('sharpe'):>8}  auc {fold.get('auc'):>7}  "
-        f"brier {fold.get('brier'):>7}  lift {fold.get('lift'):>8}  "
-        f"pred σ {fold.get('pred_std'):>7}"
+        f"  {fold['name']:<8} {_num(fold.get('ic_mean'), 8)} {_num(fold.get('icir'))} "
+        f"{_num(fold.get('sharpe_net'))} {_num(fold.get('sharpe_active'))} "
+        f"{_num(fold.get('auc'))} {_num(fold.get('auc_train'))} "
+        f"{_num(fold.get('lift'))} {_num(fold.get('pred_std'))}"
+    )
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _collect(folds: list[dict], key: str) -> list[float]:
+    return [f[key] for f in folds if isinstance(f.get(key), int | float)]
+
+
+def _print_verdict(gate: dict, holdout: dict) -> None:
+    """State what the numbers imply — underfit, overfit, or no signal.
+
+    The first real run failed the gate, and the gate alone could not say WHY:
+    a fold Sharpe of 3.85 came with a NEGATIVE lift (the market rose, the model
+    picked worse than average). These three readings are the reason Tier 0 added
+    train-AUC, IC and the relative metrics.
+    """
+    folds = gate.get("folds", [])
+    auc_val = _mean(_collect(folds, "auc") + _collect([holdout], "auc"))
+    auc_train = _mean(_collect(folds, "auc_train") + _collect([holdout], "auc_train"))
+    icir = _mean(_collect(folds, "icir") + _collect([holdout], "icir"))
+    ic = _mean(_collect(folds, "ic_mean") + _collect([holdout], "ic_mean"))
+    spread = _mean(
+        _collect(folds, "pred_std_pre_calibration")
+        + _collect([holdout], "pred_std_pre_calibration")
+    )
+    baseline_keys = {k for f in folds for k in f if k.startswith("baseline_ic_")}
+    baseline = {k: _mean(_collect(folds, k)) for k in sorted(baseline_keys)}
+
+    print("\nReading:")
+    if auc_train is None or auc_val is None:
+        print("  - not enough fold data to judge fit quality")
+    elif auc_train < 0.55:
+        spread_txt = (
+            f" (pre-calibration pred σ {spread:.4f})" if spread is not None else ""
+        )
+        print(
+            f"  - train AUC {auc_train:.3f} ≈ coin flip{spread_txt}: the model does not fit"
+            "\n    even the data it was SHOWN. Two causes look identical from this number:"
+            "\n    (a) optimization — capacity / lr / scaling;"
+            "\n    (b) the features carry no signal at all, so there is nothing to fit."
+            "\n    Discriminator: let a high-capacity model overfit on purpose. If train AUC"
+            "\n    stays ≈ 0.5, it is (b) and more symbols or more history will not help."
+        )
+    elif auc_val <= 0.52:
+        print(
+            f"  - NO TRANSFERABLE SIGNAL: train AUC {auc_train:.3f} but val AUC"
+            f" {auc_val:.3f}."
+            "\n    The model can memorize and cannot generalize — the features carry no"
+            "\n    edge at this horizon. Fix the features/universe, not the optimizer."
+        )
+    else:
+        print(f"  - fit is real: train AUC {auc_train:.3f}, val AUC {auc_val:.3f}")
+
+    if ic is not None:
+        if ic < -0.01:
+            verdict = "ranks BACKWARDS (a consistently negative IC is not an edge)"
+        elif abs(ic) < 0.01:
+            verdict = "no rank edge (|IC| < 0.01 is noise)"
+        else:
+            verdict = "some rank edge"
+        icir_txt = f", ICIR {icir:.2f}" if icir is not None else ""
+        print(f"  - IC {ic:+.4f}{icir_txt} → {verdict}")
+    for key, value in baseline.items():
+        if value is None:
+            continue
+        feature = key.removeprefix("baseline_ic_")
+        # Signed, not absolute: a model with IC −0.02 does not "beat" a baseline
+        # of +0.003 — it ranks the universe upside down.
+        beaten = ic is not None and ic > value and ic > 0
+        print(
+            f"  - baseline IC of raw {feature}: {value:+.4f} → the model"
+            f" {'beats' if beaten else 'does NOT beat'} a single feature's rank"
+        )
+    print(
+        "  - net = long-only Sharpe after costs; active = vs the equal-weight universe."
+        "\n    A high net with a low active means the MARKET paid, not the model."
     )
 
 
@@ -239,13 +332,30 @@ def run_training(
     )
     if data.get("symbols_missing"):
         print(f"  symbols without usable history: {', '.join(data['symbols_missing'])}")
+    ess = body.get("effective_sample_size", {})
+    if ess:
+        effective = ess.get("n_effective_samples")
+        effective_txt = (
+            f"{effective:,.0f}" if isinstance(effective, int | float) else "n/a"
+        )
+        print(
+            f"  effective sample: {effective_txt} of {ess.get('n_samples'):,} raw "
+            f"(≈{ess.get('n_symbols_effective')} independent names of "
+            f"{ess.get('n_symbols')}, avg pair corr "
+            f"{ess.get('avg_pairwise_correlation')}) — this, not the row count, "
+            "is what the metrics stand on"
+        )
+    dropped = body.get("dropped_zero_variance") or []
+    if dropped:
+        print(f"  dropped constant features: {', '.join(dropped)}")
     print(f"Gate PASSED: {gate.get('passed')}")
     for reason in gate.get("reasons", []):
         print(f"  - {reason}")
-    print("  (lift = hit-rate edge of the selected top quantile; 0 ≈ no signal)")
+    print(FOLD_HEADER)
     _print_fold({"name": "holdout", **holdout})
     for fold in gate.get("folds", []):
         _print_fold(fold)
+    _print_verdict(gate, holdout)
 
     version = body.get("version")
     if version is not None:
