@@ -229,3 +229,161 @@ def effective_sample_size(
         n_independent_periods=round(independent_periods, 1),
         n_effective_samples=round(independent_periods * effective_names, 1),
     )
+
+
+@dataclass(frozen=True)
+class RelativeMetrics:
+    """Metrics that survive a bull market — the audit's central point (F1/T0-5).
+
+    A long-only Sharpe answers "did the book make money", which in a window
+    where 68% of names rose is a question about the market, not the model.
+    These answer "did the RANKING carry information", and they do it with far
+    more statistical power: SE(Sharpe) over 63 sessions is ~2.0, while the
+    standard error of a mean IC over the same window is an order of magnitude
+    smaller because every name in every cross-section contributes.
+
+    - ``ic_mean`` / ``icir``  — Spearman rank correlation between prediction and
+      forward return, per session; ICIR = mean/std, the information ratio of the
+      signal itself.
+    - ``sharpe_long_short``   — top quantile minus bottom quantile. Immune to
+      the base rate by construction: if everything rises, both legs rise.
+    - ``sharpe_active``       — portfolio minus the equal-weight universe.
+    - ``sharpe_gross/net``    — before and after turnover costs.
+    """
+
+    ic_mean: float
+    ic_std: float
+    icir: float
+    ic_positive_share: float
+    n_cross_sections: int
+    sharpe_benchmark_ew: float
+    sharpe_active: float
+    sharpe_long_short: float
+    sharpe_gross: float
+    sharpe_net: float
+    cost_drag_annualized: float
+    turnover_daily_mean: float
+
+
+def _annualized_sharpe(returns: np.ndarray) -> float:
+    if len(returns) < 2:
+        return 0.0
+    std = float(returns.std(ddof=1))
+    return float(returns.mean() / std * math.sqrt(TRADING_DAYS)) if std > 0 else 0.0
+
+
+def _spearman(a: np.ndarray, b: np.ndarray) -> float:
+    """Rank correlation without a scipy round-trip (ties averaged)."""
+    if len(a) < 3:
+        return 0.0
+    ra, rb = _average_ranks(a), _average_ranks(b)
+    if ra.std() == 0 or rb.std() == 0:
+        return 0.0
+    return float(np.corrcoef(ra, rb)[0, 1])
+
+
+def _average_ranks(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(len(values), dtype=float)
+    sorted_values = values[order]
+    i = 0
+    while i < len(values):
+        j = i
+        while j + 1 < len(values) and sorted_values[j + 1] == sorted_values[i]:
+            j += 1
+        ranks[order[i : j + 1]] = (i + j) / 2.0
+        i = j + 1
+    return ranks
+
+
+def relative_metrics(
+    dates: list[datetime],
+    symbols: list[str],
+    probs: np.ndarray,
+    next_returns: np.ndarray,
+    quantile: float = 0.2,
+    cost_bps: float = 5.0,
+) -> RelativeMetrics:
+    """Benchmark-relative and rank-based evaluation of a set of predictions."""
+    by_date: dict[datetime, list[int]] = defaultdict(list)
+    for i, d in enumerate(dates):
+        by_date[d].append(i)
+    sessions = sorted(by_date)
+
+    ics: list[float] = []
+    long_returns: list[float] = []
+    short_returns: list[float] = []
+    bench_returns: list[float] = []
+    gross_returns: list[float] = []
+    turnovers: list[float] = []
+    previous: set[str] = set()
+    cost_rate = cost_bps / 10_000.0
+
+    for session in sessions:
+        rows = by_date[session]
+        if len(rows) < 2:
+            continue
+        p = probs[rows]
+        r = next_returns[rows]
+        ics.append(_spearman(p, r))
+
+        k = max(1, math.ceil(quantile * len(rows)))
+        ordered = sorted(rows, key=lambda i: float(probs[i]), reverse=True)
+        top, bottom = ordered[:k], ordered[-k:]
+        held = {symbols[i] for i in top}
+
+        gross = float(np.mean(next_returns[top]))
+        turnover = 1.0 if not previous else len(held - previous) / len(held)
+        gross_returns.append(gross)
+        turnovers.append(turnover)
+        long_returns.append(gross - cost_rate * turnover)
+        short_returns.append(float(np.mean(next_returns[bottom])))
+        bench_returns.append(float(np.mean(r)))  # equal-weight whole universe
+        previous = held
+
+    if not gross_returns:
+        return RelativeMetrics(0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    ic = np.asarray(ics, dtype=float)
+    net_series = np.asarray(long_returns, dtype=float)
+    gross_series = np.asarray(gross_returns, dtype=float)
+    bench_series = np.asarray(bench_returns, dtype=float)
+    short_series = np.asarray(short_returns, dtype=float)
+    turnover_mean = float(np.mean(turnovers))
+
+    ic_std = float(ic.std(ddof=1)) if len(ic) > 1 else 0.0
+    return RelativeMetrics(
+        ic_mean=float(ic.mean()),
+        ic_std=ic_std,
+        icir=float(ic.mean() / ic_std) if ic_std > 0 else 0.0,
+        ic_positive_share=float(np.mean(ic > 0)),
+        n_cross_sections=len(ic),
+        sharpe_benchmark_ew=_annualized_sharpe(bench_series),
+        sharpe_active=_annualized_sharpe(net_series - bench_series),
+        sharpe_long_short=_annualized_sharpe(net_series - short_series),
+        sharpe_gross=_annualized_sharpe(gross_series),
+        sharpe_net=_annualized_sharpe(net_series),
+        cost_drag_annualized=float(turnover_mean * cost_rate * TRADING_DAYS),
+        turnover_daily_mean=turnover_mean,
+    )
+
+
+def baseline_feature_ic(
+    dates: list[datetime],
+    feature_column: np.ndarray,
+    next_returns: np.ndarray,
+) -> float:
+    """Mean per-session IC of a single raw feature used directly as the score.
+
+    The rule this encodes: a model that cannot beat the rank of one feature has
+    not earned the ML layer.
+    """
+    by_date: dict[datetime, list[int]] = defaultdict(list)
+    for i, d in enumerate(dates):
+        by_date[d].append(i)
+    ics = [
+        _spearman(feature_column[rows], next_returns[rows])
+        for rows in by_date.values()
+        if len(rows) >= 3
+    ]
+    return float(np.mean(ics)) if ics else 0.0

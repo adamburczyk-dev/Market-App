@@ -19,9 +19,12 @@ import structlog
 from src.core.dataset import Dataset
 from src.core.evaluation import (
     PortfolioResult,
+    RelativeMetrics,
     SelectionDiagnostics,
     auc,
+    baseline_feature_ic,
     brier,
+    relative_metrics,
     selection_diagnostics,
     top_quantile_portfolio,
 )
@@ -42,6 +45,7 @@ class TrainingParams:
     quantile: float = 0.2
     cost_bps: float = 5.0
     gate_sharpe: float = 0.5
+    baseline_feature: str = "return_20d"  # single-feature yardstick (T0-5)
     model: TrainConfig = field(default_factory=TrainConfig)
 
 
@@ -60,6 +64,11 @@ class FoldReport:
     # both cases, and the responses are opposite.
     auc_train: float = 0.5
     fit: dict[str, Any] = field(default_factory=dict)
+    # T0-5: benchmark-relative and rank-based measurement. A long-only Sharpe
+    # in a window where most names rose says more about the market than the
+    # model; IC/ICIR and the long-short leg do not have that failure mode.
+    relative: RelativeMetrics | None = None
+    baseline_ic: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -93,6 +102,25 @@ class GateReport:
                 # underfit-vs-no-signal diagnostics (T0-3)
                 "auc_train": round(f.auc_train, 4),
                 **f.fit,
+                **(
+                    {
+                        "ic_mean": round(f.relative.ic_mean, 5),
+                        "ic_std": round(f.relative.ic_std, 5),
+                        "icir": round(f.relative.icir, 4),
+                        "ic_positive_share": round(f.relative.ic_positive_share, 4),
+                        "n_cross_sections": f.relative.n_cross_sections,
+                        "sharpe_benchmark_ew": round(f.relative.sharpe_benchmark_ew, 4),
+                        "sharpe_active": round(f.relative.sharpe_active, 4),
+                        "sharpe_long_short": round(f.relative.sharpe_long_short, 4),
+                        "sharpe_gross": round(f.relative.sharpe_gross, 4),
+                        "sharpe_net": round(f.relative.sharpe_net, 4),
+                        "cost_drag_annualized": round(f.relative.cost_drag_annualized, 5),
+                        "turnover_daily_mean": round(f.relative.turnover_daily_mean, 4),
+                    }
+                    if f.relative is not None
+                    else {}
+                ),
+                **{f"baseline_ic_{k}": round(v, 5) for k, v in f.baseline_ic.items()},
             }
 
         return {
@@ -152,6 +180,23 @@ def _score(
         quantile=params.quantile,
         cost_bps=params.cost_bps,
     )
+    relative = relative_metrics(
+        dates,
+        [s for s, m in zip(ds.symbols, mask, strict=True) if m],
+        probs,
+        ds.next_returns[mask],
+        quantile=params.quantile,
+        cost_bps=params.cost_bps,
+    )
+    # The rule: a model that cannot beat the raw rank of one feature has not
+    # earned the ML layer. return_20d is the strongest single candidate here.
+    baseline_ic: dict[str, float] = {}
+    if params.baseline_feature in ds.feature_names:
+        column = ds.x[mask][:, ds.feature_names.index(params.baseline_feature)]
+        baseline_ic[params.baseline_feature] = baseline_feature_ic(
+            dates, column, ds.next_returns[mask]
+        )
+
     auc_train = 0.5
     if fit_dates:
         fit_mask = _mask(ds.dates, fit_dates)
@@ -167,6 +212,8 @@ def _score(
         diagnostics=selection_diagnostics(dates, ds.y[mask], probs, quantile=params.quantile),
         auc_train=auc_train,
         fit=dict(model.diagnostics),
+        relative=relative,
+        baseline_ic=baseline_ic,
     )
 
 

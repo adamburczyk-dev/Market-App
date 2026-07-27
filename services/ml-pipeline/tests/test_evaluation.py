@@ -5,7 +5,14 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 import pytest
 
-from src.core.evaluation import auc, brier, selection_diagnostics, top_quantile_portfolio
+from src.core.evaluation import (
+    auc,
+    baseline_feature_ic,
+    brier,
+    relative_metrics,
+    selection_diagnostics,
+    top_quantile_portfolio,
+)
 
 D0 = datetime(2024, 6, 3, tzinfo=UTC)
 
@@ -100,3 +107,83 @@ def test_degenerate_predictions_have_no_spread():
     diag = selection_diagnostics(dates, np.zeros(8), flat, quantile=0.25)
     assert diag.pred_std == 0.0  # collapsed model — the report must show it
     assert diag.pred_p10 == diag.pred_p90 == 0.5
+
+
+# --- T0-5: metrics that survive a bull market ---
+
+
+def bull_market_inputs(n_sessions: int = 120, n_symbols: int = 20, seed: int = 5):
+    """Every name drifts up; predictions are pure noise.
+
+    This is fold_0 of the real run in miniature: base_rate 0.68, a long-only
+    book that makes money for reasons that have nothing to do with the model.
+    """
+    rng = np.random.default_rng(seed)
+    dates, symbols, probs, rets = [], [], [], []
+    for s in range(n_sessions):
+        day = D0 + timedelta(days=s)
+        for k in range(n_symbols):
+            dates.append(day)
+            symbols.append(f"S{k}")
+            probs.append(float(rng.random()))  # no information whatsoever
+            rets.append(float(rng.normal(0.0012, 0.01)))  # everything rises
+    return dates, symbols, np.array(probs), np.array(rets)
+
+
+def test_long_short_and_active_sharpe_are_insensitive_to_base_rate():
+    """The audit's G2 condition, pinned: a random model in a rising market
+    shows a healthy long-only Sharpe and no relative edge at all."""
+    dates, symbols, probs, rets = bull_market_inputs()
+    m = relative_metrics(dates, symbols, probs, rets, quantile=0.2, cost_bps=5.0)
+
+    assert m.sharpe_benchmark_ew > 1.0  # the market itself did well
+    assert abs(m.ic_mean) < 0.05  # ...and the ranking knew nothing
+    assert abs(m.icir) < 0.5
+    assert abs(m.sharpe_long_short) < 1.5  # both legs rose -> difference ~ 0
+    assert abs(m.sharpe_active) < 1.5  # portfolio ~ benchmark
+
+
+def test_relative_metrics_detect_a_real_ranking():
+    """With predictions that genuinely rank forward returns, IC and the
+    long-short leg must both light up."""
+    rng = np.random.default_rng(7)
+    dates, symbols, probs, rets = [], [], [], []
+    for s in range(120):
+        day = D0 + timedelta(days=s)
+        for k in range(20):
+            score = rng.random()
+            dates.append(day)
+            symbols.append(f"S{k}")
+            probs.append(float(score))
+            # forward return follows the score, plus noise
+            rets.append(float(0.02 * (score - 0.5) + rng.normal(0, 0.004)))
+    m = relative_metrics(dates, symbols, np.array(probs), np.array(rets))
+
+    assert m.ic_mean > 0.3
+    assert m.icir > 1.0
+    assert m.ic_positive_share > 0.8
+    assert m.sharpe_long_short > 2.0
+    assert m.sharpe_active > 1.0
+
+
+def test_gross_net_and_cost_drag_are_reported():
+    dates, symbols, probs, rets = bull_market_inputs()
+    m = relative_metrics(dates, symbols, probs, rets, cost_bps=5.0)
+    assert m.sharpe_gross > m.sharpe_net  # costs can only subtract
+    assert m.turnover_daily_mean > 0
+    assert m.cost_drag_annualized == pytest.approx(
+        m.turnover_daily_mean * 5 / 10_000 * 252, rel=1e-6
+    )
+
+
+def test_baseline_feature_ic_matches_a_known_ranking():
+    """A feature that perfectly orders forward returns has IC ~ 1."""
+    dates, rets, feature = [], [], []
+    for s in range(60):
+        day = D0 + timedelta(days=s)
+        for k in range(10):
+            dates.append(day)
+            feature.append(float(k))
+            rets.append(float(k) / 100.0)  # monotone in the feature
+    ic = baseline_feature_ic(dates, np.array(feature), np.array(rets))
+    assert ic == pytest.approx(1.0, abs=1e-9)
