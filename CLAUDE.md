@@ -1084,6 +1084,21 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   (druga wzbogacona o ML), ale nadal **jedno** zlecenie. Kontrola anty-szczęściowa: z wyłączonym
   rejestrem ta sama sekwencja daje 2 zlecenia (odtworzony błąd sprzed poprawki).
 
+- 2026-07-27 — **Raport bootstrapu pokazuje liczby z Tier 0** (przygotowanie do rerunu treningu,
+  który biegnie na maszynie użytkownika): tabela foldów prowadzi teraz IC / ICIR / Sharpe **net** i
+  **active** / AUC **val i train** / lift / rozrzut predykcji, plus **efektywna wielkość próby**
+  (35 906 wierszy → 332 niezależnych — to na tym stoją metryki) i lista cech usuniętych za zerową
+  wariancję. Doszedł blok **Reading**, który mówi wprost, co z liczb wynika. **Dwa błędy w pierwszej
+  wersji tego bloku**, wyłapane przez ponowne wyrenderowanie go na raporcie z próby generalnej:
+  (1) train AUC ≈ 0.5 opisywał jako „problem optymalizacji", a na danych bez sygnału to jest
+  **poprawne** zachowanie optymalizatora — teraz nazywa obie przyczyny i podaje rozstrzygacz
+  (świadome przeuczenie modelu o dużej pojemności); (2) porównywał IC modelu z IC cechy bazowej
+  **co do wartości bezwzględnej**, więc model z IC −0.007 „bił" baseline +0.003 — trwale ujemne IC
+  to ranking na odwrót, porównanie jest teraz ze znakiem. Próba generalna na realnym `nats-server`
+  + realnym market-data + realnym (niepodmienionym) ml-pipeline z realnym MLflow, uniwersum 24
+  symbole: 1497 sesji, kontrakt danych spełniony, 5 stałych kolumn `macro_*` wyrzuconych, bramka
+  uczciwie odrzuciła model, 14/14 asercji raportu zielonych.
+
 **Next:** plan przestawiony po audycie zewnętrznym — **`docs/backlog_2026_07_27.md` jest teraz
 listą roboczą** (audyt + moja weryfikacja jego twierdzeń + 2 znaleziska własne). Reguła nadrzędna:
 **żadnego kolejnego treningu przed zamknięciem całego Tier 0** — pierwszy bieg nie tyle pokazał
