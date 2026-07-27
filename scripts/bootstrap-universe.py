@@ -400,6 +400,16 @@ def main() -> int:
         "--train", action="store_true", help="Run a training pass after backfill"
     )
     parser.add_argument(
+        "--skip-backfill",
+        action="store_true",
+        help=(
+            "Train on the bars already stored in market-data (re-running a "
+            "training pass with new diagnostics does not need a re-fetch). "
+            "The coverage read-back still runs — a symbol with no stored bars "
+            "is reported as failed."
+        ),
+    )
+    parser.add_argument(
         "--train-limit",
         type=int,
         default=2000,
@@ -449,27 +459,42 @@ def main() -> int:
     }
 
     _check_service(market_url, "market-data")
-    print(
-        f"Backfilling {len(symbols)} symbols, {start} → {end} (daily) via {market_url}"
-    )
-    rows = backfill(market_url, symbols, start, end, args.pause)
-
-    failed = [s for s in symbols if s not in rows]
-    print(
-        f"\nBackfilled {len(rows)}/{len(symbols)} symbols, {sum(rows.values())} rows total."
-    )
-    if failed:
-        print(f"FAILED: {', '.join(failed)}")
+    if args.skip_backfill:
+        print(
+            f"Skipping fetch — using bars already stored in market-data ({market_url})"
+        )
+        rows = {}
+        to_check = symbols
+    else:
+        print(
+            f"Backfilling {len(symbols)} symbols, {start} → {end} (daily) via {market_url}"
+        )
+        rows = backfill(market_url, symbols, start, end, args.pause)
+        print(
+            f"\nBackfilled {len(rows)}/{len(symbols)} symbols, "
+            f"{sum(rows.values())} rows total."
+        )
+        failed_fetch = [s for s in symbols if s not in rows]
+        if failed_fetch:
+            print(f"FAILED: {', '.join(failed_fetch)}")
+        to_check = list(rows)
 
     print("\nCoverage check (stored bars):")
-    coverage = validate_coverage(market_url, list(rows), start)
+    coverage = validate_coverage(market_url, to_check, start)
+    # A symbol with no usable stored history is a failure either way: it cannot
+    # be fetched (backfill) or it is not there to train on (--skip-backfill).
+    failed = [s for s in symbols if coverage.get(s, {}).get("sessions", 0) == 0]
     for symbol, info in coverage.items():
         flag = "ok " if info["ok"] else "WARN"
         span = f"{info.get('first', '—')} → {info.get('last', '—')}"
         note = f"  ({info['note']})" if info["note"] else ""
         print(f"  {flag} {symbol:<6} {info['sessions']:>5} sessions  {span}{note}")
 
-    report["backfill"] = {"rows_by_symbol": rows, "failed": failed}
+    report["backfill"] = {
+        "rows_by_symbol": rows,
+        "failed": failed,
+        "skipped": bool(args.skip_backfill),
+    }
     report["coverage"] = coverage
 
     exit_code = 1 if failed else 0
