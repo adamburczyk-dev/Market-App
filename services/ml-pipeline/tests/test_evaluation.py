@@ -187,3 +187,44 @@ def test_baseline_feature_ic_matches_a_known_ranking():
             rets.append(float(k) / 100.0)  # monotone in the feature
     ic = baseline_feature_ic(dates, np.array(feature), np.array(rets))
     assert ic == pytest.approx(1.0, abs=1e-9)
+
+
+# --- T0-4: overlapping tranches ---
+
+
+def test_overlapping_tranches_cut_turnover_by_the_horizon():
+    """A 10-session label evaluated by a book that turns over daily is a
+    different bet from the one the model was trained on. With `h` sleeves only
+    1/h of capital trades per session, so turnover falls by roughly that factor.
+    """
+    dates, symbols, probs, rets = bull_market_inputs(n_sessions=120, n_symbols=20, seed=9)
+
+    daily = top_quantile_portfolio(dates, symbols, probs, rets, quantile=0.2, cost_bps=5.0)
+    overlapping = top_quantile_portfolio(
+        dates, symbols, probs, rets, quantile=0.2, cost_bps=5.0, tranches=10
+    )
+
+    assert daily.avg_turnover > 0.5  # noise ranking -> the book churns
+    assert overlapping.avg_turnover <= 1.0 / 10 + 0.02
+    assert overlapping.avg_turnover < daily.avg_turnover / 5
+    # holding 10 sleeves means holding far more names at once
+    assert overlapping.avg_positions > daily.avg_positions
+
+
+def test_overlapping_tranches_hold_positions_for_the_horizon():
+    """A name selected on session t stays in the book for `tranches` sessions:
+    with a ranking that changes every day, the position count converges on
+    tranches x quantile x universe rather than quantile x universe."""
+    dates, symbols, probs, rets = bull_market_inputs(n_sessions=60, n_symbols=20, seed=4)
+    result = top_quantile_portfolio(dates, symbols, probs, rets, quantile=0.2, tranches=5)
+    # 5 sleeves x 4 names, minus overlap between sleeves
+    assert 8 <= result.avg_positions <= 20
+
+
+def test_single_tranche_is_the_previous_behaviour():
+    dates, symbols, probs, rets = portfolio_inputs()
+    a = top_quantile_portfolio(dates, symbols, probs, rets, quantile=0.25, cost_bps=10.0)
+    b = top_quantile_portfolio(
+        dates, symbols, probs, rets, quantile=0.25, cost_bps=10.0, tranches=1
+    )
+    assert a == b

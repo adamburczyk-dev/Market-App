@@ -117,6 +117,7 @@ def top_quantile_portfolio(
     next_returns: np.ndarray,
     quantile: float = 0.2,
     cost_bps: float = 5.0,
+    tranches: int = 1,
 ) -> PortfolioResult:
     """Simulate the equal-weight long-only top-quantile portfolio.
 
@@ -125,7 +126,19 @@ def top_quantile_portfolio(
     costs charge ``cost_bps`` per unit of one-way turnover (fraction of the
     book replaced vs the previous session). Degenerate inputs (no sessions)
     yield a zero result.
+
+    ``tranches`` > 1 runs the Jegadeesh-Titman overlapping construction (T0-4):
+    capital is split into `tranches` sleeves and only sleeve ``t mod tranches``
+    is refreshed on session t, so a position is held for `tranches` sessions.
+    Set it to the label horizon and the evaluated object finally matches the
+    object the model was trained on — a 10-session label judged by a portfolio
+    that turns over daily is two different bets, and the difference is paid in
+    turnover.
     """
+    if tranches > 1:
+        return _overlapping_portfolio(
+            dates, symbols, probs, next_returns, quantile, cost_bps, tranches
+        )
     by_date: dict[datetime, list[int]] = defaultdict(list)
     for i, d in enumerate(dates):
         by_date[d].append(i)
@@ -387,3 +400,63 @@ def baseline_feature_ic(
         if len(rows) >= 3
     ]
     return float(np.mean(ics)) if ics else 0.0
+
+
+def _overlapping_portfolio(
+    dates: list[datetime],
+    symbols: list[str],
+    probs: np.ndarray,
+    next_returns: np.ndarray,
+    quantile: float,
+    cost_bps: float,
+    tranches: int,
+) -> PortfolioResult:
+    """Overlapping-tranche construction — see top_quantile_portfolio."""
+    by_date: dict[datetime, list[int]] = defaultdict(list)
+    for i, d in enumerate(dates):
+        by_date[d].append(i)
+    sessions = sorted(by_date)
+    cost_rate = cost_bps / 10_000.0
+
+    # sleeve -> names currently held by that sleeve
+    sleeves: list[set[str]] = [set() for _ in range(tranches)]
+    daily_returns: list[float] = []
+    turnovers: list[float] = []
+    position_counts: list[int] = []
+
+    for t, session in enumerate(sessions):
+        rows = by_date[session]
+        returns_by_symbol = {symbols[i]: float(next_returns[i]) for i in rows}
+
+        active = t % tranches
+        k = max(1, math.ceil(quantile * len(rows)))
+        top = sorted(rows, key=lambda i: float(probs[i]), reverse=True)[:k]
+        refreshed = {symbols[i] for i in top}
+        # only the active sleeve trades; the rest ride their existing holdings
+        replaced = len(refreshed - sleeves[active]) / len(refreshed) if refreshed else 0.0
+        sleeves[active] = refreshed
+
+        held = [name for sleeve in sleeves for name in sleeve]
+        if not held:
+            continue
+        gross = float(np.mean([returns_by_symbol.get(name, 0.0) for name in held]))
+        # the traded sleeve is 1/tranches of capital, so book-level turnover is
+        # its replacement rate scaled by its weight
+        turnover = replaced / tranches
+        daily_returns.append(gross - cost_rate * turnover)
+        turnovers.append(turnover)
+        position_counts.append(len(set(held)))
+
+    if not daily_returns:
+        return PortfolioResult(0.0, 0.0, 0, 0.0, 0.0)
+
+    returns = np.asarray(daily_returns, dtype=float)
+    std = float(returns.std(ddof=1)) if len(returns) > 1 else 0.0
+    sharpe = float(returns.mean() / std * math.sqrt(TRADING_DAYS)) if std > 0 else 0.0
+    return PortfolioResult(
+        sharpe=sharpe,
+        mean_daily_return=float(returns.mean()),
+        n_sessions=len(returns),
+        avg_positions=float(np.mean(position_counts)),
+        avg_turnover=float(np.mean(turnovers)),
+    )

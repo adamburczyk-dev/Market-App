@@ -46,6 +46,9 @@ class TrainingParams:
     cost_bps: float = 5.0
     gate_sharpe: float = 0.5
     baseline_feature: str = "return_20d"  # single-feature yardstick (T0-5)
+    # T0-4: hold a position for the label horizon instead of rebalancing the
+    # whole book daily, so the evaluated object matches the trained one.
+    overlapping_tranches: bool = True
     model: TrainConfig = field(default_factory=TrainConfig)
 
 
@@ -179,6 +182,7 @@ def _score(
         ds.next_returns[mask],
         quantile=params.quantile,
         cost_bps=params.cost_bps,
+        tranches=params.horizon if params.overlapping_tranches else 1,
     )
     relative = relative_metrics(
         dates,
