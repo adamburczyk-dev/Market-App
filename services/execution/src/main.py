@@ -76,7 +76,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 max_deliver=settings.NATS_MAX_DELIVER,
             )
             await mark_sub.start()
-            subscribers = [order_sub, mark_sub]
+            await ensure_stream(js, settings.NATS_RISK_STREAM, ["risk.>"])
+            breaker_sub = EventSubscriber(
+                js,
+                settings.NATS_RISK_SUBJECT,
+                settings.NATS_RISK_DURABLE,
+                service.handle_circuit_breaker_event,
+                max_deliver=settings.NATS_MAX_DELIVER,
+            )
+            await breaker_sub.start()
+            subscribers = [order_sub, mark_sub, breaker_sub]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not subscribe to events", error=str(exc))
             subscribers = []

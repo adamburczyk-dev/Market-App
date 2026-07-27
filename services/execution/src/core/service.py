@@ -13,6 +13,7 @@ import uuid
 
 import structlog
 from trading_common.events import (
+    CircuitBreakerTriggeredEvent,
     MarketDataUpdatedEvent,
     OrderFilledEvent,
     OrderRequestedEvent,
@@ -117,6 +118,61 @@ class ExecutionService:
             price=fill.price,
         )
         return event
+
+    async def handle_circuit_breaker_event(self, data: bytes) -> None:
+        """BLACK means close the book — the rule that was previously only an alert.
+
+        `CircuitBreakerTriggeredEvent(action_taken="flatten_all")` was published
+        by risk-mgmt and consumed by nobody except notification, so a >15%
+        drawdown raised an alarm and left every position open. Execution now
+        acts on it.
+        """
+        event = CircuitBreakerTriggeredEvent.model_validate_json(data)
+        if event.action_taken != "flatten_all":
+            return
+        await self.flatten_all(reason=f"{event.level}:{event.trigger_metric}")
+
+    async def flatten_all(self, reason: str = "manual") -> list[OrderFilledEvent]:
+        """Close every open position at its last mark. Returns the fills.
+
+        Liquidation deliberately ignores the risk halts: the halt exists to stop
+        NEW exposure, and refusing to close during a drawdown would be the exact
+        opposite of what the breaker is for.
+        """
+        open_positions = self._broker.positions()
+        if not open_positions:
+            logger.info("Flatten requested with no open positions", reason=reason)
+            return []
+
+        fills: list[OrderFilledEvent] = []
+        for symbol, position in open_positions.items():
+            quantity = float(position["quantity"])
+            price = float(position["last_price"])
+            if quantity <= 0 or price <= 0:
+                continue
+            fill = self._broker.fill(f"liquidate-{uuid.uuid4()}", symbol, "SELL", quantity, price)
+            if fill is None:
+                continue
+            event = OrderFilledEvent(
+                order_id=fill.order_id,
+                symbol=symbol,
+                filled_quantity=fill.quantity,
+                filled_price=fill.price,
+            )
+            await self._publisher.publish(event)
+            fills.append(event)
+            logger.warning(
+                "Position liquidated",
+                symbol=symbol,
+                quantity=quantity,
+                price=fill.price,
+                reason=reason,
+            )
+
+        await self._repository.save(self._broker.snapshot())
+        await self._risk_client.push_portfolio(self._broker.metrics())
+        logger.warning("Flatten complete", positions_closed=len(fills), reason=reason)
+        return fills
 
     async def handle_market_data_event(self, data: bytes) -> None:
         event = MarketDataUpdatedEvent.model_validate_json(data)

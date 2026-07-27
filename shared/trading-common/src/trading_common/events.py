@@ -86,6 +86,21 @@ class SignalGeneratedEvent(BaseEvent):
     source_service: str = "strategy"
 
 
+class OrderIntent(StrEnum):
+    """Why an order exists — decides which risk blocks may stop it.
+
+    A halt must never trap a liquidation: RED blocks NEW orders for the day,
+    but BLACK's response to a >15% drawdown is to CLOSE positions, and closing
+    a position is itself an order. Without this distinction the flatten would
+    be refused by the halt that preceded it — a bug that only ever shows up on
+    the worst day of the year.
+    """
+
+    NEW = "NEW"  # opens or increases exposure — subject to every risk block
+    REDUCE = "REDUCE"  # trims exposure
+    LIQUIDATE = "LIQUIDATE"  # closes out; bypasses halts by design
+
+
 class OrderRequestedEvent(BaseEvent):
     """Risk-approved, sized order request — risk-mgmt → execution."""
 
@@ -97,6 +112,7 @@ class OrderRequestedEvent(BaseEvent):
     strategy_name: str
     stop_loss: float | None = None
     take_profit: float | None = None
+    intent: OrderIntent = OrderIntent.NEW
     source_service: str = "risk-mgmt"
 
 

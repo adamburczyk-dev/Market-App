@@ -9,6 +9,7 @@ risk-check → size → publish pipeline.
 import structlog
 from trading_common.events import (
     CircuitBreakerTriggeredEvent,
+    OrderIntent,
     OrderRequestedEvent,
     RegimeChangedEvent,
     SignalAggregatedEvent,
@@ -113,8 +114,13 @@ class RiskMgmtService:
         take_profit: float | None,
         strategy_name: str,
         sector: str | None = None,
+        intent: OrderIntent = OrderIntent.NEW,
     ) -> OrderRequestedEvent | None:
-        if self._breaker.is_tripped:
+        # A halt stops NEW exposure. It must never stop a liquidation: BLACK's
+        # answer to a >15% drawdown is to close positions, and closing is itself
+        # an order — refusing it would be the opposite of what the breaker is
+        # for, and the failure would only ever appear on the worst day.
+        if self._breaker.is_tripped and intent is OrderIntent.NEW:
             logger.warning(
                 "Circuit breaker tripped — order blocked",
                 symbol=symbol,
@@ -138,6 +144,7 @@ class RiskMgmtService:
             strategy_name=strategy_name,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            intent=intent,
         )
         await self._publisher.publish(order)
         logger.info("Order requested", symbol=symbol, side=side, quantity=shares)

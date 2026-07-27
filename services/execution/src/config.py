@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     NATS_MARKET_SUBJECT: str = "market_data.updated"
     NATS_MARKET_DURABLE: str = "execution-marks"
 
+    # N1: BLACK publishes action="flatten_all"; without this subscription the
+    # non-negotiable "drawdown > 15% -> close positions" rule is only an alert.
+    NATS_RISK_STREAM: str = "RISK"
+    NATS_RISK_SUBJECT: str = "risk.circuit_breaker"
+    NATS_RISK_DURABLE: str = "execution-circuit-breaker"
+
     # Paper broker
     INITIAL_CASH: float = 100_000.0
     SLIPPAGE_BPS: float = 0.0  # paper: fill at the requested price by default

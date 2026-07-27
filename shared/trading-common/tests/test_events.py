@@ -536,3 +536,29 @@ class TestMlSignalGeneratedEvent:
         assert restored.signal == "SELL"
         assert restored.probability_up == 0.31
         assert restored.horizon_days == 10
+
+
+def test_order_intent_defaults_to_new_and_liquidation_is_explicit():
+    """N1/FLOW-6: a halt must never trap a liquidation.
+
+    RED blocks NEW orders for the day, but BLACK's answer to a >15% drawdown
+    is to close positions — and closing a position is itself an order. The
+    intent is what lets risk-mgmt tell those apart.
+    """
+    from trading_common.events import OrderIntent, OrderRequestedEvent
+
+    default = OrderRequestedEvent(
+        symbol="AAPL", side="BUY", quantity=10, price=100, strategy_name="s"
+    )
+    assert default.intent == OrderIntent.NEW  # existing producers keep working
+
+    liquidation = OrderRequestedEvent(
+        symbol="AAPL",
+        side="SELL",
+        quantity=10,
+        price=100,
+        strategy_name="circuit-breaker",
+        intent=OrderIntent.LIQUIDATE,
+    )
+    assert liquidation.intent == OrderIntent.LIQUIDATE
+    assert "LIQUIDATE" in liquidation.model_dump_json()

@@ -211,3 +211,38 @@ async def test_crisis_regime_tightens_exposure_cap():
     await service.handle_regime_changed_event(regime_event(new="crisis").model_dump_json().encode())
     # crisis caps at 15%, current exposure 30% already exceeds → blocked
     assert await service.process_signal(signal()) is None
+
+
+@pytest.mark.asyncio
+async def test_liquidation_is_not_blocked_by_a_tripped_breaker():
+    """N1/FLOW-6: RED halts NEW orders for the day. BLACK's response to a
+    drawdown is to CLOSE positions — and closing is itself an order. If the
+    halt caught liquidations too, the breaker would trap the book in exactly
+    the situation it exists to escape."""
+    from trading_common.events import OrderIntent
+
+    service = build_service()
+    await service.update_portfolio(daily_loss_pct=0.07)  # > 5% daily loss → RED
+    assert service.breaker.is_tripped
+
+    blocked = await service._risk_check_and_order(
+        symbol="AAPL",
+        side="BUY",
+        price=100.0,
+        stop_loss=95.0,
+        take_profit=None,
+        strategy_name="momentum",
+    )
+    assert blocked is None  # new exposure stays blocked
+
+    liquidation = await service._risk_check_and_order(
+        symbol="AAPL",
+        side="SELL",
+        price=100.0,
+        stop_loss=95.0,
+        take_profit=None,
+        strategy_name="circuit-breaker",
+        intent=OrderIntent.LIQUIDATE,
+    )
+    assert liquidation is not None
+    assert liquidation.intent == OrderIntent.LIQUIDATE
