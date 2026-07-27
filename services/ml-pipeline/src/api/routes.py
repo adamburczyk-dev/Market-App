@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from trading_common.schemas import Interval
 
 from src.api.deps import get_service
+from src.core.data_contract import TrainingDataContractError
 from src.core.service import MLPipelineService
 
 logger = structlog.get_logger()
@@ -50,6 +51,13 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
     minutes-long — ops/scheduled use; promotion to production stays manual."""
     try:
         return await service.train(req.symbols, Interval(req.interval), limit=req.limit)
+    except TrainingDataContractError as exc:
+        # T0-1: refuse to train on data that cannot produce an interpretable
+        # model, and return the full report so the caller sees WHY.
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "training data contract violated", **exc.report},
+        ) from exc
     except RuntimeError as exc:  # market-data client not configured
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:  # dataset too small for holdout + folds

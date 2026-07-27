@@ -28,7 +28,9 @@ def synthetic_dataset(n: int = 220):
         "DOWN": make_bars("DOWN", trending(n, -0.004)),
         "FLATISH": make_bars("FLATISH", trending(n, 0.0005)),
     }
-    return build_dataset(universe, DatasetParams(label=LabelParams(), min_history=60))
+    return build_dataset(
+        universe, DatasetParams(label=LabelParams(), min_history=60, min_universe=2)
+    )
 
 
 def test_training_produces_model_and_report():
@@ -81,7 +83,7 @@ def random_walk(n: int, seed: int) -> list[float]:
 def test_gate_fails_on_noise():
     """Driftless random walks must not pass the activation gate."""
     universe = {f"N{k}": make_bars(f"N{k}", random_walk(220, seed=k)) for k in range(3)}
-    ds = build_dataset(universe, DatasetParams(label=LabelParams(), min_history=60))
+    ds = build_dataset(universe, DatasetParams(label=LabelParams(), min_history=60, min_universe=2))
     assert ds.n_samples > 0
     _, report = run_training(ds, SMALL)
     assert not report.passed, "pure noise cleared the activation gate"

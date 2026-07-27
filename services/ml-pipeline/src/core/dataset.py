@@ -46,7 +46,9 @@ class DatasetParams:
     label: LabelParams = field(default_factory=LabelParams)
     min_history: int = 60  # sessions required before a symbol contributes rows
     lookback: int = 250  # trailing window fed to the feature computation (as served)
-    min_universe: int = 2  # sessions with fewer symbols yield no cross-section
+    # T0-6: a percentile rank over 2 names is the set {0, 1} — pure noise pooled
+    # into the training set. A meaningful quintile needs >= 4 names per bucket.
+    min_universe: int = 20  # sessions with a thinner cross-section are skipped
 
 
 @dataclass
@@ -57,6 +59,11 @@ class Dataset:
     dates: list[datetime]  # per-sample session date (drives purged splits)
     symbols: list[str]
     feature_names: list[str]
+    # T0-1: how the labels resolved and what the builder discarded. Without this
+    # a degenerate barrier setup (90% vertical) or a thin cross-section is
+    # invisible — the dataset just looks smaller than expected.
+    label_resolution: dict[str, int] = field(default_factory=dict)
+    sessions_skipped_thin: int = 0
 
     @property
     def n_samples(self) -> int:
@@ -135,6 +142,9 @@ def build_dataset(
 
     all_dates = sorted({b.timestamp for bars in bars_by_symbol.values() for b in bars})
 
+    resolution = {"upper": 0, "lower": 0, "vertical": 0, "unlabeled": 0}
+    sessions_skipped_thin = 0
+
     rows: list[dict[str, float]] = []
     row_dates: list[datetime] = []
     row_symbols: list[str] = []
@@ -155,6 +165,8 @@ def build_dataset(
             members.append((symbol, i))
 
         if len(snapshot) < p.min_universe:
+            if snapshot:  # a session with symbols, just too few to rank
+                sessions_skipped_thin += 1
             continue
 
         macro = _regime_one_hot(regime_by_date.get(session) if regime_by_date else None)
@@ -167,7 +179,14 @@ def build_dataset(
                 p.label,
             )
             if outcome is None:
+                resolution["unlabeled"] += 1
                 continue
+            if outcome.touch_index - i >= p.label.horizon:
+                resolution["vertical"] += 1
+            elif outcome.label == 1:
+                resolution["upper"] += 1
+            else:
+                resolution["lower"] += 1
             closes = series[symbol]["closes"]
             rows.append({**ranked.features, **macro})
             row_dates.append(session)
@@ -202,4 +221,6 @@ def build_dataset(
         dates=row_dates,
         symbols=row_symbols,
         feature_names=feature_names,
+        label_resolution=resolution,
+        sessions_skipped_thin=sessions_skipped_thin,
     )

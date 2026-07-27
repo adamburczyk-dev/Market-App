@@ -18,6 +18,7 @@ import structlog
 from trading_common.events import ModelDriftDetectedEvent
 from trading_common.schemas import Interval
 
+from src.core.data_contract import TrainingDataContract
 from src.core.dataset import (
     Dataset,
     DatasetParams,
@@ -79,6 +80,8 @@ class MLPipelineService:
         resolver: OutcomeResolver | None = None,
         aggregator_client: Any = None,  # AggregatorClient protocol (record_outcome)
         horizon_days: int = 10,
+        data_contract: TrainingDataContract | None = None,
+        dataset_params: DatasetParams | None = None,
     ) -> None:
         self._detector = detector
         self._registry = registry
@@ -90,6 +93,8 @@ class MLPipelineService:
         self._resolver = resolver
         self._aggregator = aggregator_client
         self._horizon_days = horizon_days
+        self._contract = data_contract or TrainingDataContract()
+        self._dataset_params = dataset_params or DatasetParams()
 
     @property
     def registry(self) -> ModelRegistry:
@@ -182,9 +187,19 @@ class MLPipelineService:
 
     async def build_training_dataset(
         self, symbols: list[str], interval: Interval, limit: int
-    ) -> Dataset:
+    ) -> tuple[Dataset, int]:
+        """Returns (dataset, sessions the bars received should have produced).
+
+        The second value is an INTERNAL consistency expectation, not the request
+        size: comparing against `limit` would flag a false violation whenever the
+        database legitimately holds less history than asked for. Comparing
+        against the bars actually received catches the opposite and more
+        insidious failure — the builder losing sessions it was given (e.g.
+        timestamps that fail to align across symbols).
+        """
         if self._market is None:
             raise RuntimeError("market-data client not configured")
+        params = self._dataset_params
         bars_by_symbol = {}
         for symbol in symbols:
             bars = await self._market.get_ohlcv(symbol, interval, limit=limit)
@@ -192,7 +207,11 @@ class MLPipelineService:
                 bars_by_symbol[symbol] = bars
             else:
                 logger.warning("No history for symbol — skipped", symbol=symbol)
-        return build_dataset(bars_by_symbol, DatasetParams())
+        longest = max((len(b) for b in bars_by_symbol.values()), default=0)
+        # a symbol contributes only past min_history, and the last `horizon`
+        # sessions cannot be labeled at all
+        expected_sessions = max(0, longest - params.min_history - params.label.horizon)
+        return build_dataset(bars_by_symbol, params), expected_sessions
 
     async def train(
         self,
@@ -206,10 +225,14 @@ class MLPipelineService:
         The model version is logged to MLflow regardless of the gate outcome
         (a failed gate is a result worth keeping); promotion stays manual.
         """
-        dataset = await self.build_training_dataset(symbols, interval, limit)
+        dataset, requested_sessions = await self.build_training_dataset(symbols, interval, limit)
         # T0-2: constant columns leave the feature contract before training, so
         # the model never learns a schema that serving cannot reproduce.
         dataset, dropped_features = drop_zero_variance_features(dataset)
+        # T0-1: assert the SHAPE of what arrived before a model is fitted to it.
+        # A truncated history or a thin cross-section produces a model that
+        # looks trained and means nothing; refuse instead of reporting success.
+        contract = self._contract.validate(dataset, requested_sessions=requested_sessions)
         model, report = run_training(dataset, params)
 
         version: str | None = None
@@ -242,6 +265,7 @@ class MLPipelineService:
             "features": dataset.feature_names,
             "dataset": _dataset_diagnostics(dataset, symbols),
             "dropped_zero_variance": dropped_features,
+            "data_contract": contract,
             "gate": report.as_dict(),
         }
 

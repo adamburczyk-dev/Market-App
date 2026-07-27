@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 from trading_common.schemas import Interval
 
+from src.core.data_contract import TrainingDataContract
+from src.core.dataset import DatasetParams
 from src.core.model_store import MlflowModelStore
 from src.core.monitoring.drift_detector import DriftDetector
 from src.core.registry import ModelRegistry
@@ -12,6 +14,14 @@ from src.events.publisher import NullPublisher
 
 from .test_dataset import make_bars, trending
 from .test_training import SMALL
+
+# Toy scale: 3 symbols, ~200 sessions. Production thresholds (20 names,
+# 1000 sessions) exist to reject exactly this shape, so the tests state their
+# assumptions explicitly instead of weakening the defaults.
+TOY_PARAMS = DatasetParams(min_history=60, min_universe=2)
+TOY_CONTRACT = TrainingDataContract(
+    min_sessions=50, min_symbols_per_session=2, min_samples=50, max_missing_rate_per_feature=1.0
+)
 
 
 class FakeMarketDataClient:
@@ -35,6 +45,8 @@ def build_service(tmp_path, universe):
         NullPublisher(),
         market_client=FakeMarketDataClient(universe),
         model_store=store,
+        data_contract=TOY_CONTRACT,
+        dataset_params=TOY_PARAMS,
     )
     return service, store
 
@@ -82,7 +94,13 @@ async def test_train_skips_symbols_without_history(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_train_without_market_client_raises():
-    service = MLPipelineService(DriftDetector(), ModelRegistry(), NullPublisher())
+    service = MLPipelineService(
+        DriftDetector(),
+        ModelRegistry(),
+        NullPublisher(),
+        data_contract=TOY_CONTRACT,
+        dataset_params=TOY_PARAMS,
+    )
     with pytest.raises(RuntimeError, match="market-data client"):
         await service.train(["A", "B"], Interval.D1)
 
@@ -100,6 +118,8 @@ async def test_train_without_store_still_reports(tmp_path):
         NullPublisher(),
         market_client=FakeMarketDataClient(universe),
         model_store=None,
+        data_contract=TOY_CONTRACT,
+        dataset_params=TOY_PARAMS,
     )
     result = await service.train(list(universe), Interval.D1, params=SMALL)
     assert result["version"] is None
@@ -125,3 +145,32 @@ async def test_promote_route_flow(tmp_path, monkeypatch):
     probs = model.predict_proba(probe)
     assert probs.shape == (2,)
     assert metadata["feature_names"] == model.feature_names
+
+
+@pytest.mark.asyncio
+async def test_train_refuses_a_truncated_dataset(tmp_path):
+    """T0-1 in the service path: production thresholds reject a toy dataset.
+
+    This is the cache-truncation incident in miniature — the run must fail
+    loudly instead of producing a model trained on a fraction of the history.
+    """
+    from src.core.data_contract import TrainingDataContractError
+
+    universe = {
+        "UP": make_bars("UP", trending(220, 0.004)),
+        "DOWN": make_bars("DOWN", trending(220, -0.004)),
+        "FLATISH": make_bars("FLATISH", trending(220, 0.0005)),
+    }
+    store = MlflowModelStore(f"sqlite:///{tmp_path}/mlflow.db", model_name="global_v1")
+    service = MLPipelineService(
+        DriftDetector(),
+        ModelRegistry(),
+        NullPublisher(),
+        market_client=FakeMarketDataClient(universe),
+        model_store=store,
+        dataset_params=TOY_PARAMS,  # default contract: 1000 sessions, 20 names
+    )
+    with pytest.raises(TrainingDataContractError) as exc:
+        await service.train(list(universe), Interval.D1, params=SMALL)
+    assert exc.value.report["passed"] is False
+    assert any("sessions" in v for v in exc.value.violations)
