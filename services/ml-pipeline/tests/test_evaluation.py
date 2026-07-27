@@ -221,6 +221,34 @@ def test_overlapping_tranches_hold_positions_for_the_horizon():
     assert 8 <= result.avg_positions <= 20
 
 
+def test_relative_metrics_describe_the_same_book_as_the_gate():
+    """The gate scores the tranche book; the relative metrics must score THAT
+    book, not a daily-rebalanced one.
+
+    They did not, and the real run #2 printed the consequence side by side:
+    "sharpe 0.79" (10-day tranches, turnover 5%) next to "sharpe_net −0.05"
+    (daily, turnover 26%) for one window — two portfolios in one row.
+    """
+    dates, symbols, probs, rets = bull_market_inputs(n_sessions=120, n_symbols=20, seed=11)
+
+    gate = top_quantile_portfolio(dates, symbols, probs, rets, quantile=0.2, tranches=10)
+    relative = relative_metrics(dates, symbols, probs, rets, quantile=0.2, tranches=10)
+    assert relative.turnover_daily_mean == pytest.approx(gate.avg_turnover, abs=1e-9)
+    assert relative.sharpe_net == pytest.approx(gate.sharpe, rel=1e-6)
+
+    # ...and the daily book really is a different object, so this matters
+    daily = relative_metrics(dates, symbols, probs, rets, quantile=0.2)
+    assert daily.turnover_daily_mean > 5 * relative.turnover_daily_mean
+
+
+def test_relative_metrics_default_to_the_daily_book():
+    # tranches=1 must reproduce the previously pinned behaviour exactly.
+    dates, symbols, probs, rets = portfolio_inputs()
+    a = relative_metrics(dates, symbols, probs, rets, quantile=0.25, cost_bps=10.0)
+    b = relative_metrics(dates, symbols, probs, rets, quantile=0.25, cost_bps=10.0, tranches=1)
+    assert a == b
+
+
 def test_single_tranche_is_the_previous_behaviour():
     dates, symbols, probs, rets = portfolio_inputs()
     a = top_quantile_portfolio(dates, symbols, probs, rets, quantile=0.25, cost_bps=10.0)

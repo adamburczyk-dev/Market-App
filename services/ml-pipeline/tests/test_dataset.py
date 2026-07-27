@@ -192,6 +192,24 @@ def test_zero_variance_features_dropped_from_contract():
     assert cleaned.dates == ds.dates
 
 
+def test_zero_variance_drop_keeps_the_label_diagnostics():
+    """Dropping columns must not erase how the labels resolved.
+
+    It did: the cleaned Dataset was rebuilt field by field, so
+    `label_resolution` and `sessions_skipped_thin` silently reset to their
+    defaults. Because the macro one-hots are constant in every real run, the
+    contract report ALWAYS showed zero barrier resolutions — the one number
+    that tells us whether the triple barrier is degenerate.
+    """
+    ds = build_dataset(universe(), PARAMS)
+    assert sum(ds.label_resolution.values()) > 0, "precondition: labels did resolve"
+
+    cleaned, dropped = drop_zero_variance_features(ds)
+    assert dropped, "precondition: something was dropped"
+    assert cleaned.label_resolution == ds.label_resolution
+    assert cleaned.sessions_skipped_thin == ds.sessions_skipped_thin
+
+
 def test_zero_variance_drop_keeps_informative_columns():
     regimes = {START + timedelta(days=i): "crisis" if i % 2 else "expansion" for i in range(120)}
     ds = build_dataset(universe(), PARAMS, regime_by_date=regimes)

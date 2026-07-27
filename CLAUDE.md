@@ -1099,6 +1099,42 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   symbole: 1497 sesji, kontrakt danych spełniony, 5 stałych kolumn `macro_*` wyrzuconych, bramka
   uczciwie odrzuciła model, 14/14 asercji raportu zielonych.
 
+- 2026-07-27 — **Trening #2 (rerun z pełną diagnostyką) + 3 znaleziska, w tym jedno poważne.**
+  Bieg na maszynie użytkownika: 34 symbole × 1438 sesji, 48 827 próbek, 7 cech (macro wypadło za
+  zerową wariancję — T0-2 działa). **Rozstrzygnięcie pytania z punktu 3 planu: `auc_train` średnio
+  0.520** (holdout 0.5135) — model nie dopasowuje się nawet do danych treningowych; `pred σ` na
+  holdoucie **0.0032** (cały rozrzut międzyspółkowy to 0.7 pkt proc. prawdopodobieństwa); IC ≈
+  +0.010 przy `ic_std` 0.26 (t ≈ 0.3); **2 z 8 foldów miały `best_epoch=1` przy 30 epokach** —
+  strata walidacyjna nie poprawiła się ani razu, więc serwowany był model sprzed nauki (a jeden z
+  nich, fold_4, i tak „zarobił" Sharpe 2.45). **BRAMKA JEDNAK PRZESZŁA** (`passed: true`) i skrypt
+  wypisał komendę promocji — przy holdout **AUC 0.4865** (poniżej rzutu monetą), lifcie −0.0003 i
+  equal-weight uniwersum robiącym Sharpe **1.36** przeciw 0.79 modelu (**active −1.06**). To jest
+  dokładnie zjawisko fold_0 z biegu #1, tylko że tym razem na holdoucie i z werdyktem „przeszło":
+  **portfel long-only w rosnącym rynku przechodzi bezwzględny próg Sharpe'a na samej becie**.
+  Stąd 3 poprawki: **(B3)** decyzja bramki wydzielona do `gate_reasons()` (testowalna na liczbach,
+  nie na modelu, który musi mieć szczęście dwa razy) + **dwie blokady bez wolnych parametrów** —
+  holdout `AUC ≤ 0.5` (brak jakiejkolwiek dyskryminacji) oraz `sharpe_active ≤ 0` (przegrywa z
+  uniwersum, z którego wybiera); test `test_gate.py` pinuje **dokładne liczby biegu #2 jako
+  NIEPRZECHODZĄCE** i sprawdza, że stare warunki (Sharpe, foldy) były spełnione — czyli że to
+  właśnie nowe blokady je zatrzymują; brak metryk relatywnych = fail-closed. **(B2)** `sharpe`
+  (bramka) i `sharpe_net`/`sharpe_active` opisywały **dwa różne portfele**: bramka liczyła książkę
+  transzową z T0-4 (obrót 5%), a metryki relatywne książkę przebudowywaną codziennie (obrót 26%) —
+  raport pokazywał obok siebie „sharpe 0.79" i „sharpe_net −0.05" dla tego samego okna.
+  `relative_metrics` przyjmuje teraz `tranches` i dostaje je z `TrainingParams`; obie ścieżki
+  korzystają ze wspólnego `_tranche_holdings`, więc definicja portfela istnieje w jednym miejscu.
+  **(B1)** `drop_zero_variance_features` przebudowywał `Dataset` pole po polu i **gubił
+  `label_resolution` + `sessions_skipped_thin`** → w KAŻDYM realnym biegu (macro zawsze stałe)
+  raport kontraktu pokazywał zerowe rozstrzygnięcia etykiet, czyli jedyną liczbę mierzącą
+  zdegenerowany triple barrier (F2 audytu). Naprawione przez `dataclasses.replace`. Wniosek do
+  planu: **T1-3 (nowa bramka) awansowana do KRYT i wchodzi PRZED pracą nad danymi** — inaczej
+  kolejny bieg też może „przejść" na becie. ml-pipeline 149 testów (+8); ruff + format + mypy
+  czyste. **Próba generalna end-to-end** (realny `nats-server` + realny market-data + realny
+  ml-pipeline z realnym MLflow, 24 symbole, 16/16 asercji): raport pokazuje wreszcie
+  `label_resolution` — **90.9% etykiet rozstrzyga się na barierze pionowej** (upper 6.6%, lower
+  2.5%), czyli **F2 audytu potwierdzone przez pełny pipeline**, nie tylko izolowanym pomiarem;
+  `sharpe` i `sharpe_net` są teraz identyczne co do 1e-3; nowa blokada zadziałała na żywo
+  („holdout active sharpe −2.07 ≤ 0 — loses to the equal-weight universe (benchmark 0.91)").
+
 **Next:** plan przestawiony po audycie zewnętrznym — **`docs/backlog_2026_07_27.md` jest teraz
 listą roboczą** (audyt + moja weryfikacja jego twierdzeń + 2 znaleziska własne). Reguła nadrzędna:
 **żadnego kolejnego treningu przed zamknięciem całego Tier 0** — pierwszy bieg nie tyle pokazał
@@ -1116,13 +1152,17 @@ Kolejność:
    `risk.circuit_breaker` i BLACK realnie zamyka książkę (`OrderIntent.LIQUIDATE` omija halt);
    **N2** — agregator scala komponenty w oknie 5 s, a risk-mgmt jest idempotentny per
    (symbol, strona, sesja), więc spóźniony głos ML nie podwaja pozycji.
-3. ← **TERAZ: rerun treningu na starych danych** z pełną diagnostyką → dopiero to rozstrzygnie
-   „niedouczenie vs brak sygnału". Jeśli `auc_train ≈ 0.5` — problem jest w optymalizacji i
-   rozszerzanie danych niczego nie naprawi.
-4. **Tier 1**: uniwersum 200–500 point-in-time (survivorship!), historia od 2005, nowa bramka
-   (IC/ICIR + przewaga nad baseline + DSR zamiast samego Sharpe'a), cechy długiego horyzontu
-   (`momentum_12_1`), point-in-time fundamentów (`filed_at` istnieje w kontrakcie, ale **nikt go
-   nie wypełnia**) → **trening #2**.
+3. ✅ **Rerun treningu WYKONANY 2026-07-27** (`reports/training-2.json`): `auc_train` ≈ 0.520 →
+   model nie dopasowuje się nawet do danych treningowych, więc **samo rozszerzanie danych niczego
+   nie naprawi**. Przyczyny (a) optymalizacja i (b) brak sygnału są przy tak płaskim treningu
+   nierozróżnialne — rozstrzyga świadome przeuczenie modelu o dużej pojemności.
+4. ← **TERAZ: T1-3 — nowa bramka (KRYT, przed pracą nad danymi)**: bieg #2 **przeszedł** starą
+   bramkę mając AUC 0.486 i active −1.06. Doraźnie dołożone 2 blokady (AUC ≤ 0.5, active ≤ 0);
+   pełne G0 sanity → G1 IC/ICIR → G2 vs baseline → G3 ekonomia → G4 kalibracja → G5 DSR wraz z
+   testem „przechodzalności" nadal do zrobienia.
+5. **Reszta Tier 1**: uniwersum 200–500 point-in-time (survivorship!), historia od 2005, cechy
+   długiego horyzontu (`momentum_12_1`), point-in-time fundamentów (`filed_at` istnieje w
+   kontrakcie, ale **nikt go nie wypełnia**) → **trening #3**.
 
 Decyzje czekające na człowieka (D1–D8 w backlogu): rozmiar/źródło uniwersum, horyzont 10 vs 21,
 usunięcie makro z agregatora, meta-labeling, filtr RSI, `llm-svc`, transze w backteście,

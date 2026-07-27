@@ -13,7 +13,7 @@ stay. A missing feature (e.g. a Tier-2 attribute a symbol doesn't have) fills
 with the neutral rank 0.5.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 import numpy as np
@@ -95,13 +95,15 @@ def drop_zero_variance_features(
         dropped=dropped,
         kept=len(keep),
     )
+    # `replace`, not a fresh Dataset: rebuilding it by hand silently reset
+    # label_resolution and sessions_skipped_thin to their defaults, so the
+    # contract report showed zero barrier resolutions whenever ANY column was
+    # dropped — which is every real run, since the macro one-hots are constant.
+    # The label diagnostics were blank exactly where they matter most.
     return (
-        Dataset(
+        replace(
+            dataset,
             x=dataset.x[:, keep],
-            y=dataset.y,
-            next_returns=dataset.next_returns,
-            dates=dataset.dates,
-            symbols=dataset.symbols,
             feature_names=[dataset.feature_names[i] for i in keep],
         ),
         dropped,

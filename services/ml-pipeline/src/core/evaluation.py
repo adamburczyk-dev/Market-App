@@ -309,6 +309,36 @@ def _average_ranks(values: np.ndarray) -> np.ndarray:
     return ranks
 
 
+def _tranche_holdings(
+    sessions: list[datetime],
+    by_date: dict[datetime, list[int]],
+    symbols: list[str],
+    probs: np.ndarray,
+    quantile: float,
+    tranches: int,
+    *,
+    highest: bool = True,
+) -> list[tuple[list[str], float]]:
+    """Per-session (held names, book turnover) under the tranche rule.
+
+    ``tranches == 1`` is the daily-rebalanced book; larger values split capital
+    into sleeves and refresh sleeve ``t mod tranches`` only, so a position is
+    held for ``tranches`` sessions (Jegadeesh-Titman).
+    """
+    sleeves: list[set[str]] = [set() for _ in range(tranches)]
+    out: list[tuple[list[str], float]] = []
+    for t, session in enumerate(sessions):
+        rows = by_date[session]
+        k = max(1, math.ceil(quantile * len(rows)))
+        ordered = sorted(rows, key=lambda i: float(probs[i]), reverse=highest)
+        refreshed = {symbols[i] for i in ordered[:k]}
+        active = t % tranches
+        replaced = len(refreshed - sleeves[active]) / len(refreshed) if refreshed else 0.0
+        sleeves[active] = refreshed
+        out.append(([name for sleeve in sleeves for name in sleeve], replaced / tranches))
+    return out
+
+
 def relative_metrics(
     dates: list[datetime],
     symbols: list[str],
@@ -316,12 +346,22 @@ def relative_metrics(
     next_returns: np.ndarray,
     quantile: float = 0.2,
     cost_bps: float = 5.0,
+    tranches: int = 1,
 ) -> RelativeMetrics:
-    """Benchmark-relative and rank-based evaluation of a set of predictions."""
+    """Benchmark-relative and rank-based evaluation of a set of predictions.
+
+    ``tranches`` MUST match the portfolio the gate scores. It did not: the gate
+    ran the 10-day tranche book (turnover ~5%) while these metrics ran the
+    daily book (turnover ~26%), so a report showed "sharpe 0.79" beside
+    "sharpe_net −0.05" for the same window — two different portfolios printed
+    as if they described one. IC and the equal-weight benchmark are
+    construction-independent; the long/short/net series are not.
+    """
     by_date: dict[datetime, list[int]] = defaultdict(list)
     for i, d in enumerate(dates):
         by_date[d].append(i)
-    sessions = sorted(by_date)
+    # A one-name cross-section has no ranking and no benchmark to speak of.
+    sessions = [d for d in sorted(by_date) if len(by_date[d]) >= 2]
 
     ics: list[float] = []
     long_returns: list[float] = []
@@ -329,30 +369,34 @@ def relative_metrics(
     bench_returns: list[float] = []
     gross_returns: list[float] = []
     turnovers: list[float] = []
-    previous: set[str] = set()
     cost_rate = cost_bps / 10_000.0
 
-    for session in sessions:
+    long_book = _tranche_holdings(sessions, by_date, symbols, probs, quantile, tranches)
+    short_book = _tranche_holdings(
+        sessions, by_date, symbols, probs, quantile, tranches, highest=False
+    )
+
+    for idx, session in enumerate(sessions):
         rows = by_date[session]
-        if len(rows) < 2:
-            continue
         p = probs[rows]
         r = next_returns[rows]
         ics.append(_spearman(p, r))
 
-        k = max(1, math.ceil(quantile * len(rows)))
-        ordered = sorted(rows, key=lambda i: float(probs[i]), reverse=True)
-        top, bottom = ordered[:k], ordered[-k:]
-        held = {symbols[i] for i in top}
-
-        gross = float(np.mean(next_returns[top]))
-        turnover = 1.0 if not previous else len(held - previous) / len(held)
+        returns_by_symbol = {symbols[i]: float(next_returns[i]) for i in rows}
+        held, turnover = long_book[idx]
+        shorted, _ = short_book[idx]
+        if not held:
+            continue
+        gross = float(np.mean([returns_by_symbol.get(name, 0.0) for name in held]))
         gross_returns.append(gross)
         turnovers.append(turnover)
         long_returns.append(gross - cost_rate * turnover)
-        short_returns.append(float(np.mean(next_returns[bottom])))
+        short_returns.append(
+            float(np.mean([returns_by_symbol.get(name, 0.0) for name in shorted]))
+            if shorted
+            else 0.0
+        )
         bench_returns.append(float(np.mean(r)))  # equal-weight whole universe
-        previous = held
 
     if not gross_returns:
         return RelativeMetrics(0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -418,31 +462,20 @@ def _overlapping_portfolio(
     sessions = sorted(by_date)
     cost_rate = cost_bps / 10_000.0
 
-    # sleeve -> names currently held by that sleeve
-    sleeves: list[set[str]] = [set() for _ in range(tranches)]
     daily_returns: list[float] = []
     turnovers: list[float] = []
     position_counts: list[int] = []
 
-    for t, session in enumerate(sessions):
+    # one definition of "what the book holds" — shared with relative_metrics so
+    # the gate and the relative metrics can never drift onto different books
+    book = _tranche_holdings(sessions, by_date, symbols, probs, quantile, tranches)
+    for idx, session in enumerate(sessions):
         rows = by_date[session]
         returns_by_symbol = {symbols[i]: float(next_returns[i]) for i in rows}
-
-        active = t % tranches
-        k = max(1, math.ceil(quantile * len(rows)))
-        top = sorted(rows, key=lambda i: float(probs[i]), reverse=True)[:k]
-        refreshed = {symbols[i] for i in top}
-        # only the active sleeve trades; the rest ride their existing holdings
-        replaced = len(refreshed - sleeves[active]) / len(refreshed) if refreshed else 0.0
-        sleeves[active] = refreshed
-
-        held = [name for sleeve in sleeves for name in sleeve]
+        held, turnover = book[idx]
         if not held:
             continue
         gross = float(np.mean([returns_by_symbol.get(name, 0.0) for name in held]))
-        # the traded sleeve is 1/tranches of capital, so book-level turnover is
-        # its replacement rate scaled by its weight
-        turnover = replaced / tranches
         daily_returns.append(gross - cost_rate * turnover)
         turnovers.append(turnover)
         position_counts.append(len(set(held)))

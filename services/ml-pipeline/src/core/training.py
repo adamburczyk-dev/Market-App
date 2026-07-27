@@ -6,7 +6,10 @@ each fold trains on its purged window (with an internal, also-purged
 train/val split for early stopping + calibration) and is scored on its test
 block. The gate: cost-adjusted OOS Sharpe > threshold on the holdout AND on
 at least 2 of the 3 most recent folds, with sane calibration (Brier no worse
-than the base rate). Only a gate-passing model may serve non-HOLD signals.
+than the base rate), AND two interlocks that an absolute Sharpe cannot supply
+— the holdout must discriminate at all (AUC > 0.5) and must beat the
+equal-weight universe it selects from (active Sharpe > 0). Only a gate-passing
+model may serve non-HOLD signals.
 """
 
 from dataclasses import dataclass, field
@@ -163,6 +166,47 @@ def _fit_on_dates(
     )
 
 
+def gate_reasons(
+    holdout: FoldReport,
+    folds: list[FoldReport],
+    base_rate: float,
+    p: TrainingParams,
+) -> list[str]:
+    """Why the model must NOT be promoted — empty list means the gate passes.
+
+    Separate from ``run_training`` so the decision can be tested on numbers
+    rather than on a model that has to be lucky twice.
+    """
+    reasons: list[str] = []
+    if holdout.portfolio.sharpe <= p.gate_sharpe:
+        reasons.append(f"holdout sharpe {holdout.portfolio.sharpe:.2f} ≤ gate {p.gate_sharpe}")
+    recent = folds[-3:]
+    passing = sum(1 for f in recent if f.portfolio.sharpe > p.gate_sharpe)
+    if len(recent) < 2:
+        reasons.append(f"only {len(recent)} evaluable folds — need ≥ 2")
+    elif passing < 2:
+        reasons.append(f"only {passing}/{len(recent)} recent folds clear sharpe {p.gate_sharpe}")
+    base_brier = base_rate * (1.0 - base_rate)
+    if holdout.brier > base_brier + 0.01:
+        reasons.append(f"holdout brier {holdout.brier:.3f} worse than base rate {base_brier:.3f}")
+    # Two interlocks with no free parameters, added after run #2 PASSED this
+    # gate with a holdout AUC of 0.486 (below a coin flip), lift −0.0003 and
+    # IC 0.005, while the equal-weight universe out-Sharped the model 1.36 to
+    # 0.79. A long-only book in a rising market clears an absolute Sharpe bar
+    # on beta alone. A model that ranks no better than chance, or that loses to
+    # the universe it picks from, has shown no skill — whatever its Sharpe.
+    if holdout.auc <= 0.5:
+        reasons.append(f"holdout auc {holdout.auc:.3f} ≤ 0.5 — no discrimination on unseen data")
+    active = holdout.relative.sharpe_active if holdout.relative else 0.0
+    if active <= 0.0:
+        benchmark = holdout.relative.sharpe_benchmark_ew if holdout.relative else 0.0
+        reasons.append(
+            f"holdout active sharpe {active:.2f} ≤ 0 — loses to the equal-weight "
+            f"universe (benchmark {benchmark:.2f})"
+        )
+    return reasons
+
+
 def _score(
     ds: Dataset,
     model: TrainedModel,
@@ -191,6 +235,9 @@ def _score(
         ds.next_returns[mask],
         quantile=params.quantile,
         cost_bps=params.cost_bps,
+        # same book the gate scores — otherwise `sharpe` and `sharpe_net`
+        # describe two different portfolios in one table
+        tranches=params.horizon if params.overlapping_tranches else 1,
     )
     # The rule: a model that cannot beat the raw rank of one feature has not
     # earned the ML layer. return_20d is the strongest single candidate here.
@@ -277,23 +324,7 @@ def run_training(
         fit_dates=set(holdout_train),
     )
 
-    reasons: list[str] = []
-    if holdout_report.portfolio.sharpe <= p.gate_sharpe:
-        reasons.append(
-            f"holdout sharpe {holdout_report.portfolio.sharpe:.2f} ≤ gate {p.gate_sharpe}"
-        )
-    recent = fold_reports[-3:]
-    passing = sum(1 for f in recent if f.portfolio.sharpe > p.gate_sharpe)
-    if len(recent) < 2:
-        reasons.append(f"only {len(recent)} evaluable folds — need ≥ 2")
-    elif passing < 2:
-        reasons.append(f"only {passing}/{len(recent)} recent folds clear sharpe {p.gate_sharpe}")
-    base_rate = float(ds.y.mean())
-    base_brier = base_rate * (1.0 - base_rate)
-    if holdout_report.brier > base_brier + 0.01:
-        reasons.append(
-            f"holdout brier {holdout_report.brier:.3f} worse than base rate {base_brier:.3f}"
-        )
+    reasons = gate_reasons(holdout_report, fold_reports, float(ds.y.mean()), p)
 
     report = GateReport(
         folds=fold_reports, holdout=holdout_report, passed=not reasons, reasons=reasons
