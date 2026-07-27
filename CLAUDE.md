@@ -1135,6 +1135,33 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `sharpe` i `sharpe_net` są teraz identyczne co do 1e-3; nowa blokada zadziałała na żywo
   („holdout active sharpe −2.07 ≤ 0 — loses to the equal-weight universe (benchmark 0.91)").
 
+- 2026-07-27 — **T1-3: bramka aktywacyjna przepisana na G0–G5** (`ml-pipeline/src/core/gate.py`) —
+  bezpośrednia odpowiedź na to, że bieg #2 **przeszedł** starą bramkę bez śladu sygnału. Sześć
+  warunków, każdy zamyka inny sposób, w jaki model bez przewagi może wyglądać dobrze: **G0** sanity
+  (`best_epoch > 1` — w biegu #2 dwa foldy oceniały wagi sprzed nauki; predykcje nie stałe; dość
+  okien), **G1** informacja w rankingu — **t-stat średniego IC ≥ 2**, nie poziom IC (na 63 sesjach
+  SE Sharpe'a to ~2.0, a średnie IC ma o rząd wielkości większą moc, bo liczy się każda nazwa w
+  każdym przekroju), **G2** przewaga nad rangą jednej surowej cechy **ze znakiem**, **G3** ekonomia
+  (Sharpe > 0.5 **i** active > 0 **i** lift > 0 **i** 2/3 ostatnich foldów), **G4** kalibracja
+  (Brier ≤ base rate **okna** — stara wersja porównywała z base rate całego zbioru i dawała jeszcze
+  0.01 luzu, więc nie mogła oblać niczego realnego; + AUC > 0.5), **G5** **deflated Sharpe**
+  (Bailey–López de Prado: `expected_max_sharpe` dla `n_trials` + korekta na skośność i kurtozę).
+  Trzy decyzje projektowe warte zapamiętania: (1) DSR liczony na **sklejonej krzywej OOS**
+  (foldy + holdout), bo 126 sesji holdoutu nie ustala Sharpe'a przy żadnej sensownej ufności —
+  SE ≈ 1.4 rocznie; (2) próg DSR **0.90, nie 0.95** — świadoma decyzja: ta bramka rządzi promocją do
+  **papierowego** głosu w agregatorze, a między nią a pieniędzmi stoi osobna reguła „30 dni
+  dodatniego Sharpe'a na papierze"; przy ~600 sesjach OOS i 10 próbach 0.90 wymaga i tak ok. 1.8
+  Sharpe'a rocznie; (3) `n_trials` to **wejście uczciwościowe**, nie pokrętło — zaniżenie go czyni
+  G5 optymistycznym. **Test przechodzalności** (bez niego bramka nie do odróżnienia od trwałego
+  „nie"): syntetyczne uniwersum, w którym przewaga jest **interakcją** cech (ranga momentum ×
+  odwrotność rangi zmienności — żadna pojedyncza cecha jej nie łapie, więc G2 jest sprawdzalne)
+  przechodzi wszystkie 6 warunków end-to-end przez pełny pipeline. Od drugiej strony: liczby biegu
+  #2 oblewają **5 z 6** — przechodzi tylko G0, bo model faktycznie się uczył; dokładnie dlatego
+  stara bramka niczego nie zauważyła. Efekt uboczny, wart odnotowania: fixture 3-symbolowy **nie
+  przechodzi** nowej bramki (IC po 3 nazwach nie niesie dowodu, a ranking modelu nie pobije
+  `return_20d` na 3 punktach) — testy serwisowe sprawdzają teraz **strukturę** raportu, a werdykt
+  ma swój własny test. ml-pipeline 157 testów (+8); ruff + format + mypy czyste.
+
 **Next:** plan przestawiony po audycie zewnętrznym — **`docs/backlog_2026_07_27.md` jest teraz
 listą roboczą** (audyt + moja weryfikacja jego twierdzeń + 2 znaleziska własne). Reguła nadrzędna:
 **żadnego kolejnego treningu przed zamknięciem całego Tier 0** — pierwszy bieg nie tyle pokazał
@@ -1156,11 +1183,12 @@ Kolejność:
    model nie dopasowuje się nawet do danych treningowych, więc **samo rozszerzanie danych niczego
    nie naprawi**. Przyczyny (a) optymalizacja i (b) brak sygnału są przy tak płaskim treningu
    nierozróżnialne — rozstrzyga świadome przeuczenie modelu o dużej pojemności.
-4. ← **TERAZ: T1-3 — nowa bramka (KRYT, przed pracą nad danymi)**: bieg #2 **przeszedł** starą
-   bramkę mając AUC 0.486 i active −1.06. Doraźnie dołożone 2 blokady (AUC ≤ 0.5, active ≤ 0);
-   pełne G0 sanity → G1 IC/ICIR → G2 vs baseline → G3 ekonomia → G4 kalibracja → G5 DSR wraz z
-   testem „przechodzalności" nadal do zrobienia.
-5. **Reszta Tier 1**: uniwersum 200–500 point-in-time (survivorship!), historia od 2005, cechy
+4. ✅ **T1-3 ZROBIONE 2026-07-27 — bramka G0–G5** (szczegóły w logu wyżej): sanity → IC t-stat →
+   przewaga nad baseline → ekonomia → kalibracja → deflated Sharpe na sklejonej krzywej OOS;
+   werdykt per warunek w raporcie; test przechodzalności przechodzi, liczby biegu #2 oblewają 5/6.
+5. ← **TERAZ: eksperyment „świadome przeuczenie"** — rozstrzyga, czy `auc_train ≈ 0.52` to problem
+   optymalizacji, czy brak sygnału w cechach. To decyduje o kolejności reszty Tier 1.
+6. **Reszta Tier 1**: uniwersum 200–500 point-in-time (survivorship!), historia od 2005, cechy
    długiego horyzontu (`momentum_12_1`), point-in-time fundamentów (`filed_at` istnieje w
    kontrakcie, ale **nikt go nie wypełnia**) → **trening #3**.
 

@@ -56,6 +56,11 @@ class PortfolioResult:
     n_sessions: int
     avg_positions: float
     avg_turnover: float  # fraction of the book replaced per session
+    # The realized net daily series. Kept as a tuple (comparable, hashable —
+    # an ndarray field would break equality) because the deflated Sharpe needs
+    # the higher moments, not just the ratio: a Sharpe built on a few lucky
+    # skewed sessions deflates far more than the same Sharpe from a steady one.
+    returns: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -174,7 +179,122 @@ def top_quantile_portfolio(
         n_sessions=len(returns),
         avg_positions=float(np.mean(position_counts)),
         avg_turnover=float(np.mean(turnovers)),
+        returns=tuple(float(r) for r in returns),
     )
+
+
+EULER_MASCHERONI = 0.5772156649015329
+
+
+def _normal_cdf(z: float) -> float:
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _normal_ppf(p: float) -> float:
+    """Inverse normal CDF (Acklam's rational approximation, ~1e-9 accurate)."""
+    p = min(max(p, 1e-12), 1 - 1e-12)
+    a = [
+        -3.969683028665376e01,
+        2.209460984245205e02,
+        -2.759285104469687e02,
+        1.383577518672690e02,
+        -3.066479806614716e01,
+        2.506628277459239e00,
+    ]
+    b = [
+        -5.447609879822406e01,
+        1.615858368580409e02,
+        -1.556989798598866e02,
+        6.680131188771972e01,
+        -1.328068155288572e01,
+    ]
+    c = [
+        -7.784894002430293e-03,
+        -3.223964580411365e-01,
+        -2.400758277161838e00,
+        -2.549732539343734e00,
+        4.374664141464968e00,
+        2.938163982698783e00,
+    ]
+    d = [
+        7.784695709041462e-03,
+        3.224671290700398e-01,
+        2.445134137142996e00,
+        3.754408661907416e00,
+    ]
+    plow, phigh = 0.02425, 1 - 0.02425
+    if p < plow:
+        q = math.sqrt(-2 * math.log(p))
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / (
+            (((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1
+        )
+    if p > phigh:
+        q = math.sqrt(-2 * math.log(1 - p))
+        return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / (
+            (((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1
+        )
+    q = p - 0.5
+    r = q * q
+    return (
+        (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5])
+        * q
+        / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
+    )
+
+
+def expected_max_sharpe(n_trials: int, sharpe_std: float = 1.0) -> float:
+    """Expected MAXIMUM Sharpe from `n_trials` strategies with zero true edge.
+
+    Trying many configurations and keeping the best one produces a positive
+    Sharpe with certainty; this is the bar that result has to clear before it
+    means anything (Bailey & López de Prado).
+
+    A single trial has no selection to correct for — the deflated ratio then
+    reduces to the probabilistic Sharpe against a zero benchmark.
+    """
+    n = int(n_trials)
+    if n <= 1:
+        return 0.0
+    return sharpe_std * (
+        (1 - EULER_MASCHERONI) * _normal_ppf(1 - 1.0 / n)
+        + EULER_MASCHERONI * _normal_ppf(1 - 1.0 / (n * math.e))
+    )
+
+
+def deflated_sharpe_ratio(
+    returns: tuple[float, ...] | np.ndarray,
+    n_trials: int = 1,
+    benchmark_sharpe: float | None = None,
+    periods_per_year: int = TRADING_DAYS,
+) -> float:
+    """Probability that the true Sharpe exceeds the selection-adjusted benchmark.
+
+    Corrects the two things a raw Sharpe hides: how many attempts it took to
+    find this one (the benchmark defaults to the expected maximum under the
+    null for ``n_trials``), and the shape of the return distribution — negative
+    skew and fat tails make the same ratio less trustworthy. Returns a
+    probability in [0, 1]; ~0.95 is the usual bar.
+    """
+    r = np.asarray(returns, dtype=float)
+    n = len(r)
+    if n < 8:
+        return 0.0
+    std = float(r.std(ddof=1))
+    if std <= 0:
+        return 0.0
+    sr = float(r.mean()) / std  # per-period, matching the moments below
+    centered = (r - r.mean()) / std
+    skew = float(np.mean(centered**3))
+    kurtosis = float(np.mean(centered**4))
+    sr0 = (
+        benchmark_sharpe / math.sqrt(periods_per_year)
+        if benchmark_sharpe is not None
+        else expected_max_sharpe(n_trials) / math.sqrt(n - 1)
+    )
+    denominator = 1.0 - skew * sr + (kurtosis - 1.0) / 4.0 * sr**2
+    if denominator <= 0:
+        return 0.0
+    return _normal_cdf((sr - sr0) * math.sqrt(n - 1) / math.sqrt(denominator))
 
 
 @dataclass(frozen=True)
@@ -492,4 +612,5 @@ def _overlapping_portfolio(
         n_sessions=len(returns),
         avg_positions=float(np.mean(position_counts)),
         avg_turnover=float(np.mean(turnovers)),
+        returns=tuple(float(r) for r in returns),
     )

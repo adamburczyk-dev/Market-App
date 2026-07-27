@@ -56,6 +56,7 @@ class MlflowModelStore:
                     "n_features": len(model.feature_names),
                 }
             )
+            relative = report.holdout.relative
             mlflow.log_metrics(
                 {
                     "holdout_sharpe": report.holdout.portfolio.sharpe,
@@ -63,6 +64,21 @@ class MlflowModelStore:
                     "holdout_brier": report.holdout.brier,
                     "gate_passed": float(report.passed),
                     "temperature": model.temperature,
+                    # Which gate question each run answered "no" to — comparing
+                    # runs on gate_passed alone loses the only useful part.
+                    **(
+                        {f"gate_{c.id.lower()}": float(c.passed) for c in report.outcome.conditions}
+                        if report.outcome is not None
+                        else {}
+                    ),
+                    **(
+                        {
+                            "holdout_ic": relative.ic_mean,
+                            "holdout_sharpe_active": relative.sharpe_active,
+                        }
+                        if relative is not None
+                        else {}
+                    ),
                     **{f"{f.name}_sharpe": f.portfolio.sharpe for f in report.folds[-3:]},
                 }
             )

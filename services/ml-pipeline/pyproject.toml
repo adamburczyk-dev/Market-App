@@ -44,6 +44,9 @@ packages = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
+markers = [
+    "slow: trains real models on a wide universe (tens of seconds) — the gate passability test",
+]
 
 [tool.ruff]
 target-version = "py312"

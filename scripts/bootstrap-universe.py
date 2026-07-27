@@ -349,8 +349,14 @@ def run_training(
     if dropped:
         print(f"  dropped constant features: {', '.join(dropped)}")
     print(f"Gate PASSED: {gate.get('passed')}")
-    for reason in gate.get("reasons", []):
-        print(f"  - {reason}")
+    for condition in gate.get("conditions", []):
+        mark = "PASS" if condition.get("passed") else "FAIL"
+        print(
+            f"  [{mark}] {condition.get('id')} {condition.get('name')}: {condition.get('detail')}"
+        )
+    if not gate.get("conditions"):  # older report shape
+        for reason in gate.get("reasons", []):
+            print(f"  - {reason}")
     print(FOLD_HEADER)
     _print_fold({"name": "holdout", **holdout})
     for fold in gate.get("folds", []):

@@ -112,9 +112,21 @@ so the "ml" source is symmetric with "strategy" from day one.
   cost-adjusted OOS Sharpe** of a daily-rebalanced, equal-weight, long-only top-quintile
   portfolio built from OOS predictions, with the same 5 bps per-turn cost as the backtest engine.
   Baselines it must beat: the momentum rule itself and equal-weight buy-and-hold of the universe.
-- **Activation gate (non-negotiable, mirrors the strategy rule):** OOS Sharpe > 0.5 on the
-  holdout **and** on ≥ 2 of the 3 most recent walk-forward folds; calibration sane (Brier no
-  worse than the base rate); only then may the serving path publish non-HOLD signals.
+- **Activation gate — REPLACED 2026-07-27 after run #2 passed it with no signal.** The rule
+  above (OOS Sharpe > 0.5 on the holdout and ≥ 2 of 3 recent folds, plus a Brier check) is
+  necessary and nowhere near sufficient: a long-only book in a rising market clears an absolute
+  Sharpe bar out of beta. Run #2 cleared it with holdout AUC 0.4865, lift −0.0003 and an
+  equal-weight universe that out-Sharped the model 1.36 to 0.79. The gate is now six conditions
+  (`ml-pipeline/src/core/gate.py`), each closing one failure mode:
+  **G0** sanity (the fit improved past epoch 1, predictions vary, enough evaluable windows) ·
+  **G1** rank information (t-statistic of the mean IC ≥ 2 — the level of IC says nothing without
+  its standard error) · **G2** beats the signed IC of the best single raw feature ·
+  **G3** economics (Sharpe > 0.5 **and** active Sharpe > 0 **and** lift > 0 **and** 2/3 recent
+  folds) · **G4** calibration against the *evaluated window's* base rate, plus AUC > 0.5 ·
+  **G5** deflated Sharpe ≥ 0.90 on the stitched OOS curve for `n_trials` attempts.
+  The verdict is reported per condition, with numbers. Only a model clearing all six may publish
+  non-HOLD signals; live capital additionally requires the 30-day paper-trading rule, which is
+  why G5 sits at 0.90 here rather than the textbook 0.95.
 
 ## 7. Registry & lifecycle — MLflow
 

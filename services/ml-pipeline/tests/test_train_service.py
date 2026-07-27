@@ -64,8 +64,20 @@ async def test_train_end_to_end(tmp_path, monkeypatch):
 
     assert result["version"] == "1"
     assert result["model_id"] == "global_v1@v1"
-    assert result["gate"]["passed"] is True
     assert result["samples"] > 0
+    # The gate VERDICT is not this test's subject — a 3-name cross-section
+    # cannot demonstrate rank skill and rightly fails G1/G2 (see
+    # test_gate_passable_end_to_end for the verdict). What must hold here is
+    # that the run is logged and reviewable whatever the verdict.
+    assert isinstance(result["gate"]["passed"], bool)
+    assert {c["id"] for c in result["gate"]["conditions"]} == {
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5",
+    }
     # drift baseline registered under the versioned id, predictions included
     baseline = service.registry.get("global_v1@v1")
     assert baseline is not None
@@ -89,7 +101,8 @@ async def test_train_skips_symbols_without_history(tmp_path, monkeypatch):
     }
     service, _ = build_service(tmp_path, universe)
     result = await service.train([*universe, "GHOST"], Interval.D1, limit=1500, params=SMALL)
-    assert result["gate"]["passed"] is True  # GHOST silently skipped
+    assert result["dataset"]["symbols_missing"] == ["GHOST"]  # skipped, and said so
+    assert result["samples"] > 0
 
 
 @pytest.mark.asyncio
@@ -124,7 +137,7 @@ async def test_train_without_store_still_reports(tmp_path):
     result = await service.train(list(universe), Interval.D1, params=SMALL)
     assert result["version"] is None
     assert result["model_id"] == "unpersisted"
-    assert result["gate"]["passed"] is True
+    assert result["gate"]["conditions"]  # still fully reported without a store
     assert service.registry.get("unpersisted") is not None
 
 

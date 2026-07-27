@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from src.core.dataset import DatasetParams, build_dataset
+from src.core.dataset import DatasetParams, build_dataset, drop_zero_variance_features
 from src.core.labels import LabelParams
 from src.core.model import TrainConfig
 from src.core.training import TrainingParams, run_training
@@ -40,18 +40,94 @@ def test_training_produces_model_and_report():
     assert report.holdout.n_test > 0
     assert len(report.folds) >= 1
     d = report.as_dict()
-    assert set(d) == {"passed", "reasons", "holdout", "folds"}
+    assert set(d) == {"passed", "reasons", "conditions", "holdout", "folds"}
     assert isinstance(d["passed"], bool)
 
 
-def test_gate_passes_on_a_blatant_trend_universe():
-    """A persistent up-trender vs a down-trender is as easy as it gets — the
-    gate must recognize it (this also pins the metric plumbing end-to-end)."""
+def interaction_universe(
+    n_symbols: int = 24, n_sessions: int = 640, seed: int = 11
+) -> dict[str, list]:
+    """A universe where the edge is an INTERACTION of two features.
+
+    Next-day drift is driven by (momentum rank − 0.5) × (0.5 − volatility rank):
+    high momentum pays when volatility is low and is punished when it is high.
+    No single feature's rank captures that, so a model can beat the baseline
+    (G2) — which a pure momentum universe cannot demonstrate, because there
+    `return_20d` alone IS the answer.
+    """
+    rng = np.random.default_rng(seed)
+    closes = {f"S{k:02d}": [100.0 * (1.0 + 0.02 * rng.standard_normal())] for k in range(n_symbols)}
+    names = list(closes)
+
+    for _ in range(n_sessions - 1):
+        momentum, vol = {}, {}
+        for name in names:
+            path = np.asarray(closes[name][-21:], dtype=float)
+            if len(path) < 21:
+                momentum[name], vol[name] = 0.0, 0.0
+                continue
+            rets = np.diff(np.log(path))
+            momentum[name] = float(path[-1] / path[0] - 1.0)
+            vol[name] = float(rets.std(ddof=1))
+
+        mom_rank = _rank01([momentum[n] for n in names])
+        vol_rank = _rank01([vol[n] for n in names])
+        for i, name in enumerate(names):
+            edge = (mom_rank[i] - 0.5) * (0.5 - vol_rank[i]) * 4.0  # in [-1, 1]
+            step = 0.004 * edge + 0.008 * rng.standard_normal()
+            closes[name].append(max(1.0, closes[name][-1] * (1.0 + step)))
+
+    return {name: make_bars(name, values) for name, values in closes.items()}
+
+
+def _rank01(values: list[float]) -> list[float]:
+    order = np.argsort(np.asarray(values), kind="mergesort")
+    ranks = np.empty(len(values), dtype=float)
+    ranks[order] = np.arange(len(values), dtype=float)
+    return list(ranks / max(1, len(values) - 1))
+
+
+WIDE = TrainingParams(
+    train_size=200,
+    test_size=63,
+    holdout_size=126,
+    val_size=40,
+    horizon=10,
+    embargo=2,
+    quantile=0.2,
+    model=TrainConfig(hidden=(32, 16), max_epochs=120, min_epochs=20, patience=10),
+)
+
+
+@pytest.mark.slow
+def test_the_gate_is_passable_end_to_end():
+    """The passability test — the one that says the gate is a filter and not a
+    permanent "no". A universe with a real, learnable cross-sectional edge must
+    clear all six conditions through the whole pipeline: dataset → purged
+    walk-forward → G0–G5. If this ever fails, the gate is unreachable and every
+    "gate FAILED" elsewhere becomes uninterpretable.
+    """
+    ds = build_dataset(
+        interaction_universe(), DatasetParams(label=LabelParams(), min_history=60, min_universe=20)
+    )
+    ds, _ = drop_zero_variance_features(ds)
+    _, report = run_training(ds, WIDE)
+    assert report.passed, report.reasons
+    assert report.outcome is not None
+    assert all(c.passed for c in report.outcome.conditions)
+
+
+def test_gate_recognizes_a_blatant_trend_but_not_on_three_names():
+    """The 3-symbol fixture produces a huge Sharpe and a perfect AUC, and still
+    must not pass: a Spearman IC over 3 names carries no evidence, and the
+    model's ranking cannot beat `return_20d` when both see the same 3 points.
+    Rejecting this is the gate working, not the gate misfiring."""
     ds = synthetic_dataset()
     _, report = run_training(ds, SMALL)
     assert report.holdout.portfolio.sharpe > 0.5
     assert report.holdout.auc > 0.55
-    assert report.passed, report.reasons
+    assert not report.passed
+    assert {r[:2] for r in report.reasons} == {"G1", "G2"}
 
 
 def test_diagnostics_show_the_edge_on_a_learnable_universe():
