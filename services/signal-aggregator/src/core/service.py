@@ -9,6 +9,7 @@ silent on HOLD, so without a TTL a stale BUY/SELL would resurface on every
 regime change).
 """
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -67,6 +68,7 @@ class SignalAggregatorService:
         signal_ttl_s: float = 86_400.0,
         clock: Callable[[], datetime] | None = None,
         company_client: CompanyClient | None = None,
+        join_window_s: float = 5.0,
     ) -> None:
         self._optimizer = optimizer
         self._cost = cost_filter
@@ -80,6 +82,14 @@ class SignalAggregatorService:
         self._buffer: dict[str, BufferedSignal] = {}
         self._ml_buffer: dict[str, BufferedMlSignal] = {}
         self._macro: SignalComponent | None = None
+        # N2: `features.ready` fans out to strategy AND ml-pipeline in parallel.
+        # The rule path is a comparison, the ML path is an inference, so strategy
+        # always arrives first. Publishing on every component meant risk-mgmt
+        # sized the strategy-only aggregate into an order, and then sized the
+        # ML-informed one into a SECOND order — doubling the position, with the
+        # ML vote never influencing anything. Wait a short window, decide once.
+        self._join_window_s = join_window_s
+        self._pending: dict[str, asyncio.Task[None]] = {}
 
     def weights(self) -> dict[str, float]:
         return self._optimizer.compute_weights()
@@ -89,6 +99,43 @@ class SignalAggregatorService:
         self._optimizer.record_outcome(source, daily_return)
 
     # --- live event handlers (NATS-driven) ---
+
+    async def schedule_decision(self, symbol: str) -> None:
+        """Coalesce the components of one decision, then aggregate once.
+
+        `features.ready` fans out to strategy and ml-pipeline in parallel; the
+        rule path is a comparison and the ML path an inference, so strategy
+        always wins the race. Aggregating on arrival therefore published a
+        strategy-only decision first and an ML-informed one moments later —
+        two decisions where the domain has one. Waiting a short window lets the
+        slower component join the same decision.
+
+        Concurrent components collapse into the pending decision; a window of 0
+        decides immediately (tests and the ops route).
+        """
+        if self._join_window_s <= 0:
+            await self.aggregate_symbol(symbol)
+            return
+        if symbol in self._pending:
+            return  # already scheduled — later components just enrich the buffer
+        self._pending[symbol] = asyncio.create_task(self._decide_after_window(symbol))
+
+    async def _decide_after_window(self, symbol: str) -> None:
+        try:
+            await asyncio.sleep(self._join_window_s)
+            await self.aggregate_symbol(symbol)
+        except asyncio.CancelledError:  # shutdown
+            raise
+        except Exception as exc:  # noqa: BLE001 - one symbol must not kill the loop
+            logger.warning("Deferred aggregation failed", symbol=symbol, error=str(exc))
+        finally:
+            self._pending.pop(symbol, None)
+
+    async def drain_pending(self) -> None:
+        """Await every scheduled decision — used on shutdown and in tests."""
+        tasks = list(self._pending.values())
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def handle_signal_generated(self, data: bytes) -> None:
         """A strategy (rule-based) signal → buffer it and re-aggregate its symbol.
@@ -108,7 +155,7 @@ class SignalAggregatorService:
             strategy_name=event.strategy_name,
             at=event.timestamp,
         )
-        await self.aggregate_symbol(event.symbol)
+        await self.schedule_decision(event.symbol)
 
     async def handle_ml_signal(self, data: bytes) -> None:
         """An ML vote (plan §8, activates R11) → buffer it, re-aggregate its symbol.
@@ -125,7 +172,7 @@ class SignalAggregatorService:
             model_id=event.model_id,
             at=event.timestamp,
         )
-        await self.aggregate_symbol(event.symbol)
+        await self.schedule_decision(event.symbol)
 
     async def handle_regime_changed(self, data: bytes) -> None:
         """A macro regime change → update the market-wide bias, re-aggregate all symbols."""
@@ -133,7 +180,7 @@ class SignalAggregatorService:
         self._macro = regime_to_component(event.new_regime)
         logger.info("Macro bias updated", regime=event.new_regime, bias=self._macro)
         for symbol in list(self._buffer):
-            await self.aggregate_symbol(symbol)
+            await self.schedule_decision(symbol)
 
     def _expired(self, entry: BufferedSignal | BufferedMlSignal) -> bool:
         return (self._clock() - entry.at).total_seconds() > self._ttl_s
@@ -246,6 +293,7 @@ class SignalAggregatorService:
             confidence=confidence,
             score=score,
             components_count=len(components),
+            components_present=[c.source for c in components],
             weights=weights,
             cost_filtered=cost_filtered,
             price=price if attach else None,
@@ -261,6 +309,7 @@ class SignalAggregatorService:
                 final_signal=result.final_signal,
                 confidence=result.confidence,
                 components_count=result.components_count,
+                components_present=result.components_present,
                 price=result.price,
                 stop_loss=result.stop_loss,
                 take_profit=result.take_profit,

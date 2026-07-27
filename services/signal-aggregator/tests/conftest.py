@@ -20,6 +20,10 @@ def build_service(publisher=None, sources=None, cost_filter=None, **kwargs):  # 
     from src.events.publisher import NullPublisher
 
     optimizer = AdaptiveWeightOptimizer(sources if sources is not None else SOURCES)
+    # Tests decide synchronously by default. Production waits `join_window_s` for
+    # the slower ML path before deciding once (N2); the tests that exercise that
+    # behaviour set the window explicitly.
+    kwargs.setdefault("join_window_s", 0.0)
     return SignalAggregatorService(
         optimizer,
         cost_filter or CostAwareFilter(),

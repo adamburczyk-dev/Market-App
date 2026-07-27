@@ -334,6 +334,11 @@ class SignalAggregatedEvent(BaseEvent):
     final_signal: str  # "BUY" | "SELL" | "HOLD"
     confidence: float
     components_count: int
+    # Which sources actually contributed. components_count alone cannot answer
+    # "is the ML vote reaching decisions at all" — and when a source is absent
+    # the weights renormalize over the rest, so its silence is invisible in the
+    # confidence. If ML participates in < 90% of decisions, something is broken.
+    components_present: list[str] = Field(default_factory=list)
     price: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None

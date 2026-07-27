@@ -247,12 +247,24 @@ def ml_event(
 
 @pytest.mark.asyncio
 async def test_ml_vote_joins_strategy_component():
+    """N2: strategy and ML arrive separately but produce ONE decision.
+
+    features.ready fans out to both services; the rule path always wins the
+    race. Emitting per component meant risk-mgmt sized the strategy-only
+    aggregate into an order and then sized the ML-informed one into a second
+    order — doubling the position while the ML vote changed nothing.
+    """
     publisher = NullPublisher()
-    service = build_service(publisher=publisher)
+    service = build_service(publisher=publisher, join_window_s=0.05)
     await service.handle_signal_generated(signal_event(side="BUY").model_dump_json().encode())
     await service.handle_ml_signal(ml_event(side="BUY", confidence=0.8).model_dump_json().encode())
+    assert publisher.published == [], "decided before the join window closed"
+    await service.drain_pending()
+
+    assert len(publisher.published) == 1, "one session must produce one decision"
     event = publisher.published[-1]
     assert event.components_count == 2  # strategy + ml
+    assert set(event.components_present) == {"strategy", "ml"}
     assert event.final_signal == "BUY"
     assert event.price == 100.0  # levels still come from the strategy component
 

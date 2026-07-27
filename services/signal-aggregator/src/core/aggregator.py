@@ -45,6 +45,7 @@ class AggregationResult:
     confidence: float
     score: float
     components_count: int
+    components_present: list[str] = field(default_factory=list)
     weights: dict[str, float] = field(default_factory=dict)
     cost_filtered: bool = False
     # order-driving context, attached when the aggregate is actionable (BUY/SELL)

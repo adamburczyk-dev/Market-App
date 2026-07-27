@@ -17,6 +17,7 @@ from trading_common.events import (
 )
 
 from src.core.circuit_breaker import CircuitBreaker
+from src.core.order_ledger import OrderLedger, session_of
 from src.core.portfolio import PortfolioState
 from src.core.repository import NullStateRepository, StateRepository
 from src.core.sizing import PositionSizer
@@ -33,12 +34,14 @@ class RiskMgmtService:
         breaker: CircuitBreaker,
         portfolio: PortfolioState,
         repository: StateRepository | None = None,
+        ledger: OrderLedger | None = None,
     ) -> None:
         self._publisher = publisher
         self._sizer = sizer
         self._breaker = breaker
         self._portfolio = portfolio
         self._repository = repository or NullStateRepository()
+        self._ledger = ledger or OrderLedger()
 
     async def restore(self) -> None:
         """Load persisted portfolio state and re-derive the circuit-breaker level."""
@@ -52,8 +55,14 @@ class RiskMgmtService:
             daily_loss_pct=snapshot.get("daily_loss_pct"),
             regime=snapshot.get("regime"),
         )
+        self._ledger.restore(snapshot.get("orders"))
         self._breaker.evaluate(self._portfolio.drawdown_pct, self._portfolio.daily_loss_pct)
         logger.info("Restored portfolio", level=self._breaker.level, **self._portfolio.as_dict())
+
+    def _snapshot(self) -> dict:
+        """Persisted state = portfolio + the order ledger (idempotency must survive
+        a restart; otherwise a redelivered aggregate re-opens the same position)."""
+        return {**self._portfolio.as_dict(), "orders": self._ledger.snapshot()}
 
     @property
     def portfolio(self) -> PortfolioState:
@@ -78,10 +87,25 @@ class RiskMgmtService:
     # --- signal processing ---
 
     async def process_aggregated(self, event: SignalAggregatedEvent) -> OrderRequestedEvent | None:
-        """Size the aggregator's decision into a risk-approved order, or block it."""
+        """Size the aggregator's decision into a risk-approved order, or block it.
+
+        Idempotent per (symbol, side, session): the aggregator re-publishes a
+        decision whenever a component arrives (a late ML vote, a regime change),
+        and re-sizing an already-acted-on BUY would double the position (N2).
+        """
         if event.final_signal not in ("BUY", "SELL"):
             return None
-        return await self._risk_check_and_order(
+        session = session_of(event.timestamp)
+        if self._ledger.already_placed(event.symbol, event.final_signal, session):
+            logger.info(
+                "Aggregate already acted on this session — no duplicate order",
+                symbol=event.symbol,
+                side=event.final_signal,
+                session=session,
+                components=event.components_present,
+            )
+            return None
+        order = await self._risk_check_and_order(
             symbol=event.symbol,
             side=event.final_signal,
             price=event.price,
@@ -90,9 +114,19 @@ class RiskMgmtService:
             strategy_name=event.strategy_name or "aggregated",
             sector=event.sector,
         )
+        if order is not None:
+            # Only a placed order is recorded: a blocked one (halt, sizing, sector
+            # cap) left no exposure, so a later component legitimately retries.
+            self._ledger.record(event.symbol, event.final_signal, session)
+            await self._repository.save(self._snapshot())
+        return order
 
     async def process_signal(self, signal: SignalGeneratedEvent) -> OrderRequestedEvent | None:
-        """Size a raw strategy signal (manual POST /signal path)."""
+        """Size a raw strategy signal (manual POST /signal path).
+
+        Deliberately NOT ledger-gated: this route is ops/testing only, and an
+        operator asking for an order twice means it twice.
+        """
         if signal.signal not in ("BUY", "SELL"):
             return None
         return await self._risk_check_and_order(
@@ -163,7 +197,7 @@ class RiskMgmtService:
         result = self._breaker.evaluate(
             self._portfolio.drawdown_pct, self._portfolio.daily_loss_pct
         )
-        await self._repository.save(self._portfolio.as_dict())
+        await self._repository.save(self._snapshot())
         if result.changed and result.level is not None:
             event = CircuitBreakerTriggeredEvent(
                 level=result.level,

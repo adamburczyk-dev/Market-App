@@ -488,6 +488,25 @@ class TestMlExtensionEvents:
         assert restored.take_profit == 110.0
         assert restored.strategy_name == "momentum_rank"
 
+    def test_signal_aggregated_names_its_components(self):
+        # components_count says "two sources agreed"; it cannot say WHICH. With
+        # weights renormalized over the sources present, a silent ML model is
+        # invisible in the confidence — the names are how that gets noticed.
+        e = SignalAggregatedEvent(
+            symbol="AAPL",
+            final_signal="BUY",
+            confidence=0.82,
+            components_count=2,
+            components_present=["strategy", "ml"],
+        )
+        restored = SignalAggregatedEvent.model_validate(e.model_dump())
+        assert restored.components_present == ["strategy", "ml"]
+        # legacy producers omit it → empty, never a crash
+        legacy = SignalAggregatedEvent(
+            symbol="AAPL", final_signal="HOLD", confidence=0.1, components_count=1
+        )
+        assert legacy.components_present == []
+
     def test_signal_aggregated_carries_sector(self):
         e = SignalAggregatedEvent(
             symbol="AAPL",

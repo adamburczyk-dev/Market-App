@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     BUY_THRESHOLD: float = 0.2  # weighted-score magnitude for BUY/SELL
     BASE_EDGE_BPS: float = 200.0  # confidence → expected edge for the cost gate
     SIGNAL_TTL_SECONDS: float = 86_400.0  # buffered strategy signals expire after 1 day
+    # N2: `features.ready` fans out to strategy and ml-pipeline in parallel and the
+    # rule path always wins the race, so a per-component decision published a
+    # strategy-only aggregate and then an ML-informed one. Wait this long for the
+    # slower component and decide once. 0 disables the wait (decide on arrival).
+    JOIN_WINDOW_SECONDS: float = 5.0
 
     # Sector enrichment for regime-aware sector caps (R8; HTTP query, graceful None)
     COMPANY_CLASSIFIER_URL: str = "http://company-classifier:8000"

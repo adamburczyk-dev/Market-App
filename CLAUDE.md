@@ -42,6 +42,9 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   **ML-0**: the pure feature/rank definitions moved here — `trading_common.features`
   (`compute_feature_vector`) + `trading_common.ranking` (`cross_sectional_rank`) — so ml-pipeline
   training reproduces feature-engine serving bit-for-bit (numpy is now a trading-common dependency).
+  **N1/N2**: `OrderIntent` (NEW/REDUCE/LIQUIDATE) on `OrderRequestedEvent` — halts block only NEW,
+  so a BLACK liquidation is never refused by the halt that preceded it; `SignalAggregatedEvent
+  .components_present` names the sources that actually contributed to a decision.
 - All 13 services functionally implemented (`/health` `/ready` `/metrics` green; no skeletons left).
 - Framework-supplement components: **none orphaned any more**. Wired: `decay_monitor`+`cost_filter`
   → strategy; `adaptive_weights` → signal-aggregator; `cost_filter` → trading-common;
@@ -102,7 +105,12 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   macro regime auto-drives the RegimeAllocator exposure caps (no manual push needed). **R8 closed**:
   `process_aggregated` passes the event's `sector` into `PositionSizer.size(..., sector=...)`, so the
   regime-aware **sector caps are live** (crisis/contraction allow only defensive sectors; `sector=None`
-  → gate skipped). Routes `/portfolio`, `/circuit-breaker`, `/signal`. 104 tests green; live-verified
+  → gate skipped). **N2 closed**: `process_aggregated` is **idempotent** per (symbol, side, session)
+  via `OrderLedger` (session = UTC date of the *event* timestamp; persisted inside the portfolio
+  snapshot; only an order that was actually published is recorded) — the aggregator re-decides on
+  every new component, risk-mgmt refuses to open the same position twice. Halts now block only
+  `intent=NEW`, so a BLACK liquidation is never trapped by the halt that preceded it (N1).
+  Routes `/portfolio`, `/circuit-breaker`, `/signal`. 114 tests green; live-verified
   (SignalAggregated → sized OrderRequested; breaker RED halts new orders; tripped breaker survives a
   restart via real Redis; a real `macro.regime_changed` event flips the regime → tightens the cap;
   crisis blocks an Information-Technology BUY by sector while expansion sizes it).
@@ -117,9 +125,14 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   persisted; save-before-publish ordering), **R4** long-only (SELL = exit: capped at held qty,
   skipped when flat — matches the long/flat backtest engine), **R5** protective exits (positions carry
   SL/TP; each re-mark checks levels and paper-exits on breach, publishing a second `OrderFilledEvent`).
+  **N1 closed**: a third durable subscriber on `risk.circuit_breaker` (RISK stream) makes BLACK an
+  **action** rather than an alert — `action_taken="flatten_all"` → `flatten_all()` closes every
+  position at its last mark, publishing a `liquidate-…` `OrderFilledEvent` per exit, then persists
+  and pushes the portfolio. Liquidation deliberately ignores the halts (`OrderIntent.LIQUIDATE`).
   Routes `/portfolio`, `/positions`, `/execute` (409 on duplicate/long-only violation); real `/ready`.
-  44 tests green; live-verified (OrderRequested → OrderFilled → portfolio fed back; broker state
-  survives a restart via real Redis; SL breach on re-mark exits the position).
+  48 tests green; live-verified (OrderRequested → OrderFilled → portfolio fed back; broker state
+  survives a restart via real Redis; SL breach on re-mark exits the position; a real BLACK event
+  empties the book).
 - `backtest` is now **functionally implemented** (Direction #2): wires the orphaned
   `continuous_validation` (`ContinuousWalkForward`, abstract) to a real **momentum backtest engine**
   (`core/engine.py`: numpy time-series long/flat momentum, no look-ahead, per-turn costs →
@@ -290,10 +303,19 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   **The "ml" source is LIVE (ML-2, closes R11 for real)**: a third durable subscriber
   (`signal-aggregator-ml`) on `ml.signal_generated` buffers the latest per-symbol ML vote (aged from
   the emit timestamp, same TTL); an ML vote joins the strategy component in aggregation but **never
-  aggregates alone** (strategy required — ML modulates strategy-led decisions). 80 tests; ruff +
+  aggregates alone** (strategy required — ML modulates strategy-led decisions). **N2 closed**:
+  components are **coalesced** in a `JOIN_WINDOW_SECONDS` window (5 s) instead of deciding per
+  arrival — `features.ready` fans out to strategy and ml-pipeline in parallel and the rule path
+  always wins the race, so one decision was being born twice; `schedule_decision` defers,
+  `drain_pending` flushes (also on shutdown). The window is a *coalescer*, not a once-per-session
+  lock: a later regime change or a fresh strategy signal legitimately re-decides, and the
+  anti-double-order guard is risk-mgmt's ledger. `SignalAggregatedEvent.components_present` names
+  the contributing sources (a silent source is invisible in `confidence`, since weights
+  renormalize). 86 tests; ruff +
   format + mypy clean; live-verified on a real `nats-server` (full chain: signal → aggregated
   BUY+levels → sized order → fill; crisis → re-aggregated HOLD → no order; sector enriched from a
-  real uvicorn company-classifier over HTTP; ML vote → 2-component re-aggregation).
+  real uvicorn company-classifier over HTTP; ML vote → 2-component re-aggregation; ML inside the
+  window → ONE decision, ML after it → two decisions but still one order).
   **This closes the full 13-service architecture.**
 
 **Direction (where the project should go, in order):**
@@ -1031,6 +1053,37 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   zgodność horyzontów, NIE odzysk kosztów — korekta §2.4 audytu stoi (dryf kosztowy realnego biegu
   to 0.14 jedn. Sharpe'a, nie 0.6).
 
+- 2026-07-27 — **N1 + N2 zamknięte** (dwa błędy poprawności z własnego audytu, oba niezależne od
+  ML). **N1 — „DD > 15% → flatten all" była alertem, nie akcją**: `CircuitBreakerTriggeredEvent
+  (action_taken="flatten_all")` konsumowało wyłącznie `notification`, więc BLACK nie zamykał ani
+  jednej pozycji. Contracts-first: nowy `OrderIntent` (NEW/REDUCE/LIQUIDATE) + `OrderRequestedEvent
+  .intent` — halt blokuje **tylko** `intent=NEW`, bo odmowa zamknięcia w obsunięciu byłaby
+  dokładnym odwróceniem sensu bezpiecznika (błąd ujawniłby się wyłącznie w najgorszym dniu roku).
+  `execution` subskrybuje `risk.circuit_breaker` (durable `execution-circuit-breaker`, stream RISK)
+  → `flatten_all()` zamyka każdą pozycję po ostatnim marku, publikuje `OrderFilledEvent`
+  (`order_id="liquidate-…"`), zapisuje snapshot i przepycha metryki do risk-mgmt. **N2 — podwójne
+  zlecenia po pierwszej promocji modelu**: `features.ready` rozchodzi się równolegle do strategii i
+  ml-pipeline, ścieżka regułowa (porównanie) zawsze wygrywa z inferencją, więc agregator publikował
+  decyzję samą-strategią, a chwilę później decyzję z ML — risk-mgmt sizował obie i **podwajał
+  pozycję**, przy czym głos ML nie wpływał na nic. Pierwsza implementacja („emisja dokładnie raz na
+  symbol/sesję") **wywróciła 6 testów i miały one rację**: zmiana reżimu makro to nowa informacja,
+  której nie wolno zamrozić do końca dnia. Właściwy podział: **agregator scala** komponenty w oknie
+  `JOIN_WINDOW_SECONDS` (5 s, `schedule_decision`/`drain_pending`, drenaż w lifespanie), a
+  **risk-mgmt jest idempotentny** — `OrderLedger` per (symbol, strona, sesja z *emit timestamp*),
+  utrwalany razem ze snapshotem portfela, więc spóźniony komponent, redelivery durable'a ani
+  restart nie otworzą pozycji drugi raz; rejestr zapisuje **tylko faktycznie wystawione** zlecenie
+  (odrzucone przez halt/sizing/limit sektorowy nie zostawiło ekspozycji → wolno spróbować
+  ponownie), `POST /signal` (ops) świadomie go pomija. `SignalAggregatedEvent.components_present`
+  (contracts-first) mówi, **które** źródła weszły do decyzji — sam `components_count` nie odpowiada
+  na pytanie „czy ML w ogóle dociera", bo przy nieobecnym źródle wagi się renormalizują i cisza jest
+  niewidoczna w confidence. Liczniki: shared 183 (+2), execution 48 (+4), risk-mgmt 114 (+10),
+  signal-aggregator 86 (+6) → **bateria 892**; ruff + format + mypy czyste. **Zweryfikowane na
+  żywo na realnym `nats-server`**: (N1) 2 pozycje → BLACK → książka pusta, 2 likwidacyjne
+  `order.filled` w streamie ORDERS; (N2) realny agregator + realny risk-mgmt: ML w oknie → **jedna**
+  decyzja MSFT z dwoma komponentami i jedno zlecenie; ML po oknie → **dwie** decyzje AAPL
+  (druga wzbogacona o ML), ale nadal **jedno** zlecenie. Kontrola anty-szczęściowa: z wyłączonym
+  rejestrem ta sama sekwencja daje 2 zlecenia (odtworzony błąd sprzed poprawki).
+
 **Next:** plan przestawiony po audycie zewnętrznym — **`docs/backlog_2026_07_27.md` jest teraz
 listą roboczą** (audyt + moja weryfikacja jego twierdzeń + 2 znaleziska własne). Reguła nadrzędna:
 **żadnego kolejnego treningu przed zamknięciem całego Tier 0** — pierwszy bieg nie tyle pokazał
@@ -1044,12 +1097,11 @@ Kolejność:
    przed/po kalibracji, temperatura); T0-5 metryki relatywne (IC/ICIR, benchmark EW, long-short,
    gross/net, baseline'y) — **to jest sedno naprawy pomiaru**; T0-4 nakładające się transze `1/h`;
    T0-7 duplikat `momentum_20`; T0-6 `min_universe` → 20.
-2. ← **TERAZ: dwa błędy poprawności** (znaleziska własne, niezależne od ML): **N1** — BLACK publikuje
-   `action="flatten_all"`, ale **nikt tego nie konsumuje poza notification**, więc reguła
-   „DD > 15% → zamknij pozycje" jest dziś alertem, nie akcją; **N2** — agregator publikuje
-   `signal.aggregated` przy KAŻDYM komponencie, a risk-mgmt nie deduplikuje, więc po pierwszej
-   promocji modelu ML dołoży drugie zlecenie i **podwoi pozycję**.
-3. **Rerun treningu na starych danych** z pełną diagnostyką → dopiero to rozstrzygnie
+2. ✅ **N1 + N2 ZAMKNIĘTE 2026-07-27** (szczegóły w logu wyżej): **N1** — `execution` konsumuje
+   `risk.circuit_breaker` i BLACK realnie zamyka książkę (`OrderIntent.LIQUIDATE` omija halt);
+   **N2** — agregator scala komponenty w oknie 5 s, a risk-mgmt jest idempotentny per
+   (symbol, strona, sesja), więc spóźniony głos ML nie podwaja pozycji.
+3. ← **TERAZ: rerun treningu na starych danych** z pełną diagnostyką → dopiero to rozstrzygnie
    „niedouczenie vs brak sygnału". Jeśli `auc_train ≈ 0.5` — problem jest w optymalizacji i
    rozszerzanie danych niczego nie naprawi.
 4. **Tier 1**: uniwersum 200–500 point-in-time (survivorship!), historia od 2005, nowa bramka

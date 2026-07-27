@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         base_edge_bps=settings.BASE_EDGE_BPS,
         signal_ttl_s=settings.SIGNAL_TTL_SECONDS,
         company_client=company_client,
+        join_window_s=settings.JOIN_WINDOW_SECONDS,
     )
     app.state.service = service
 
@@ -100,6 +101,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
     for sub in subscribers:
         await sub.stop()
+    # Publish decisions still inside their join window before the connection goes.
+    with suppress(Exception):
+        await service.drain_pending()
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()
