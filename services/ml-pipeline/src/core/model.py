@@ -7,6 +7,7 @@ the validation fold is part of the model, not an afterthought.
 """
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import structlog
@@ -57,6 +58,10 @@ class TrainedModel:
     feature_names: list[str]
     config: TrainConfig
     history: dict[str, float] = field(default_factory=dict)
+    # T0-3: what happened during the fit. Needed to tell "the model could not
+    # learn" from "there was nothing to learn" — the two produce identical
+    # out-of-sample metrics but demand opposite responses.
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         """Calibrated P(up-barrier-first) for a (n, n_features) matrix."""
@@ -115,8 +120,11 @@ def train_classifier(
     best_state = {k: v.clone() for k, v in model.state_dict().items()}
     best_epoch = 0
     since_best = 0
+    epochs_run = 0
+    early_stop_reason = "max_epochs"
 
     for epoch in range(cfg.max_epochs):
+        epochs_run = epoch + 1
         model.train()
         permutation = torch.randperm(len(xt))
         for start in range(0, len(xt), cfg.batch_size):
@@ -137,14 +145,23 @@ def train_classifier(
         else:
             since_best += 1
             if epoch + 1 >= cfg.min_epochs and since_best >= cfg.patience:
+                early_stop_reason = "patience"
                 break
 
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
-        temperature = _fit_temperature(model(xv), yv)
-    if not (0.05 <= temperature <= 20.0):  # degenerate calibration → identity
-        temperature = 1.0
+        val_logits = model(xv)
+        temperature = _fit_temperature(val_logits, yv)
+        if not (0.05 <= temperature <= 20.0):  # degenerate calibration → identity
+            temperature = 1.0
+        # A collapsed model and a correctly-humbled one look identical AFTER
+        # calibration: when validation AUC is ~0.5 the optimal temperature grows
+        # and flattens every probability onto the base rate. Separating the two
+        # requires the spread BEFORE calibration and the temperature itself.
+        pred_std_pre = float(torch.sigmoid(val_logits).std().item())
+        pred_std_post = float(torch.sigmoid(val_logits / temperature).std().item())
+        train_loss = float(loss_fn(model(xt), yt).item())
 
     logger.info(
         "Classifier trained",
@@ -160,4 +177,16 @@ def train_classifier(
         feature_names=list(feature_names),
         config=cfg,
         history={"best_val_loss": best_val, "epochs": float(best_epoch + 1)},
+        diagnostics={
+            "epochs_run": epochs_run,
+            "best_epoch": best_epoch + 1,
+            "early_stop_reason": early_stop_reason,
+            "loss_train_final": round(train_loss, 6),
+            "loss_val_final": round(best_val, 6),
+            "calibration_temperature": round(temperature, 4),
+            "pred_std_pre_calibration": round(pred_std_pre, 6),
+            "pred_std_post_calibration": round(pred_std_post, 6),
+            "n_train_rows": int(len(xt)),
+            "n_val_rows": int(len(xv)),
+        },
     )

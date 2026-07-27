@@ -10,6 +10,7 @@ compare current feature/prediction distributions against a model's registered
 baseline and publish ModelDriftDetectedEvent when the verdict is actionable.
 """
 
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
@@ -25,6 +26,7 @@ from src.core.dataset import (
     build_dataset,
     drop_zero_variance_features,
 )
+from src.core.evaluation import effective_sample_size
 from src.core.inference_log import InferenceLog
 from src.core.market_data_client import MarketDataClient
 from src.core.model_store import MlflowModelStore
@@ -233,7 +235,8 @@ class MLPipelineService:
         # A truncated history or a thin cross-section produces a model that
         # looks trained and means nothing; refuse instead of reporting success.
         contract = self._contract.validate(dataset, requested_sessions=requested_sessions)
-        model, report = run_training(dataset, params)
+        params_used = params or TrainingParams()
+        model, report = run_training(dataset, params_used)
 
         version: str | None = None
         if self._store is not None:
@@ -266,6 +269,11 @@ class MLPipelineService:
             "dataset": _dataset_diagnostics(dataset, symbols),
             "dropped_zero_variance": dropped_features,
             "data_contract": contract,
+            "effective_sample_size": asdict(
+                effective_sample_size(
+                    dataset.dates, dataset.symbols, dataset.next_returns, params_used.horizon
+                )
+            ),
             "gate": report.as_dict(),
         }
 

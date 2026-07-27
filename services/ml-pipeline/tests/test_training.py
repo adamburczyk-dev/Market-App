@@ -88,3 +88,65 @@ def test_gate_fails_on_noise():
     _, report = run_training(ds, SMALL)
     assert not report.passed, "pure noise cleared the activation gate"
     assert report.reasons
+
+
+def test_report_separates_underfitting_from_absent_signal():
+    """T0-3: the report must answer the question the first real run could not.
+
+    auc_train ~ 0.5           -> optimisation problem (capacity / lr / epochs)
+    auc_train high, auc ~ 0.5 -> overfit; no signal in the features
+    both ~ 0.5 and T >> 1     -> no signal, and calibration correctly gave up
+
+    The last case is why the raw spread matters: temperature scaling flattens
+    every probability onto the base rate when validation AUC is ~0.5, so
+    pred_std AFTER calibration cannot distinguish a collapsed model from a
+    humbled one.
+    """
+    ds = synthetic_dataset()
+    _, report = run_training(ds, SMALL)
+    row = report.as_dict()["holdout"]
+
+    for field_name in (
+        "auc_train",
+        "epochs_run",
+        "best_epoch",
+        "early_stop_reason",
+        "loss_train_final",
+        "loss_val_final",
+        "calibration_temperature",
+        "pred_std_pre_calibration",
+        "pred_std_post_calibration",
+    ):
+        assert field_name in row, f"missing diagnostic: {field_name}"
+
+    assert row["early_stop_reason"] in ("patience", "max_epochs")
+    assert row["epochs_run"] >= row["best_epoch"]
+    assert row["calibration_temperature"] > 0
+    # on a learnable universe the model does fit its training window
+    assert row["auc_train"] > 0.6
+
+
+def test_calibration_can_hide_a_collapsed_model():
+    """Pin the mechanism the audit identified: on unlearnable data the fitted
+    temperature grows and squeezes the post-calibration spread, so only the
+    pre-calibration spread reveals what the network actually produced."""
+    universe = {f"N{k}": make_bars(f"N{k}", random_walk(220, seed=100 + k)) for k in range(3)}
+    ds = build_dataset(universe, DatasetParams(label=LabelParams(), min_history=60, min_universe=2))
+    _, report = run_training(ds, SMALL)
+    row = report.as_dict()["holdout"]
+    assert row["pred_std_pre_calibration"] >= row["pred_std_post_calibration"] or (
+        row["calibration_temperature"] < 1.0
+    )
+
+
+def test_effective_sample_size_shrinks_for_overlapping_correlated_data():
+    """T0-3: 48 827 rows is a nominal count. Overlapping labels divide the time
+    axis by the horizon; correlated names divide the cross-section."""
+    from src.core.evaluation import effective_sample_size
+
+    ds = synthetic_dataset()
+    ess = effective_sample_size(ds.dates, ds.symbols, ds.next_returns, horizon=10)
+    assert ess.n_samples == ds.n_samples
+    assert ess.n_effective_samples < ess.n_samples  # always, by construction
+    assert ess.n_independent_periods == pytest.approx(ess.n_sessions / 10, abs=0.1)
+    assert 0 < ess.n_symbols_effective <= ess.n_symbols

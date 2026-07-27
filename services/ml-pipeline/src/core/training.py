@@ -11,6 +11,7 @@ than the base rate). Only a gate-passing model may serve non-HOLD signals.
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 import structlog
@@ -53,6 +54,12 @@ class FoldReport:
     brier: float
     portfolio: PortfolioResult
     diagnostics: SelectionDiagnostics
+    # T0-3: AUC on the window the model was FITTED on, plus what the fit itself
+    # did. auc_train ~ 0.5 means the model could not learn; auc_train high with
+    # auc ~ 0.5 means it memorised. The out-of-sample numbers look identical in
+    # both cases, and the responses are opposite.
+    auc_train: float = 0.5
+    fit: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -83,6 +90,9 @@ class GateReport:
                 "pred_std": round(f.diagnostics.pred_std, 4),
                 "pred_p10": round(f.diagnostics.pred_p10, 4),
                 "pred_p90": round(f.diagnostics.pred_p90, 4),
+                # underfit-vs-no-signal diagnostics (T0-3)
+                "auc_train": round(f.auc_train, 4),
+                **f.fit,
             }
 
         return {
@@ -129,6 +139,7 @@ def _score(
     name: str,
     n_train: int,
     params: TrainingParams,
+    fit_dates: set[datetime] | None = None,
 ) -> FoldReport:
     mask = _mask(ds.dates, test_dates)
     probs = model.predict_proba(ds.x[mask])
@@ -141,6 +152,11 @@ def _score(
         quantile=params.quantile,
         cost_bps=params.cost_bps,
     )
+    auc_train = 0.5
+    if fit_dates:
+        fit_mask = _mask(ds.dates, fit_dates)
+        if fit_mask.sum() > 0:
+            auc_train = auc(ds.y[fit_mask], model.predict_proba(ds.x[fit_mask]))
     return FoldReport(
         name=name,
         n_train=n_train,
@@ -149,6 +165,8 @@ def _score(
         brier=brier(ds.y[mask], probs),
         portfolio=portfolio,
         diagnostics=selection_diagnostics(dates, ds.y[mask], probs, quantile=params.quantile),
+        auc_train=auc_train,
+        fit=dict(model.diagnostics),
     )
 
 
@@ -181,7 +199,15 @@ def run_training(
             logger.warning("Fold skipped — untrainable window", fold=k)
             continue
         fold_reports.append(
-            _score(ds, model, set(fold.test_dates), f"fold_{k}", len(fold.train_dates), p)
+            _score(
+                ds,
+                model,
+                set(fold.test_dates),
+                f"fold_{k}",
+                len(fold.train_dates),
+                p,
+                fit_dates=set(fold.train_dates),
+            )
         )
 
     # Holdout model: trained on everything BEFORE the holdout, purged at the seam.
@@ -190,7 +216,15 @@ def run_training(
     holdout_model = _fit_on_dates(ds, holdout_train, p)
     if holdout_model is None:
         raise ValueError("holdout window is untrainable (too small or single-class)")
-    holdout_report = _score(ds, holdout_model, set(holdout), "holdout", len(holdout_train), p)
+    holdout_report = _score(
+        ds,
+        holdout_model,
+        set(holdout),
+        "holdout",
+        len(holdout_train),
+        p,
+        fit_dates=set(holdout_train),
+    )
 
     reasons: list[str] = []
     if holdout_report.portfolio.sharpe <= p.gate_sharpe:

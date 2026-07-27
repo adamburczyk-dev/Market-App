@@ -162,3 +162,70 @@ def top_quantile_portfolio(
         avg_positions=float(np.mean(position_counts)),
         avg_turnover=float(np.mean(turnovers)),
     )
+
+
+@dataclass(frozen=True)
+class EffectiveSampleSize:
+    """How much independent information the dataset really carries.
+
+    48 827 rows is a nominal count. Labels span `horizon` sessions, so
+    consecutive rows for one symbol overlap almost entirely, and large caps
+    move together, so names are not independent draws either. Both shrinkages
+    are measured here rather than assumed: the time axis divides by the
+    horizon, the cross-section divides by the average pairwise correlation via
+    the standard effective-breadth formula N / (1 + (N-1)·rho).
+
+    Read it against the feature count: below ~50 observations per feature,
+    financial datasets do not support reliable inference.
+    """
+
+    n_samples: int
+    n_sessions: int
+    n_symbols: int
+    avg_pairwise_correlation: float
+    n_symbols_effective: float
+    n_independent_periods: float
+    n_effective_samples: float
+
+
+def effective_sample_size(
+    dates: list[datetime],
+    symbols: list[str],
+    next_returns: np.ndarray,
+    horizon: int,
+) -> EffectiveSampleSize:
+    """Measure independent information content (T0-3)."""
+    n_samples = len(dates)
+    sessions = sorted(set(dates))
+    names = sorted(set(symbols))
+    if n_samples == 0 or not sessions:
+        return EffectiveSampleSize(0, 0, 0, 0.0, 0.0, 0.0, 0.0)
+
+    # pivot returns into (session x symbol); gaps stay NaN
+    row_of = {d: i for i, d in enumerate(sessions)}
+    col_of = {s: j for j, s in enumerate(names)}
+    matrix = np.full((len(sessions), len(names)), np.nan)
+    for date, symbol, ret in zip(dates, symbols, next_returns, strict=True):
+        matrix[row_of[date], col_of[symbol]] = ret
+
+    correlations: list[float] = []
+    for a in range(len(names)):
+        for b in range(a + 1, len(names)):
+            pair = matrix[:, [a, b]]
+            usable = pair[~np.isnan(pair).any(axis=1)]
+            if len(usable) > 30 and usable[:, 0].std() > 0 and usable[:, 1].std() > 0:
+                correlations.append(float(np.corrcoef(usable[:, 0], usable[:, 1])[0, 1]))
+    rho = float(np.mean(correlations)) if correlations else 0.0
+
+    n = len(names)
+    effective_names = n / (1.0 + (n - 1) * rho) if n > 1 and rho > 0 else float(n)
+    independent_periods = len(sessions) / horizon if horizon > 0 else float(len(sessions))
+    return EffectiveSampleSize(
+        n_samples=n_samples,
+        n_sessions=len(sessions),
+        n_symbols=n,
+        avg_pairwise_correlation=round(rho, 4),
+        n_symbols_effective=round(effective_names, 2),
+        n_independent_periods=round(independent_periods, 1),
+        n_effective_samples=round(independent_periods * effective_names, 1),
+    )
