@@ -64,6 +64,10 @@ def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
         feats["return_5d"] = float(closes[-1] / closes[-6] - 1.0)
     if n >= 21:
         feats["return_20d"] = float(closes[-1] / closes[-21] - 1.0)
+        # DEPRECATED alias of return_20d, kept only because the strategy rule still
+        # reads this name (T1-4 replaces it with momentum_12_1). It is perfectly
+        # collinear with return_20d, so the ML dataset EXCLUDES it — two identical
+        # columns are a duplicated vote, not two features.
         feats["momentum_20"] = feats["return_20d"]
 
     for window in (10, 20, 50):

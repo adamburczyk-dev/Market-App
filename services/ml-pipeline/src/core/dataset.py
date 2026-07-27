@@ -26,8 +26,13 @@ from src.core.labels import BarrierOutcome, LabelParams, triple_barrier_label
 
 logger = structlog.get_logger()
 
-# Absolute-level features whose cross-sectional rank is a price-level proxy.
-EXCLUDED_FEATURES: frozenset[str] = frozenset({"close", "sma_10", "sma_20", "sma_50"})
+# Excluded from the model input:
+#  - absolute-level features, whose cross-sectional rank proxies price level, not signal
+#  - momentum_20, a deprecated alias of return_20d (identical column — perfect
+#    collinearity gives the same information twice and inflates its influence)
+EXCLUDED_FEATURES: frozenset[str] = frozenset(
+    {"close", "sma_10", "sma_20", "sma_50", "momentum_20"}
+)
 
 REGIMES = ("expansion", "recovery", "slowdown", "contraction", "crisis")
 

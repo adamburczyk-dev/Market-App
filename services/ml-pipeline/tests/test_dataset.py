@@ -55,14 +55,15 @@ def test_dataset_shapes_and_ranges():
 def test_level_features_excluded():
     ds = build_dataset(universe(), PARAMS)
     assert not set(ds.feature_names) & EXCLUDED_FEATURES
-    assert "momentum_20" in ds.feature_names  # scale-free signal stays
+    assert "return_20d" in ds.feature_names  # scale-free signal stays
+    assert "momentum_20" not in ds.feature_names  # deprecated alias, T0-7
 
 
 def test_trend_separation_is_learnable():
     """The uptrender's momentum rank should be high where its label is 1 far
     more often than the downtrender's — the dataset must encode the signal."""
     ds = build_dataset(universe(), PARAMS)
-    momentum = ds.feature_names.index("momentum_20")
+    momentum = ds.feature_names.index("return_20d")
     up_rows = [i for i, s in enumerate(ds.symbols) if s == "UP"]
     down_rows = [i for i, s in enumerate(ds.symbols) if s == "DOWN"]
     assert ds.x[up_rows, momentum].mean() > 0.7
@@ -110,8 +111,8 @@ def test_unknown_regime_is_all_zeros():
 
 
 def test_fixed_feature_names_fill_missing_with_neutral_rank():
-    ds = build_dataset(universe(), PARAMS, feature_names=["momentum_20", "f_score"])
-    assert ds.feature_names == ["momentum_20", "f_score"]
+    ds = build_dataset(universe(), PARAMS, feature_names=["return_20d", "f_score"])
+    assert ds.feature_names == ["return_20d", "f_score"]
     f_score = ds.feature_names.index("f_score")
     assert np.all(ds.x[:, f_score] == 0.5)  # attribute absent → neutral rank
 
@@ -127,3 +128,36 @@ def test_determinism():
     assert a.feature_names == b.feature_names
     assert np.array_equal(a.x, b.x)
     assert np.array_equal(a.y, b.y)
+
+
+def test_no_duplicate_feature_columns():
+    """T0-7: compare columns, not names.
+
+    `momentum_20` is a literal alias of `return_20d`; feeding both to the model
+    is the same information twice, which silently doubles that feature's weight.
+
+    Needs a wide cross-section: over 3 symbols the percentile ranks of unrelated
+    features collapse onto the same {0, 0.5, 1} pattern, so identical columns
+    there are a small-sample artefact, not duplication. Constant columns (the
+    macro one-hots, all zero without regime history) are excluded here — that is
+    T0-2's subject.
+    """
+    rng = np.random.default_rng(11)
+    universe = {
+        f"S{k}": make_bars(
+            f"S{k}", [float(v) for v in 100 * np.cumprod(1 + rng.normal(0.0004, 0.012, 200))]
+        )
+        for k in range(25)
+    }
+    ds = build_dataset(universe, DatasetParams(min_universe=2))
+    assert "momentum_20" not in ds.feature_names
+    assert "return_20d" in ds.feature_names
+
+    varying = [i for i in range(ds.x.shape[1]) if ds.x[:, i].std() > 0]
+    duplicates = [
+        (ds.feature_names[i], ds.feature_names[j])
+        for a, i in enumerate(varying)
+        for j in varying[a + 1 :]
+        if np.array_equal(ds.x[:, i], ds.x[:, j])
+    ]
+    assert not duplicates, f"identical feature columns: {duplicates}"
