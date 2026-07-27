@@ -18,7 +18,12 @@ import structlog
 from trading_common.events import ModelDriftDetectedEvent
 from trading_common.schemas import Interval
 
-from src.core.dataset import Dataset, DatasetParams, build_dataset
+from src.core.dataset import (
+    Dataset,
+    DatasetParams,
+    build_dataset,
+    drop_zero_variance_features,
+)
 from src.core.inference_log import InferenceLog
 from src.core.market_data_client import MarketDataClient
 from src.core.model_store import MlflowModelStore
@@ -202,6 +207,9 @@ class MLPipelineService:
         (a failed gate is a result worth keeping); promotion stays manual.
         """
         dataset = await self.build_training_dataset(symbols, interval, limit)
+        # T0-2: constant columns leave the feature contract before training, so
+        # the model never learns a schema that serving cannot reproduce.
+        dataset, dropped_features = drop_zero_variance_features(dataset)
         model, report = run_training(dataset, params)
 
         version: str | None = None
@@ -233,6 +241,7 @@ class MLPipelineService:
             "samples": dataset.n_samples,
             "features": dataset.feature_names,
             "dataset": _dataset_diagnostics(dataset, symbols),
+            "dropped_zero_variance": dropped_features,
             "gate": report.as_dict(),
         }
 

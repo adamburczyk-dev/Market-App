@@ -5,7 +5,12 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 from trading_common.schemas import Interval, OHLCVBar
 
-from src.core.dataset import EXCLUDED_FEATURES, DatasetParams, build_dataset
+from src.core.dataset import (
+    EXCLUDED_FEATURES,
+    DatasetParams,
+    build_dataset,
+    drop_zero_variance_features,
+)
 from src.core.labels import LabelParams
 
 START = datetime(2024, 1, 1, tzinfo=UTC)
@@ -161,3 +166,37 @@ def test_no_duplicate_feature_columns():
         if np.array_equal(ds.x[:, i], ds.x[:, j])
     ]
     assert not duplicates, f"identical feature columns: {duplicates}"
+
+
+def test_zero_variance_features_dropped_from_contract():
+    """T0-2: constant columns must LEAVE the feature contract, not be zeroed.
+
+    The macro one-hots are all-zero in training (no regime history is passed)
+    while serving sets one of them to 1.0. Keeping them in `feature_names`
+    means the served row carries a pattern the model never saw — a live
+    train/serve mismatch, not merely wasted capacity.
+    """
+    ds = build_dataset(universe(), PARAMS)
+    macro = [n for n in ds.feature_names if n.startswith("macro_")]
+    assert macro, "precondition: the raw dataset still carries the one-hots"
+
+    cleaned, dropped = drop_zero_variance_features(ds)
+    # every macro column goes; the fixture also gives all symbols an identical
+    # volume series, so volume_ratio is constant here too and rightly follows
+    assert set(macro) <= set(dropped)
+    assert not [n for n in cleaned.feature_names if n.startswith("macro_")]
+    assert cleaned.x.shape == (ds.n_samples, len(cleaned.feature_names))
+    assert cleaned.x.shape[1] == ds.x.shape[1] - len(dropped)
+    # rows, labels and alignment are untouched — only columns go
+    assert np.array_equal(cleaned.y, ds.y)
+    assert cleaned.dates == ds.dates
+
+
+def test_zero_variance_drop_keeps_informative_columns():
+    regimes = {START + timedelta(days=i): "crisis" if i % 2 else "expansion" for i in range(120)}
+    ds = build_dataset(universe(), PARAMS, regime_by_date=regimes)
+    cleaned, dropped = drop_zero_variance_features(ds)
+    # crisis/expansion alternate → they carry variance and must survive
+    assert "macro_crisis" in cleaned.feature_names
+    assert "macro_expansion" in cleaned.feature_names
+    assert "macro_slowdown" in dropped  # never occurs → constant zero

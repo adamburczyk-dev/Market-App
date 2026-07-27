@@ -36,6 +36,10 @@ EXCLUDED_FEATURES: frozenset[str] = frozenset(
 
 REGIMES = ("expansion", "recovery", "slowdown", "contraction", "crisis")
 
+# Below this variance a column carries no information and is dropped from the
+# model contract (T0-2). Ranks live in [0, 1], so this is far below any real signal.
+MIN_FEATURE_VARIANCE = 1e-6
+
 
 @dataclass(frozen=True)
 class DatasetParams:
@@ -57,6 +61,44 @@ class Dataset:
     @property
     def n_samples(self) -> int:
         return int(self.x.shape[0])
+
+
+def drop_zero_variance_features(
+    dataset: Dataset, min_variance: float = MIN_FEATURE_VARIANCE
+) -> tuple[Dataset, list[str]]:
+    """Remove constant columns from the model input (T0-2). Returns (dataset, dropped).
+
+    A constant column teaches nothing, but it is worse than useless here: the
+    macro one-hots are all-zero in training (no regime history is passed) while
+    serving sets one of them to 1.0, so the model would meet an input pattern
+    it never saw while learning. Until the regime history exists, these columns
+    must LEAVE the feature contract rather than be silently zeroed — the served
+    row is assembled from ``feature_names``, so dropping them here keeps
+    training and serving on the same schema.
+    """
+    if dataset.n_samples == 0:
+        return dataset, []
+    variances = dataset.x.var(axis=0)
+    keep = [i for i, v in enumerate(variances) if v > min_variance]
+    dropped = [dataset.feature_names[i] for i, v in enumerate(variances) if v <= min_variance]
+    if not dropped:
+        return dataset, []
+    logger.info(
+        "Dropped zero-variance features",
+        dropped=dropped,
+        kept=len(keep),
+    )
+    return (
+        Dataset(
+            x=dataset.x[:, keep],
+            y=dataset.y,
+            next_returns=dataset.next_returns,
+            dates=dataset.dates,
+            symbols=dataset.symbols,
+            feature_names=[dataset.feature_names[i] for i in keep],
+        ),
+        dropped,
+    )
 
 
 def _regime_one_hot(regime: str | None) -> dict[str, float]:
