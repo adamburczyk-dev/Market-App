@@ -981,13 +981,58 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `/ready` ml-pipeline raportuje teraz `model_registry` (nie bramkuje gotowości — degradacja ma być
   WIDOCZNA), a skrypt bootstrapu głośno ostrzega przy `version: null`.
 
-**Next:** **run the real bootstrap** on a Docker-capable machine: `make up` →
-`make bootstrap-universe ARGS="--train --report-out reports/first-training.json"` → share that
-JSON for review → if the gate passed, promote (curl printed by the script; serving hot-reloads) →
-the paper loop runs with a live ML vote and the daily monitor watching it. Then: deeper
-persistence (event-log/DB; pull/queue-group consumers for multi-replica HA); notification digest
-(scheduler-driven, now trivial via `PeriodicTask`); v2 ML items from the plan (meta-labeling,
-GBDT challenger, per-style stacks once universe ≥ 200).
+- 2026-07-27 — **Audyt zewnętrzny przyjęty, plan przestawiony** (`docs/backlog_2026_07_27.md`).
+  Audyt prosił o weryfikację swoich twierdzeń przed wdrożeniem, więc sprawdziłem je na kodzie i na
+  danych z realnego biegu. **Potwierdzone:** (F2) triple barrier zdegenerowany — uruchomienie
+  realnego `triple_barrier_label` na GBM daje przy `pt=sl=2.0` **90.8% rozstrzygnięć na barierze
+  pionowej** (przy 1.0 → 46.3%, czyli rekomendowane 50–60% na barierach poziomych); (F5) cechy
+  makro to zera w treningu (`build_dataset` bez `regime_by_date`) i jedynki w serwowaniu —
+  **żywy rozjazd trening/serwowanie**, nie „zmarnowana pojemność"; (F1) SE(Sharpe) ≈ 2.0 na
+  63 sesjach — tabela foldów jest nieodróżnialna od zera; `momentum_20` to dosłowny duplikat
+  `return_20d`. **Skorygowane:** §2.4 audytu liczy koszt obrotu przy założeniu ~100% obrotu
+  dziennego, a nasz raport go **mierzy** — 26%, czyli dryf kosztowy 0.14 jedn. Sharpe'a (13% wyniku),
+  nie 0.6 („ponad połowa"); brutto ≈ −0.93, więc teza „to koszty, nie ujemna przewaga" nie broni
+  się. FLOW-2: jednostki filtra kosztów **są** spójne (jawna konwersja `confidence × base_edge_bps`),
+  problemem jest arbitralna stała 200 bps, nie brak konwersji. T1-5: `filed_at` **już jest w
+  kontrakcie** `FinancialStatements`, tylko nikt go nie wypełnia (EDGAR czyta wyłącznie `end`) —
+  ryzyko realne, ale uśpione, bo fundamenty nie wchodzą jeszcze do treningu. **Znaleziska własne,
+  których audyt nie wyłapał: (N1)** reguła nienegocjowalna „DD > 15% → flatten all" **nie jest
+  zaimplementowana** — `CircuitBreakerTriggeredEvent(action="flatten_all")` konsumuje tylko
+  `notification` (alert), `execution` subskrybuje wyłącznie `order.requested` i
+  `market_data.updated`, więc BLACK nie zamyka żadnej pozycji; **(N2)** agregator publikuje
+  `signal.aggregated` przy każdym komponencie, a `process_aggregated` w risk-mgmt nie ma żadnej
+  deduplikacji per symbol/sesja → po pierwszej promocji modelu głos ML dołoży **drugie zlecenie
+  i podwoi pozycję** (dziś uśpione, bo ML milczy). Oba wchodzą do planu przed pracą nad ML.
+
+**Next:** plan przestawiony po audycie zewnętrznym — **`docs/backlog_2026_07_27.md` jest teraz
+listą roboczą** (audyt + moja weryfikacja jego twierdzeń + 2 znaleziska własne). Reguła nadrzędna:
+**żadnego kolejnego treningu przed zamknięciem całego Tier 0** — pierwszy bieg nie tyle pokazał
+brak sygnału, co *nie mógł niczego pokazać* (metryka bez mocy statystycznej, 6 realnych cech
+krótkoterminowych, 34 nazwy, 6 lat jednego reżimu).
+
+Kolejność:
+1. **Tier 0** (nie wymaga żadnych decyzji): T0-1 kontrakt danych treningowych + raport
+   rozstrzygnięć etykiet; T0-2 usunięcie cech o zerowej wariancji (makro — **potwierdzony rozjazd
+   trening/serwowanie**); T0-3 diagnostyka „niedouczenie vs brak sygnału" (`auc_train`, `pred_std`
+   przed/po kalibracji, temperatura); T0-5 metryki relatywne (IC/ICIR, benchmark EW, long-short,
+   gross/net, baseline'y) — **to jest sedno naprawy pomiaru**; T0-4 nakładające się transze `1/h`;
+   T0-7 duplikat `momentum_20`; T0-6 `min_universe` → 20.
+2. **Dwa błędy poprawności** (znaleziska własne, niezależne od ML): **N1** — BLACK publikuje
+   `action="flatten_all"`, ale **nikt tego nie konsumuje poza notification**, więc reguła
+   „DD > 15% → zamknij pozycje" jest dziś alertem, nie akcją; **N2** — agregator publikuje
+   `signal.aggregated` przy KAŻDYM komponencie, a risk-mgmt nie deduplikuje, więc po pierwszej
+   promocji modelu ML dołoży drugie zlecenie i **podwoi pozycję**.
+3. **Rerun treningu na starych danych** z pełną diagnostyką → dopiero to rozstrzygnie
+   „niedouczenie vs brak sygnału". Jeśli `auc_train ≈ 0.5` — problem jest w optymalizacji i
+   rozszerzanie danych niczego nie naprawi.
+4. **Tier 1**: uniwersum 200–500 point-in-time (survivorship!), historia od 2005, nowa bramka
+   (IC/ICIR + przewaga nad baseline + DSR zamiast samego Sharpe'a), cechy długiego horyzontu
+   (`momentum_12_1`), point-in-time fundamentów (`filed_at` istnieje w kontrakcie, ale **nikt go
+   nie wypełnia**) → **trening #2**.
+
+Decyzje czekające na człowieka (D1–D8 w backlogu): rozmiar/źródło uniwersum, horyzont 10 vs 21,
+usunięcie makro z agregatora, meta-labeling, filtr RSI, `llm-svc`, transze w backteście,
+reżim jako cecha vs warunkowanie.
 
 ## Architecture rules (non-negotiable)
 
