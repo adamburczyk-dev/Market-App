@@ -83,3 +83,15 @@ async def test_drift_check_503_when_unwired(client: AsyncClient):
         },
     )
     assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_capacity_probe_needs_a_market_client(wired: tuple[AsyncClient, MLPipelineService]):
+    # No market-data client wired → 503, not a stack trace. The probe is an ops
+    # call like training and fails the same way.
+    client, _ = wired
+    resp = await client.post(
+        "/api/v1/ml-pipeline/models/capacity-probe",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500},
+    )
+    assert resp.status_code == 503

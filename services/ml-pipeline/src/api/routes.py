@@ -64,6 +64,22 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/models/capacity-probe")
+async def capacity_probe(
+    req: TrainRequest, service: MLPipelineService = Depends(get_service)
+) -> dict:
+    """Fit a deliberately over-parameterized model on real and on SHUFFLED
+    labels and compare the train AUCs. Answers the question a flat train AUC
+    cannot: optimization problem, or nothing in the data to learn? Diagnostic
+    only — nothing is registered, nothing can be promoted from it."""
+    try:
+        return await service.capacity_probe(req.symbols, Interval(req.interval), limit=req.limit)
+    except RuntimeError as exc:  # market-data client not configured
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:  # dataset too small / single class
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/serving")
 async def serving_status(service: MLPipelineService = Depends(get_service)) -> dict:
     engine = service.serving

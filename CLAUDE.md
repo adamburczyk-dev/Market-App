@@ -1162,6 +1162,26 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `return_20d` na 3 punktach) — testy serwisowe sprawdzają teraz **strukturę** raportu, a werdykt
   ma swój własny test. ml-pipeline 157 testów (+8); ruff + format + mypy czyste.
 
+- 2026-07-27 — **Sonda pojemności** (`ml-pipeline/src/core/capacity.py`, `POST
+  /models/capacity-probe`, `bootstrap-universe.py --capacity-probe`) — eksperyment rozstrzygający
+  pytanie postawione przez bieg #2: `auc_train ≈ 0.52` to problem optymalizacji czy brak sygnału?
+  Duży, celowo nieregularyzowany model (bez dropoutu, bez weight decay, `min_epochs == max_epochs`,
+  więc early stopping nie może zadziałać) uczony na tych samych wierszach, na których mierzone jest
+  train AUC. **Sednem jest kontrola na przetasowanych etykietach**: sieć o dużej pojemności
+  zapamiętuje losowe etykiety, więc samo wysokie train AUC niczego nie dowodzi — liczy się
+  RÓŻNICA real − shuffled. Zmierzone na dwóch skrajnościach: dane z realną strukturą 0.974 vs 0.707
+  (różnica **+0.267** → „struktura istnieje, wina po stronie treningu"), czysty szum 0.713 vs 0.749
+  (różnica **−0.035** → „to zapamiętywanie; więcej danych nie pomoże") — zwróć uwagę, że na szumie
+  sonda i tak dochodzi do 0.71 train AUC, czyli bez kontroli wyglądałoby to na sukces. Sonda
+  świadomie **nie egzekwuje kontraktu danych** (pytanie dotyczy danych, które są) i **niczego nie
+  rejestruje** — dopasowane modele są diagnostyką, nie kandydatami do promocji. ml-pipeline 162
+  testy (+5); ruff + format + mypy czyste; **bateria 913**. Zweryfikowana na żywo przez realne HTTP
+  (realny market-data + realny ml-pipeline, 24 symbole, 35 906 wierszy, 7/7 asercji): sonda
+  wykonała się w ~40 s i orzekła „NO learnable structure" (real 0.5956 vs shuffled 0.5765,
+  różnica +0.019) — poprawnie, bo dane w piaskownicy to GBM bez sygnału. Warto odnotować, że
+  konfiguracja produkcyjna dała tam `auc_train` **0.5255**, czyli praktycznie tę samą sygnaturę co
+  realny bieg #2 (0.5135).
+
 **Next:** plan przestawiony po audycie zewnętrznym — **`docs/backlog_2026_07_27.md` jest teraz
 listą roboczą** (audyt + moja weryfikacja jego twierdzeń + 2 znaleziska własne). Reguła nadrzędna:
 **żadnego kolejnego treningu przed zamknięciem całego Tier 0** — pierwszy bieg nie tyle pokazał
@@ -1186,8 +1206,10 @@ Kolejność:
 4. ✅ **T1-3 ZROBIONE 2026-07-27 — bramka G0–G5** (szczegóły w logu wyżej): sanity → IC t-stat →
    przewaga nad baseline → ekonomia → kalibracja → deflated Sharpe na sklejonej krzywej OOS;
    werdykt per warunek w raporcie; test przechodzalności przechodzi, liczby biegu #2 oblewają 5/6.
-5. ← **TERAZ: eksperyment „świadome przeuczenie"** — rozstrzyga, czy `auc_train ≈ 0.52` to problem
-   optymalizacji, czy brak sygnału w cechach. To decyduje o kolejności reszty Tier 1.
+5. ✅ **Sonda pojemności ZBUDOWANA 2026-07-27** (szczegóły w logu wyżej) —
+   `--capacity-probe`. ← **Bieg rozstrzygający czeka na maszynie użytkownika**: jeśli różnica
+   real − shuffled ≈ 0, cechy nie niosą informacji i reszta Tier 1 musi zacząć się od CECH, a nie
+   od uniwersum.
 6. **Reszta Tier 1**: uniwersum 200–500 point-in-time (survivorship!), historia od 2005, cechy
    długiego horyzontu (`momentum_12_1`), point-in-time fundamentów (`filed_at` istnieje w
    kontrakcie, ale **nikt go nie wypełnia**) → **trening #3**.

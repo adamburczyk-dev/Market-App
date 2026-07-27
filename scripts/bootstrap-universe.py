@@ -253,8 +253,9 @@ def _print_verdict(gate: dict, holdout: dict) -> None:
             "\n    even the data it was SHOWN. Two causes look identical from this number:"
             "\n    (a) optimization — capacity / lr / scaling;"
             "\n    (b) the features carry no signal at all, so there is nothing to fit."
-            "\n    Discriminator: let a high-capacity model overfit on purpose. If train AUC"
-            "\n    stays ≈ 0.5, it is (b) and more symbols or more history will not help."
+            "\n    Run --capacity-probe to decide: it fits an over-parameterized model on real"
+            "\n    and on SHUFFLED labels. A small gap means (b), and more symbols or more"
+            "\n    history will not help."
         )
     elif auc_val <= 0.52:
         print(
@@ -290,6 +291,54 @@ def _print_verdict(gate: dict, holdout: dict) -> None:
         "  - net = long-only Sharpe after costs; active = vs the equal-weight universe."
         "\n    A high net with a low active means the MARKET paid, not the model."
     )
+
+
+def run_capacity_probe(
+    ml_url: str,
+    symbols: list[str],
+    limit: int,
+    timeout_s: float,
+    report: dict | None = None,
+) -> int:
+    """Fit a big unregularized model on real and on shuffled labels.
+
+    The one experiment that separates "the training is underperforming" from
+    "there is nothing in these features to learn" — a flat train AUC looks
+    identical in both cases, and the responses are opposite.
+    """
+    print(f"\nCapacity probe on {len(symbols)} symbols (sync — can take minutes)...")
+    try:
+        status, body = _request(
+            "POST",
+            f"{ml_url}/api/v1/ml-pipeline/models/capacity-probe",
+            {"symbols": symbols, "interval": "1d", "limit": limit},
+            timeout=timeout_s,
+        )
+    except OSError as exc:
+        print(f"Capacity probe failed: {exc}")
+        if report is not None:
+            report["capacity_probe_error"] = str(exc)
+        return 1
+    if status != 200:
+        print(f"Capacity probe failed: HTTP {status}: {body.get('detail', body)}")
+        if report is not None:
+            report["capacity_probe_error"] = (
+                f"HTTP {status}: {body.get('detail', body)}"
+            )
+        return 1
+    if report is not None:
+        report["capacity_probe"] = body
+
+    probe = body.get("probe", {})
+    print(
+        f"  rows {probe.get('n_rows'):,}, {probe.get('n_features')} features\n"
+        f"  train AUC  real {probe.get('auc_train_real'):.4f}   "
+        f"shuffled labels {probe.get('auc_train_shuffled'):.4f}   "
+        f"production config {probe.get('auc_train_production'):.4f}\n"
+        f"  gap (real − shuffled): {probe.get('gap'):+.4f}"
+    )
+    print(f"\n  {probe.get('verdict')}")
+    return 0
 
 
 def run_training(
@@ -406,6 +455,15 @@ def main() -> int:
         "--train", action="store_true", help="Run a training pass after backfill"
     )
     parser.add_argument(
+        "--capacity-probe",
+        action="store_true",
+        help=(
+            "Fit a deliberately over-parameterized model on real and on SHUFFLED "
+            "labels and compare train AUCs — separates 'training underperforms' "
+            "from 'nothing here to learn'. Diagnostic only; registers nothing."
+        ),
+    )
+    parser.add_argument(
         "--skip-backfill",
         action="store_true",
         help=(
@@ -504,6 +562,16 @@ def main() -> int:
     report["coverage"] = coverage
 
     exit_code = 1 if failed else 0
+    if args.capacity_probe:
+        trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
+        ml_url = args.ml_pipeline_url.rstrip("/")
+        _check_service(ml_url, "ml-pipeline")
+        exit_code = max(
+            exit_code,
+            run_capacity_probe(
+                ml_url, trainable, args.train_limit, args.train_timeout, report=report
+            ),
+        )
     if args.train:
         trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
         ml_url = args.ml_pipeline_url.rstrip("/")

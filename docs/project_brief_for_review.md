@@ -222,7 +222,14 @@ Metryką **nie jest** accuracy ani AUC, tylko **Sharpe portfela po kosztach**:
 codziennie rebalansowany, równoważony, **long-only top-kwintyl** (quantile 0.2) po
 predykcji, koszty 5 bps od obrotu jednostronnego.
 
-Bramka przepuszcza model tylko gdy **wszystkie** warunki są spełnione:
+> **Nieaktualne od 2026-07-27.** Ta bramka (poniżej) **przepuściła** model bez sygnału: holdout
+> AUC 0.4865, lift −0.0003, a uniwersum ważone równo zrobiło Sharpe 1.36 przy 0.79 modelu —
+> portfel long-only w rosnącym rynku zdaje bezwzględny próg Sharpe'a na becie. Obowiązująca
+> bramka ma sześć warunków (G0 sanity, G1 t-stat IC, G2 przewaga nad pojedynczą cechą,
+> G3 ekonomia z active Sharpe, G4 kalibracja wobec base rate okna, G5 deflated Sharpe) —
+> `services/ml-pipeline/src/core/gate.py` i sekcja bramki w README.
+
+Stara bramka przepuszczała model, gdy **wszystkie** warunki były spełnione:
 1. Sharpe na holdoucie > **0.5**
 2. Sharpe > 0.5 na **co najmniej 2 z 3 ostatnich foldów** (warunek anty-fartowy)
 3. Brier nie gorszy niż wskaźnik bazowy + 0.01 (sensowna kalibracja)

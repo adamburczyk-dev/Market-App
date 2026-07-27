@@ -271,7 +271,41 @@ Co się dzieje po kolei:
 3. **Trening** (`--train`) — zbiór przekrojowy dla całego uniwersum, etykiety triple-barrier, purged walk-forward z embargiem, bramka aktywacji. Model trafia do MLflow **niezależnie od wyniku bramki**; baseline driftu rejestruje się automatycznie.
 4. **Raport** (`--report-out`) — samowystarczalny JSON: pokrycie, kontekst zbioru (ile symboli miało historię, ile sesji, `positive_rate`) i pełny raport bramki z diagnostyką każdego foldu.
 
-Bramka przepuszcza model tylko wtedy, gdy Sharpe po kosztach przekracza 0,5 na holdoucie **i** na ≥2 z 3 ostatnich foldów, przy kalibracji nie gorszej niż wskaźnik bazowy. Obok Sharpe'a raport podaje **`lift`** (o ile częściej rosły spółki faktycznie wybrane przez model) i **`pred_std`** — bo wysoki Sharpe przy zerowym lifcie to fart, a `pred_std ≈ 0` to model, który się zapadł.
+### Bramka aktywacji — sześć warunków
+
+Sam Sharpe nie wystarcza i mamy na to dowód z własnego biegu: model o holdoutowym AUC **0.4865**
+(poniżej rzutu monetą) przeszedł dawną bramkę, bo portfel long-only w rosnącym rynku zarobił na
+becie — uniwersum ważone równo zrobiło wtedy Sharpe 1.36 przy 0.79 modelu. Bramka
+([`core/gate.py`](services/ml-pipeline/src/core/gate.py)) sprawdza teraz sześć rzeczy i raportuje
+każdą osobno wraz z liczbami:
+
+| | Pytanie | Warunek |
+|---|---|---|
+| **G0** | Czy w ogóle powstał model? | fit poprawił się poza pierwszą epokę, predykcje nie są stałe, dość okien |
+| **G1** | Czy ranking niesie informację? | **t-stat** średniego IC ≥ 2 (sam poziom IC nic nie znaczy bez błędu standardowego) |
+| **G2** | Czy warstwa ML zarabia na siebie? | IC modelu **ze znakiem** wyższe niż IC najlepszej pojedynczej surowej cechy |
+| **G3** | Czy zarabia i czy to jego zasługa? | Sharpe > 0,5 **i** active > 0 **i** lift > 0 **i** 2 z 3 ostatnich foldów |
+| **G4** | Czy prawdopodobieństwa są uczciwe? | Brier ≤ wskaźnik bazowy **tego okna**, AUC > 0,5 |
+| **G5** | Czy wynik przeżyje liczbę prób? | deflated Sharpe ≥ 0,90 na **sklejonej** krzywej OOS |
+
+Próg G5 to świadoma decyzja: 0,95 (podręcznikowe) obowiązuje przed realnym kapitałem, a ta bramka
+rządzi promocją do **papierowego** głosu — między nią a pieniędzmi stoi osobna reguła „30 dni
+dodatniego Sharpe'a na papierze". Przy ~600 sesjach OOS i 10 próbach 0,90 i tak wymaga ok. 1,8
+Sharpe'a rocznie.
+
+### Sonda pojemności — „niedouczenie czy brak sygnału?"
+
+```bash
+make bootstrap-universe ARGS="--skip-backfill --capacity-probe"
+```
+
+Płaskie `auc_train ≈ 0,5` wygląda identycznie w dwóch przypadkach o przeciwnych rozwiązaniach:
+problem optymalizacji albo brak sygnału w cechach. Sonda uczy **celowo przesadzony** model (bez
+dropoutu, bez weight decay, bez early stoppingu) i porównuje train AUC na prawdziwych etykietach
+z train AUC na etykietach **przetasowanych**. Kontrola jest tu istotą pomiaru — na czystym szumie
+sonda i tak dochodzi do ~0,71 train AUC, więc bez niej wyglądałoby to na sukces. Liczy się
+**różnica**: duża → struktura istnieje i trzeba naprawić trening; bliska zeru → to zapamiętywanie,
+a więcej symboli i historii niczego nie zmieni.
 
 Promocja jest **ręczna** — skrypt wypisuje gotową komendę tylko przy zdanej bramce:
 
@@ -310,7 +344,7 @@ Stan na 2026-07-25: **847 testów, wszystkie zielone** na Pythonie 3.12; `ruff` 
 | Komponent | Testów | Co jest testowane |
 |-----------|:---:|-------------------|
 | `trading-common` | 181 | Kontrakty, zdarzenia, `RiskEnvelope`, `CostAwareFilter`, cechy, rangi, scheduler |
-| `ml-pipeline` | 120 | Etykiety triple-barrier, podziały purged, trening, bramka, rejestr MLflow, serwowanie, monitoring |
+| `ml-pipeline` | 162 | Etykiety triple-barrier, podziały purged, trening, bramka, rejestr MLflow, serwowanie, monitoring |
 | `risk-mgmt` | 104 | Wielkość pozycji, limity reżimowe/sektorowe, wyłącznik, trwałość stanu |
 | `signal-aggregator` | 80 | Łączenie sygnałów, wagi adaptacyjne, bufory TTL, filtr kosztów |
 | `strategy` | 56 | Reguła momentum, brama ryzyka, degradacja, rewalidacja z backtestu |

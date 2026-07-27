@@ -19,6 +19,7 @@ import structlog
 from trading_common.events import ModelDriftDetectedEvent
 from trading_common.schemas import Interval
 
+from src.core.capacity import run_capacity_probe
 from src.core.data_contract import TrainingDataContract
 from src.core.dataset import (
     Dataset,
@@ -214,6 +215,26 @@ class MLPipelineService:
         # sessions cannot be labeled at all
         expected_sessions = max(0, longest - params.min_history - params.label.horizon)
         return build_dataset(bars_by_symbol, params), expected_sessions
+
+    async def capacity_probe(
+        self, symbols: list[str], interval: Interval, limit: int = 1500
+    ) -> dict[str, Any]:
+        """Answer "underfitting or no signal?" — see core/capacity.py.
+
+        Deliberately does NOT enforce the training data contract: the question
+        is about the data that exists, and a dataset too thin to train on can
+        still be asked whether anything in it is learnable. Nothing is
+        registered or logged — the fitted models are diagnostics, not
+        candidates.
+        """
+        dataset, _ = await self.build_training_dataset(symbols, interval, limit)
+        dataset, dropped = drop_zero_variance_features(dataset)
+        probe = run_capacity_probe(dataset)
+        return {
+            "dataset": _dataset_diagnostics(dataset, symbols),
+            "dropped_zero_variance": dropped,
+            "probe": probe.as_dict(),
+        }
 
     async def train(
         self,
