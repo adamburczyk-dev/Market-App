@@ -175,22 +175,44 @@ def validate_coverage(
         stamps = [datetime.fromisoformat(b["timestamp"]).date() for b in bars]
         max_gap = max(((b - a).days for a, b in itertools.pairwise(stamps)), default=0)
         note = []
-        # An unadjusted split shows up as a one-session return no market makes:
-        # a 4:1 split reads as -75%, a 10:1 as -90%. Cheaper to detect here than
-        # to discover it as a "signal" the model learned.
-        jumps = [
-            (stamps[i + 1].isoformat(), round(curr / prev - 1.0, 3))
-            for i, (prev, curr) in enumerate(
-                itertools.pairwise([float(b["close"]) for b in bars])
-            )
-            if prev > 0 and (curr / prev - 1.0 <= -0.35 or curr / prev - 1.0 >= 0.60)
+        closes = [float(b["close"]) for b in bars]
+        adjs = [
+            float(b["adj_close"])
+            if b.get("adj_close") not in (None, "")
+            else float(b["close"])
+            for b in bars
         ]
-        if jumps:
-            note.append(
-                "suspected unadjusted corporate action: "
-                + ", ".join(f"{d} {r:+.0%}" for d, r in jumps[:3])
-            )
         missing_adj = sum(1 for b in bars if b.get("adj_close") in (None, ""))
+
+        # Which series matters: features and labels run on the ADJUSTED close,
+        # so that is the one whose extremes can poison a model. Raw-vs-adjusted
+        # disagreement is the discriminator the first version of this check
+        # lacked — it flagged NFLX's real -35% earnings crash of 2022-04-20 as a
+        # corporate action, because a raw move alone cannot tell the two apart.
+        suspect: list[tuple[str, float]] = []
+        notable: list[tuple[str, float]] = []
+        actions: list[tuple[str, float, float]] = []
+        for i in range(len(bars) - 1):
+            if closes[i] <= 0 or adjs[i] <= 0:
+                continue
+            raw_ret = closes[i + 1] / closes[i] - 1.0
+            adj_ret = adjs[i + 1] / adjs[i] - 1.0
+            day = stamps[i + 1].isoformat()
+            if adj_ret <= -0.45 or adj_ret >= 0.80:
+                # Beyond what a large cap does on news in one session — almost
+                # certainly an unadjusted split or a bad tick IN THE SERIES WE
+                # MEASURE RETURNS ON. This is the only real data error here.
+                suspect.append((day, adj_ret))
+            elif adj_ret <= -0.25 or adj_ret >= 0.50:
+                notable.append((day, adj_ret))
+            if abs(raw_ret - adj_ret) > 0.10:
+                actions.append((day, raw_ret, adj_ret))
+
+        if suspect:
+            note.append(
+                "SUSPECT adjusted move (split or bad tick?): "
+                + ", ".join(f"{d} {r:+.0%}" for d, r in suspect[:3])
+            )
         if missing_adj:
             note.append(
                 f"{missing_adj}/{len(bars)} bars without adj_close "
@@ -206,6 +228,17 @@ def validate_coverage(
             "sessions": len(stamps),
             "first": stamps[0].isoformat(),
             "last": stamps[-1].isoformat(),
+            "adj_close_coverage": round(1.0 - missing_adj / len(bars), 4),
+            # Real single-session moves (earnings, guidance) — data, not defects.
+            "notable_moves": [
+                {"date": d, "return": round(r, 3)} for d, r in notable[:5]
+            ],
+            # Sessions where raw and adjusted disagree: the adjustment doing its
+            # job on a split or dividend. Their ABSENCE would be the warning.
+            "corporate_actions": [
+                {"date": d, "raw": round(a, 3), "adjusted": round(b, 3)}
+                for d, a, b in actions[:5]
+            ],
             "ok": not note,
             "note": "; ".join(note),
         }

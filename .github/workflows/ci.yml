@@ -77,6 +77,21 @@ jobs:
       - run: python scripts/check-dependencies.py
 
   # ============================================================
+  # Testy skryptów operacyjnych. Kontrola pokrycia danych decyduje, czy
+  # trening dostaje zdrowe ceny — jej regresja jest cicha, więc ma testy.
+  # ============================================================
+  test-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install pytest
+      - run: pytest scripts/tests/ -v
+
+  # ============================================================
   # Testy shared library (wymagana przez wszystkie serwisy)
   # ============================================================
   test-shared:

@@ -1284,6 +1284,24 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   tabeli utworzonej BEZ niej, stary wiersz przeżył z NULL-em, zapis/odczyt round-trip, surowy close
   nietknięty, a na parze świec z luką dywidendową zwrot surowy pokazuje −2%, skorygowany 0%.
 
+- 2026-07-28 — **Backfill ze skorygowanymi cenami u użytkownika + poprawka mojego detektora.**
+  34 symbole × 1507–1508 sesji (2020-07-27 → 2026-07-28), **zero ostrzeżeń o brakującym
+  `adj_close`** — P0-1 przeszło end-to-end na realnych danych. Jedno WARN: NFLX 2022-04-20 −35%.
+  **To był fałszywy alarm mojego detektora**, nie defekt danych: 20 kwietnia 2022 Netflix spadł
+  o ~35% po raporcie kwartalnym ze spadkiem liczby abonentów. Pierwsza wersja kontroli patrzyła
+  **wyłącznie na surowy zwrot**, a z samego ruchu ceny nie da się odróżnić prawdziwego krachu od
+  nieskorygowanego splitu. Teraz, gdy `adj_close` istnieje, dyskryminator jest dostępny i kontrola
+  porównuje **serię surową ze skorygowaną**: (a) ekstremum w serii SKOROWANEJ (≤ −45% / ≥ +80%) to
+  jedyny realny błąd danych, bo to na niej liczą się cechy i etykiety → WARN; (b) rozjazd surowa vs
+  skorygowana > 10 pkt proc. to **poprawnie działająca korekta** splitu/dywidendy → raportowane
+  jako `corporate_actions`, nie ostrzeżenie (ich BRAK byłby podejrzany); (c) realny, gwałtowny ruch
+  −25…−45% → `notable_moves`, do obejrzenia przez człowieka, bez alarmu. Raport podaje też
+  `adj_close_coverage` per symbol — potwierdzenie pozytywne, nie tylko brak ostrzeżenia.
+  Nowe `scripts/tests/test_coverage_checks.py` (5 testów) pinuje obie strony na miniaturach:
+  krach (surowa i skorygowana spadają razem) NIE jest defektem, split w serii skorygowanej JEST,
+  a split pochłonięty przez korektę jest tylko raportowany. Dołożony job **`test-scripts`** w CI —
+  dotąd `scripts/` nie miał żadnych testów, a to jest kod decydujący, czy trening dostaje zdrowe ceny.
+
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.
