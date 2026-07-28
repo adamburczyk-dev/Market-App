@@ -92,12 +92,20 @@ def test_flat_history_has_no_sigma():
 
 
 def test_barrier_width_scales_with_horizon():
+    # The multiplier is stated here rather than inherited from LabelParams:
+    # this test is about sqrt(h) scaling, and it must keep testing that when
+    # the calibrated default width changes (it moved 2.0 -> 1.0 in E1).
+    mult = 2.0
     history = noisy_history(30)
     sigma = trailing_sigma(np.array(history), 29, 20)
     # a move that breaches the h=5 barrier but NOT the h=10 barrier
-    move = history[-1] * (1 + 2.0 * sigma * math.sqrt(7))
+    move = history[-1] * (1 + mult * sigma * math.sqrt(7))
     closes, highs, lows = path(history + [move] * 12)
-    short = triple_barrier_label(closes, highs, lows, 29, LabelParams(horizon=5))
-    long = triple_barrier_label(closes, highs, lows, 29, LabelParams(horizon=10))
+    short = triple_barrier_label(
+        closes, highs, lows, 29, LabelParams(pt_mult=mult, sl_mult=mult, horizon=5)
+    )
+    long = triple_barrier_label(
+        closes, highs, lows, 29, LabelParams(pt_mult=mult, sl_mult=mult, horizon=10)
+    )
     assert short.barrier == "upper"  # √5-scaled barrier is tighter → touched
     assert long.barrier == "vertical"  # √10-scaled barrier holds → time decides

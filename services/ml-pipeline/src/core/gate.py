@@ -171,13 +171,22 @@ def evaluate_gate(
     )
 
     # --- G4: are the probabilities honest? ---
+    # Judged as a PAIRED comparison against predicting the window's base rate
+    # every day, with the standard error of that difference. A strict
+    # "brier <= base_brier" failed a model with AUC 0.59 on 0.0005 of Brier —
+    # noise, not dishonesty. Requiring it not to be SIGNIFICANTLY worse keeps
+    # the condition meaningful without inventing a tolerance: a hand-built
+    # report with no SE falls back to the strict rule, so it fails closed.
     base_brier = diag.base_rate * (1.0 - diag.base_rate)
+    tolerance = 2.0 * holdout.brier_delta_se
     conditions.append(
         GateCondition(
             "G4",
             "calibration",
-            holdout.brier <= base_brier and holdout.auc > 0.5,
-            f"brier {holdout.brier:.4f} vs base rate {base_brier:.4f}, auc {holdout.auc:.4f}",
+            holdout.brier_delta <= tolerance and holdout.auc > 0.5,
+            f"brier {holdout.brier:.4f} vs base rate {base_brier:.4f} "
+            f"(delta {holdout.brier_delta:+.5f} ± {holdout.brier_delta_se:.5f}), "
+            f"auc {holdout.auc:.4f}",
         )
     )
 

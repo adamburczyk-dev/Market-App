@@ -1302,6 +1302,33 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   a split pochłonięty przez korektę jest tylko raportowany. Dołożony job **`test-scripts`** w CI —
   dotąd `scripts/` nie miał żadnych testów, a to jest kod decydujący, czy trening dostaje zdrowe ceny.
 
+- 2026-07-28 — **Etap E1 (co właściwie przewidujemy) zamknięty w kodzie.** Nowy
+  `core/target_study.py` rozdziela dwa rodzaje wyboru, i to jest jego sedno: **szerokość barier to
+  własność ETYKIETY** — mierzy się ją skanując realne ścieżki cen i licząc, jak rozstrzygają się
+  etykiety, **bez dopasowywania modelu**, więc nie kosztuje ani jednej próby w rozliczeniu
+  wielokrotnego testowania; **horyzont i absolutna-vs-nadwyżkowa to wybory CELU**, które kuszą, by
+  dopasować model do każdego wariantu i zatrzymać zwycięzcę — czyli klasyczna fabryka biasu
+  selekcji. Zamiast tego oceniam je statystyką **model-free**: IC surowych rang cech względem
+  każdej kandydującej etykiety. Cel, którego żadna surowa cecha nie rankuje lepiej niż losowo, nie
+  zostanie zrankowany przez model zbudowany na tych cechach — i dowiadujemy się tego za darmo.
+  **P1-1**: domyślna szerokość 2.0σ → **1.0σ**, na podstawie pomiaru (`calibrate_barriers` skanuje
+  0.5–2.0 i rekomenduje wpadającą w pasmo 40–70% rozstrzygnięć poziomych; przy 2.0σ mierzone 9%).
+  **P1-3**: nowa `excess_barrier_label` — bariery na zwrocie **względem mediany przekroju**, z
+  szerokością skalowaną zmiennością zwrotu NADWYŻKOWEGO. Test pokazuje różnicę, dla której to
+  powstało: w spadającym rynku spółka, która spada mniej, jest **wygrana** dla etykiety nadwyżkowej
+  i **przegrana** dla absolutnej. Skanowanie close-to-close (nie ma śróddziennej ścieżki dla
+  syntetycznej nogi rynkowej) — świadomy koszt: bariera dotknięta i odwrócona w ciągu sesji
+  umyka. Etykieta nadwyżkowa jest na razie **opcją**, domyślnie wyłączoną — włączy ją pomiar.
+  **Poprawka wywołana przez zmianę barier**: nowa, węższa etykieta zmieniła rozkład na uniwersum
+  testowym i **bramka oblała model o realnej dyskryminacji (AUC 0.593) na 0.0005 różnicy Briera**.
+  Warunek G4 był twardą nierównością wobec base rate, a to jest szum próbkowania, nie nieuczciwość
+  prawdopodobieństw. G4 porównuje teraz **parami** (per wiersz: `(p−y)² − (base−y)²`), raportuje
+  różnicę i jej **błąd standardowy**, i wymaga, by model nie był **istotnie** gorszy (2 SE).
+  Raport bez SE dostaje regułę twardą — brak pomiaru nie jest zaliczeniem. Trzy testy pinują obie
+  strony: liczby biegu #2 nadal oblewają, model z AUC 0.59 w granicach szumu przechodzi, a ten
+  sam model z różnicą 6× większą niż SE — nie. `POST /models/target-study` +
+  `bootstrap-universe.py --target-study`. ml-pipeline 181 testów (+7); ruff + format + mypy czyste.
+
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.

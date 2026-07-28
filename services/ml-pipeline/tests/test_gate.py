@@ -52,6 +52,8 @@ def fold(
     benchmark: float = 0.5,
     baseline_ic: float = 0.001,
     best_epoch: int = 18,
+    brier_delta: float | None = None,
+    brier_delta_se: float = 0.0,
     pred_std: float = 0.02,
     n_sessions: int = 126,
     seed: int = 3,
@@ -80,6 +82,10 @@ def fold(
             pred_p90=0.52,
         ),
         auc_train=0.58,
+        # Default: exactly as good as predicting the base rate, so a fixture
+        # that does not care about calibration neither passes nor fails on it.
+        brier_delta=brier - base_rate * (1.0 - base_rate) if brier_delta is None else brier_delta,
+        brier_delta_se=brier_delta_se,
         fit={"best_epoch": best_epoch, "epochs_run": 40},
         relative=RelativeMetrics(
             ic_mean=ic,

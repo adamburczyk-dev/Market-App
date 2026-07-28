@@ -35,6 +35,7 @@ from src.core.monitoring.drift_detector import DriftDetector, DriftReport
 from src.core.outcomes import OutcomeResolver
 from src.core.registry import ModelBaseline, ModelRegistry
 from src.core.serving import ServingEngine
+from src.core.target_study import calibrate_barriers, score_targets
 from src.core.training import TrainingParams, run_training
 from src.core.tuning import SweepReport, run_sweep
 from src.events.publisher import Publisher
@@ -216,6 +217,41 @@ class MLPipelineService:
         # sessions cannot be labeled at all
         expected_sessions = max(0, longest - params.min_history - params.label.horizon)
         return build_dataset(bars_by_symbol, params), expected_sessions
+
+    async def target_study(
+        self,
+        symbols: list[str],
+        interval: Interval,
+        limit: int = 1500,
+        horizons: tuple[int, ...] = (10, 21, 63),
+    ) -> dict[str, Any]:
+        """Choose the target: barrier width by label shape, horizon by raw-feature IC.
+
+        Model-free by construction (see core/target_study.py) — nothing is
+        fitted, so this consumes none of the gate's n_trials budget.
+        """
+        if self._market is None:
+            raise RuntimeError("market-data client not configured")
+        bars_by_symbol = {}
+        for symbol in symbols:
+            bars = await self._market.get_ohlcv(symbol, interval, limit=limit)
+            if bars:
+                bars_by_symbol[symbol] = bars
+        if not bars_by_symbol:
+            raise ValueError("no history for any requested symbol")
+        current = self._dataset_params.label
+        return {
+            "symbols_with_rows": len(bars_by_symbol),
+            "current": {
+                "horizon": current.horizon,
+                "pt_mult": current.pt_mult,
+                "excess": current.excess,
+            },
+            "calibration": calibrate_barriers(bars_by_symbol, horizon=current.horizon),
+            "targets": score_targets(
+                bars_by_symbol, horizons=horizons, lookback=self._dataset_params.lookback
+            ),
+        }
 
     async def capacity_probe(
         self, symbols: list[str], interval: Interval, limit: int = 1500

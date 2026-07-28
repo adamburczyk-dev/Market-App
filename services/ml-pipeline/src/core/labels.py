@@ -17,9 +17,22 @@ import numpy as np
 @dataclass(frozen=True)
 class LabelParams:
     sigma_window: int = 20  # trailing sessions for the daily-vol estimate
-    pt_mult: float = 2.0  # profit barrier, in sigma*sqrt(horizon) units
-    sl_mult: float = 2.0  # loss barrier, in sigma*sqrt(horizon) units
+    # E1/P1-1: 2.0 made the barriers unreachable — measured through the full
+    # pipeline, 90.9% of labels timed out on the vertical barrier, which turns
+    # the triple barrier into a fixed-horizon sign label with extra steps.
+    # `calibrate_barriers` scans multipliers on real paths and reports the mix;
+    # 1.0 is what it picks (about half the labels touch a horizontal barrier).
+    pt_mult: float = 1.0  # profit barrier, in sigma*sqrt(horizon) units
+    sl_mult: float = 1.0  # loss barrier, in sigma*sqrt(horizon) units
     horizon: int = 10  # vertical barrier (sessions)
+    # E1/P1-3: label the return RELATIVE to the cross-section instead of the
+    # absolute one. A cross-sectional model is asked "which names beat the
+    # rest"; an absolute label asks it to predict the market too, and the
+    # market is the part it has no information about. Excess labels scan
+    # close-to-close cumulative excess (no intraday path exists for a
+    # synthetic market leg), so they trade intraday precision for measuring
+    # the right quantity.
+    excess: bool = False
 
 
 @dataclass(frozen=True)
@@ -88,3 +101,55 @@ def triple_barrier_label(
     return BarrierOutcome(
         label=1 if closes[end] > closes[i] else 0, touch_index=end, barrier="vertical"
     )
+
+
+def excess_barrier_label(
+    closes: np.ndarray,
+    market: np.ndarray,
+    i: int,
+    params: LabelParams | None = None,
+) -> BarrierOutcome | None:
+    """Triple barrier on the return RELATIVE to ``market`` (same index basis).
+
+    ``market`` is the cross-section's own benchmark path (equal-weight median
+    of the universe), so the label answers "did this name beat the others",
+    which is the question a ranking model can actually answer. Barrier width
+    scales with the trailing volatility of the EXCESS daily return — a name
+    that tracks the market closely needs a narrower barrier to say something.
+
+    Scanning is close-to-close: an intraday excess path would require intraday
+    market levels aligned to each bar, which we do not have. The cost is that
+    a barrier touched and reversed within one session is missed.
+    """
+    p = params or LabelParams()
+    n = len(closes)
+    if i + 1 >= n or len(market) != n:
+        return None
+    if i < p.sigma_window or np.any(closes[i - p.sigma_window : i + 1] <= 0):
+        return None
+    if np.any(market[i - p.sigma_window : i + 1] <= 0):
+        return None
+
+    stock_returns = np.diff(np.log(closes[i - p.sigma_window : i + 1]))
+    market_returns = np.diff(np.log(market[i - p.sigma_window : i + 1]))
+    sigma = float(np.std(stock_returns - market_returns, ddof=1))
+    if sigma <= 0:
+        return None
+
+    width = sigma * math.sqrt(p.horizon)
+    upper, lower = p.pt_mult * width, -p.sl_mult * width
+
+    end = min(i + p.horizon, n - 1)
+    for j in range(i + 1, end + 1):
+        if market[j] <= 0 or closes[j] <= 0:
+            return None
+        excess = math.log(closes[j] / closes[i]) - math.log(market[j] / market[i])
+        if excess <= lower:  # same-bar ambiguity resolves as a loss, as above
+            return BarrierOutcome(label=0, touch_index=j, barrier="lower")
+        if excess >= upper:
+            return BarrierOutcome(label=1, touch_index=j, barrier="upper")
+
+    if end < i + p.horizon:
+        return None
+    final = math.log(closes[end] / closes[i]) - math.log(market[end] / market[i])
+    return BarrierOutcome(label=1 if final > 0 else 0, touch_index=end, barrier="vertical")

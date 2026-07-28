@@ -72,6 +72,13 @@ class FoldReport:
     # auc ~ 0.5 means it memorised. The out-of-sample numbers look identical in
     # both cases, and the responses are opposite.
     auc_train: float = 0.5
+    # E1: how much worse (positive) or better (negative) the probabilities are
+    # than predicting the window's base rate every day, and the standard error
+    # of that paired difference. A gate that demands a strict improvement fails
+    # a genuinely discriminating model on rounding noise; one that ignores the
+    # sign lets a miscalibrated model through. The SE is what separates them.
+    brier_delta: float = 0.0
+    brier_delta_se: float = 0.0
     fit: dict[str, Any] = field(default_factory=dict)
     # T0-5: benchmark-relative and rank-based measurement. A long-only Sharpe
     # in a window where most names rose says more about the market than the
@@ -115,6 +122,8 @@ class GateReport:
                 "pred_p90": round(f.diagnostics.pred_p90, 4),
                 # underfit-vs-no-signal diagnostics (T0-3)
                 "auc_train": round(f.auc_train, 4),
+                "brier_delta": round(f.brier_delta, 5),
+                "brier_delta_se": round(f.brier_delta_se, 5),
                 **f.fit,
                 **(
                     {
@@ -248,6 +257,11 @@ def score_window(
     # The rule: a model that cannot beat the raw rank of one feature has not
     # earned the ML layer. return_20d is the strongest single candidate here.
     window_stats = _window_stats(ds, mask, params)
+    y_true = ds.y[mask]
+    base_rate = float(y_true.mean()) if len(y_true) else 0.5
+    paired = (probs - y_true) ** 2 - (base_rate - y_true) ** 2
+    brier_delta = float(paired.mean()) if len(paired) else 0.0
+    brier_delta_se = float(paired.std(ddof=1) / np.sqrt(len(paired))) if len(paired) > 1 else 0.0
     baseline_ic: dict[str, float] = {}
     if params.baseline_feature in ds.feature_names:
         column = ds.x[mask][:, ds.feature_names.index(params.baseline_feature)]
@@ -273,6 +287,8 @@ def score_window(
         relative=relative,
         baseline_ic=baseline_ic,
         window=window_stats,
+        brier_delta=brier_delta,
+        brier_delta_se=brier_delta_se,
     )
 
 

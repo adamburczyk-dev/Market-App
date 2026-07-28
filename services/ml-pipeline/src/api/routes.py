@@ -68,6 +68,21 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/models/target-study")
+async def target_study(
+    req: TrainRequest, service: MLPipelineService = Depends(get_service)
+) -> dict:
+    """Calibrate the barrier width and rank candidate targets (horizon,
+    absolute vs excess) by how well RAW features already predict them. No model
+    is fitted, so this costs nothing against the gate's n_trials."""
+    try:
+        return await service.target_study(req.symbols, Interval(req.interval), limit=req.limit)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/models/capacity-probe")
 async def capacity_probe(
     req: TrainRequest, service: MLPipelineService = Depends(get_service)

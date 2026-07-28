@@ -347,6 +347,78 @@ def _print_verdict(gate: dict, holdout: dict) -> None:
     )
 
 
+def run_target_study(
+    ml_url: str,
+    symbols: list[str],
+    limit: int,
+    timeout_s: float,
+    report: dict | None = None,
+) -> int:
+    """Calibrate barrier width and rank candidate targets — no model fitted."""
+    print(
+        f"\nTarget study on {len(symbols)} symbols (label shapes + raw-feature IC)..."
+    )
+    try:
+        status, body = _request(
+            "POST",
+            f"{ml_url}/api/v1/ml-pipeline/models/target-study",
+            {"symbols": symbols, "interval": "1d", "limit": limit},
+            timeout=timeout_s,
+        )
+    except OSError as exc:
+        print(f"Target study failed: {exc}")
+        if report is not None:
+            report["target_study_error"] = str(exc)
+        return 1
+    if status != 200:
+        print(f"Target study failed: HTTP {status}: {body.get('detail', body)}")
+        if report is not None:
+            report["target_study_error"] = f"HTTP {status}: {body.get('detail', body)}"
+        return 1
+    if report is not None:
+        report["target_study"] = body
+
+    cal = body.get("calibration", {})
+    current = body.get("current", {})
+    print(
+        f"  current label: horizon {current.get('horizon')}, "
+        f"width {current.get('pt_mult')}σ, excess={current.get('excess')}"
+    )
+    print(
+        f"  {'width':>6} {'upper':>7} {'lower':>7} {'vertical':>9} {'horizontal':>11}"
+    )
+    for prof in cal.get("profiles", []):
+        mark = (
+            " <-- recommended" if prof["pt_mult"] == cal.get("recommended_mult") else ""
+        )
+        print(
+            f"  {prof['pt_mult']:>6.2f} {prof['upper']:>7.3f} {prof['lower']:>7.3f} "
+            f"{prof['vertical']:>9.3f} {prof['horizontal_share']:>11.3f}{mark}"
+        )
+    band = cal.get("target_band", [0.4, 0.7])
+    print(f"  target band for horizontal resolutions: {band[0]:.0%}–{band[1]:.0%}")
+
+    targets = body.get("targets", {})
+    print(
+        f"\n  {'horizon':>7} {'excess':>7} {'width':>6} {'horiz':>7} {'best feature':>16} {'IC':>9}"
+    )
+    for cand in targets.get("candidates", []):
+        print(
+            f"  {cand['horizon']:>7} {cand['excess']!s:>7} {cand['pt_mult']:>6.2f} "
+            f"{cand['horizontal_share']:>7.3f} {cand['best_feature']:>16} "
+            f"{cand['best_feature_ic']:>9.5f}"
+        )
+    best = targets.get("best")
+    if best:
+        print(
+            f"\n  best by raw-feature IC: horizon {best['horizon']}, "
+            f"excess={best['excess']}, width {best['pt_mult']}σ "
+            f"(IC {best['best_feature_ic']:+.5f} via {best['best_feature']})"
+        )
+    print(f"  {targets.get('note', '')}")
+    return 0
+
+
 def run_capacity_probe(
     ml_url: str,
     symbols: list[str],
@@ -566,6 +638,15 @@ def main() -> int:
         "--train", action="store_true", help="Run a training pass after backfill"
     )
     parser.add_argument(
+        "--target-study",
+        action="store_true",
+        help=(
+            "Calibrate the triple-barrier width against real paths and rank "
+            "candidate targets (horizon, absolute vs excess) by how well raw "
+            "features predict them. Model-free — costs no gate trials."
+        ),
+    )
+    parser.add_argument(
         "--capacity-probe",
         action="store_true",
         help=(
@@ -681,6 +762,16 @@ def main() -> int:
     report["coverage"] = coverage
 
     exit_code = 1 if failed else 0
+    if args.target_study:
+        trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
+        ml_url = args.ml_pipeline_url.rstrip("/")
+        _check_service(ml_url, "ml-pipeline")
+        exit_code = max(
+            exit_code,
+            run_target_study(
+                ml_url, trainable, args.train_limit, args.train_timeout, report=report
+            ),
+        )
     if args.capacity_probe:
         trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
         ml_url = args.ml_pipeline_url.rstrip("/")
