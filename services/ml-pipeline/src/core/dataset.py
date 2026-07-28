@@ -20,7 +20,7 @@ import numpy as np
 import structlog
 from trading_common.features import FEATURE_LOOKBACK, FULL_HISTORY, compute_feature_vector
 from trading_common.prices import adjusted_ohlc
-from trading_common.ranking import cross_sectional_rank
+from trading_common.ranking import cross_sectional_rank, sector_neutralize
 from trading_common.schemas import OHLCVBar
 
 from src.core.labels import BarrierOutcome, LabelParams, triple_barrier_label
@@ -135,6 +135,7 @@ def build_dataset(
     params: DatasetParams | None = None,
     regime_by_date: dict[datetime, str] | None = None,
     feature_names: list[str] | None = None,
+    sector_by_symbol: dict[str, str | None] | None = None,
 ) -> Dataset:
     """Assemble the pooled cross-sectional dataset from per-symbol OHLCV history.
 
@@ -142,6 +143,12 @@ def build_dataset(
     or missing regime is all-zeros). ``feature_names`` freezes the column
     order (serving/training contract); by default it is derived as the sorted
     union of ranked feature keys minus ``EXCLUDED_FEATURES``.
+
+    ``sector_by_symbol`` turns on sector neutralization (P2-2): features are
+    demeaned within their peer group before the global rank, so the ranking
+    stops being partly a ranking of sectors. It is OFF unless a map is passed —
+    and if it is ever turned on for training it MUST be on for serving too, or
+    the two compute different numbers under the same feature names.
     """
     p = params or DatasetParams()
 
@@ -193,6 +200,8 @@ def build_dataset(
             continue
 
         macro = _regime_one_hot(regime_by_date.get(session) if regime_by_date else None)
+        if sector_by_symbol is not None:
+            snapshot = sector_neutralize(snapshot, sector_by_symbol)
         for ranked, (symbol, i) in zip(cross_sectional_rank(snapshot), members, strict=True):
             outcome: BarrierOutcome | None = triple_barrier_label(
                 series[symbol]["closes"],

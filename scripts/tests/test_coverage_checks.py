@@ -12,6 +12,7 @@ import pathlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from trading_common.sectors import normalize_sector
 
 SPEC = importlib.util.spec_from_file_location(
     "bootstrap", pathlib.Path(__file__).resolve().parents[1] / "bootstrap-universe.py"
@@ -90,3 +91,39 @@ def test_full_adjusted_coverage_is_reported_positively():
     result = check(series({}))
     assert result["adj_close_coverage"] == 1.0
     assert result["ok"] is True
+
+
+# --- P2-2: the sector map and the verdict it produces ---------------------
+
+
+def test_default_universe_and_sector_map_stay_in_sync():
+    """The sectors were a comment before P2-2 turned them into data. A comment
+    can drift from the list beneath it silently; this cannot."""
+    assert len(boot.DEFAULT_UNIVERSE) == 34
+    assert len(set(boot.DEFAULT_UNIVERSE)) == 34  # no symbol listed twice
+    assert set(boot.SECTOR_BY_SYMBOL) == set(boot.DEFAULT_UNIVERSE)
+    for sector in boot.DEFAULT_UNIVERSE_BY_SECTOR:
+        assert normalize_sector(sector) == sector, f"{sector} is not a GICS name"
+
+
+def test_verdict_refuses_to_judge_a_universe_it_could_not_neutralize():
+    # The real 34-name case: ~3 names per sector, so almost nothing was demeaned
+    # against peers and the comparison is noise either way.
+    text = boot.sector_verdict(0.18, {"strong_plain": 4, "strong_neutral": 0})
+    assert "not measurable" in text
+
+
+def test_a_collapse_in_evidence_is_reported_as_a_sector_bet():
+    """The reading that must not regress: mean |t| falling is the transform
+    doing its job, not failing. Calling it 'no gain, keep ranking globally'
+    would invert the conclusion."""
+    text = boot.sector_verdict(1.0, {"strong_plain": 9, "strong_neutral": 0})
+    assert "was the sector" in text
+    assert "keep ranking globally" not in text
+
+
+def test_surviving_evidence_recommends_adoption():
+    text = boot.sector_verdict(1.0, {"strong_plain": 3, "strong_neutral": 5})
+    assert "stock-specific" in text
+    mixed = boot.sector_verdict(1.0, {"strong_plain": 6, "strong_neutral": 2})
+    assert "mixed" in mixed

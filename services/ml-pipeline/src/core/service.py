@@ -34,6 +34,7 @@ from src.core.model_store import MlflowModelStore
 from src.core.monitoring.drift_detector import DriftDetector, DriftReport
 from src.core.outcomes import OutcomeResolver
 from src.core.registry import ModelBaseline, ModelRegistry
+from src.core.sector_study import run_sector_study
 from src.core.serving import ServingEngine
 from src.core.target_study import calibrate_barriers, score_targets
 from src.core.training import TrainingParams, run_training
@@ -252,6 +253,32 @@ class MLPipelineService:
                 bars_by_symbol, horizons=horizons, lookback=self._dataset_params.lookback
             ),
         }
+
+    async def sector_study(
+        self,
+        symbols: list[str],
+        interval: Interval,
+        sector_by_symbol: dict[str, str | None],
+        limit: int = 1500,
+    ) -> dict[str, Any]:
+        """Does demeaning by sector raise each feature's standalone evidence?
+
+        The E2 gate for P2-2, and model-free like the others: both datasets go
+        through the real `build_dataset`, so what is compared is exactly what
+        training would consume. Neutralization stays OFF for training until this
+        says otherwise — and if it is ever turned on, the serving path has to be
+        turned on with it or the two compute different numbers.
+        """
+        if self._market is None:
+            raise RuntimeError("market-data client not configured")
+        bars_by_symbol = {}
+        for symbol in symbols:
+            bars = await self._market.get_ohlcv(symbol, interval, limit=limit)
+            if bars:
+                bars_by_symbol[symbol] = bars
+        if not bars_by_symbol:
+            raise ValueError("no history for any requested symbol")
+        return run_sector_study(bars_by_symbol, sector_by_symbol, self._dataset_params)
 
     async def capacity_probe(
         self, symbols: list[str], interval: Interval, limit: int = 1500

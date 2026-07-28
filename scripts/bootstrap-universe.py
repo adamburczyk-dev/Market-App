@@ -42,51 +42,31 @@ from datetime import UTC, date, datetime, timedelta
 
 # ~34 liquid US large caps across GICS sectors (cross-sectional learning needs
 # sector breadth, not just tech). Equities only — no ETFs in the model universe.
-DEFAULT_UNIVERSE = [
-    # Information Technology
-    "AAPL",
-    "MSFT",
-    "NVDA",
-    "AVGO",
-    "ORCL",
-    "CRM",
-    # Communication Services
-    "GOOGL",
-    "META",
-    "NFLX",
-    # Consumer Discretionary
-    "AMZN",
-    "TSLA",
-    "HD",
-    "MCD",
-    "NKE",
-    # Financials
-    "JPM",
-    "BAC",
-    "GS",
-    # Health Care
-    "UNH",
-    "JNJ",
-    "LLY",
-    "PFE",
-    # Consumer Staples
-    "PG",
-    "KO",
-    "PEP",
-    "WMT",
-    "COST",
-    # Energy
-    "XOM",
-    "CVX",
-    # Industrials
-    "CAT",
-    "HON",
-    "UPS",
-    # Materials / Utilities / Real Estate
-    "LIN",
-    "NEE",
-    "PLD",
-]
+#
+# The sectors were a comment until P2-2 needed them as data. They are GICS names
+# and static: sector membership is point-in-time in principle, but for large caps
+# over six years it is stable, and a static map is honest as long as that is
+# stated. A survivorship-free point-in-time universe is P3-1's job, not this
+# script's.
+DEFAULT_UNIVERSE_BY_SECTOR: dict[str, list[str]] = {
+    "Information Technology": ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "CRM"],
+    "Communication Services": ["GOOGL", "META", "NFLX"],
+    "Consumer Discretionary": ["AMZN", "TSLA", "HD", "MCD", "NKE"],
+    "Financials": ["JPM", "BAC", "GS"],
+    "Health Care": ["UNH", "JNJ", "LLY", "PFE"],
+    "Consumer Staples": ["PG", "KO", "PEP", "WMT", "COST"],
+    "Energy": ["XOM", "CVX"],
+    "Industrials": ["CAT", "HON", "UPS"],
+    "Materials": ["LIN"],
+    "Utilities": ["NEE"],
+    "Real Estate": ["PLD"],
+}
+DEFAULT_UNIVERSE = [s for names in DEFAULT_UNIVERSE_BY_SECTOR.values() for s in names]
+SECTOR_BY_SYMBOL: dict[str, str] = {
+    symbol: sector
+    for sector, names in DEFAULT_UNIVERSE_BY_SECTOR.items()
+    for symbol in names
+}
 
 MIN_SESSIONS_FOR_TRAINING = 945  # holdout 126 + train 756 + test 63 (TrainingParams)
 
@@ -449,6 +429,112 @@ def run_target_study(
     return 0
 
 
+def sector_verdict(share: float, summary: dict) -> str:
+    """Turn the two IC columns into a sentence — the load-bearing part.
+
+    The naive reading ("mean |t| went down, so neutralization did not help") is
+    wrong and would have shipped: removing a sector bet is what the transform is
+    FOR, so evidence disappearing is the measurement working. On a fixture where
+    sectors drift apart, global mean |t| was 2.12 with 9 features over the bar
+    and neutralized mean |t| was 0.74 with none — nothing had broken.
+    """
+    strong_plain = int(summary.get("strong_plain", 0))
+    strong_neutral = int(summary.get("strong_neutral", 0))
+    if share < 0.5:
+        return (
+            "VERDICT: not measurable on this universe. Most names had no real peer "
+            "group,\n  so the two columns above differ by noise, not by the transform. "
+            "Sector\n  neutralization becomes testable at P3-1's wider universe — not "
+            "before."
+        )
+    if strong_neutral == 0 and strong_plain > 0:
+        return (
+            f"VERDICT: all of it was the sector. {strong_plain} features cleared "
+            "|t| >= 2 globally\n  and NONE do within sector — so today's ranking is a "
+            "sector bet wearing a\n  factor's clothes, and a benchmark-relative book "
+            "would not be paid for it."
+        )
+    if strong_neutral >= strong_plain:
+        return (
+            f"VERDICT: the evidence is stock-specific ({strong_neutral} features at "
+            "|t| >= 2 survive\n  demeaning) — adopt neutralization; it costs nothing "
+            "and removes a hidden bet."
+        )
+    return (
+        f"VERDICT: mixed — {strong_plain} strong features globally, {strong_neutral} "
+        "within sector.\n  The difference is the part of the signal that was sector "
+        "rotation. Which one to\n  trade is the D3/P3-4 decision (absolute vs "
+        "benchmark-relative book), not this table's."
+    )
+
+
+def run_sector_study(
+    ml_url: str,
+    symbols: list[str],
+    limit: int,
+    timeout_s: float,
+    report: dict | None = None,
+) -> int:
+    """Compare each feature's standalone IC with and without sector demeaning.
+
+    Model-free, so it costs nothing against the gate's n_trials. The E2 rule is
+    that a transform enters the model only if it raises the evidence — this is
+    the measurement that decides, and until it says yes, training ranks globally.
+    """
+    sectors = {s: SECTOR_BY_SYMBOL.get(s) for s in symbols}
+    print(f"\nSector study on {len(symbols)} symbols (model-free)...")
+    try:
+        status, body = _request(
+            "POST",
+            f"{ml_url}/api/v1/ml-pipeline/models/sector-study",
+            {"symbols": symbols, "interval": "1d", "limit": limit, "sectors": sectors},
+            timeout=timeout_s,
+        )
+    except OSError as exc:
+        print(f"Sector study failed: {exc}")
+        if report is not None:
+            report["sector_study_error"] = str(exc)
+        return 1
+    if status != 200:
+        print(f"Sector study failed: HTTP {status}: {body.get('detail', body)}")
+        if report is not None:
+            report["sector_study_error"] = f"HTTP {status}: {body.get('detail', body)}"
+        return 1
+    if report is not None:
+        report["sector_study"] = body
+
+    comp = body.get("composition", {})
+    share = comp.get("share_neutralized_against_peers", 0.0)
+    print(
+        f"  universe {comp.get('symbols')} names; sectors with >= "
+        f"{comp.get('min_sector_size')} members: "
+        f"{', '.join(comp.get('sectors_large_enough') or ['none'])}"
+    )
+    print(
+        f"  {comp.get('names_in_residual_group')} names fell into the residual group "
+        f"→ only {share:.0%} were demeaned against real peers"
+    )
+    if comp.get("unknown_sector"):
+        print(f"  unknown sector: {', '.join(comp['unknown_sector'])}")
+
+    print(f"\n  {'feature':<20} {'t plain':>8} {'t neutral':>10} {'gain':>7}")
+    for row in body.get("features", []):
+        print(
+            f"  {row['feature']:<20} {row['t_plain']:>8.2f} "
+            f"{row['t_neutral']:>10.2f} {row['t_gain']:>+7.2f}"
+        )
+    summary = body.get("summary", {})
+    print(
+        f"\n  mean |t|: {summary.get('mean_abs_t_plain')} -> "
+        f"{summary.get('mean_abs_t_neutral')}; "
+        f"{summary.get('n_improved')}/{summary.get('n_features')} features improved; "
+        f"|t| >= 2: {summary.get('strong_plain')} -> {summary.get('strong_neutral')}"
+    )
+    print("\n  " + sector_verdict(share, summary))
+    print(f"  {body.get('note', '')}")
+    return 0
+
+
 def run_capacity_probe(
     ml_url: str,
     symbols: list[str],
@@ -668,6 +754,15 @@ def main() -> int:
         "--train", action="store_true", help="Run a training pass after backfill"
     )
     parser.add_argument(
+        "--sector-study",
+        action="store_true",
+        help=(
+            "Compare each raw feature's standalone IC with and without sector "
+            "demeaning. Model-free — costs no gate trials. Decides whether "
+            "sector neutralization enters the model."
+        ),
+    )
+    parser.add_argument(
         "--target-study",
         action="store_true",
         help=(
@@ -799,6 +894,16 @@ def main() -> int:
         exit_code = max(
             exit_code,
             run_target_study(
+                ml_url, trainable, args.train_limit, args.train_timeout, report=report
+            ),
+        )
+    if args.sector_study:
+        trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
+        ml_url = args.ml_pipeline_url.rstrip("/")
+        _check_service(ml_url, "ml-pipeline")
+        exit_code = max(
+            exit_code,
+            run_sector_study(
                 ml_url, trainable, args.train_limit, args.train_timeout, report=report
             ),
         )

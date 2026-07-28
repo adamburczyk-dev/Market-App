@@ -1375,6 +1375,51 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   przekrojową wektorów serwowanych dla tej sesji. Koszt czasu: 0.24 ms/wektor przy oknie 300
   (0.25 ms przy 250) — szersze okno nie kosztuje, bo praca jest w numpy, nie w pętli.
 
+- 2026-07-28 — **Etap E2 / P2-2: neutralizacja sektorowa — zbudowana, mierzalna, domyślnie
+  wyłączona; przy okazji naprawiony realny defekt ryzyka (FLOW-8).** Trzy części.
+  **(1) Słownik sektorów** — nowy `trading_common.sectors`: 11 nazw GICS + `normalize_sector`
+  (aliasy, które realnie sypią dostawcy: Technology/Tech, Healthcare, Consumer Cyclical,
+  Consumer Defensive, Financial Services, Basic Materials, Telecom…). To nie kosmetyka:
+  `RegimeAllocator.is_sector_allowed` porównywał tekst **dosłownie**, więc profil mówiący
+  „Healthcare" nie trafiał na listę dozwolonych w kryzysie i BUY był **po cichu odrzucany** —
+  różnica w zapisie danych działała jak decyzja ryzyka, i to fail-closed, czyli najtrudniej
+  zauważalnie. Ciąg, który nie normalizuje się do żadnego sektora, **nadal jest odrzucany**:
+  normalizacja nie może stać się pobłażliwością, bo ta bramka jest z założenia konserwatywna.
+  **(2) Transformacja** — `trading_common.ranking.sector_neutralize`: **odjęcie mediany sektora**
+  przed globalnym rangowaniem, świadomie zamiast rangowania wewnątrz sektora. Przy 34 nazwach na
+  11 sektorów to ~3 nazwy na grupę, a percentyl po 3 wartościach to zbiór {0, 0.5, 1} — dokładnie
+  degeneracja, przed którą broni `min_universe=20`. Odjęcie mediany zachowuje rozdzielczość całego
+  przekroju. Sektory poniżej `MIN_SECTOR_SIZE=4` idą do jednej grupy resztowej (nie zostają
+  nietknięte — inaczej część nazw byłaby na innej skali), tam też trafia symbol o nieznanym
+  sektorze. **(3) Pomiar** — `core/sector_study.py`, `POST /models/sector-study`, `--sector-study`:
+  samodzielne IC + t-stat każdej surowej cechy, liczone przez **prawdziwy `build_dataset`** w obu
+  wariantach; model-free, `n_trials` nietknięte.
+  **Znalezione przy budowie fixture'a i o mało nie wysłane w odwrotnej interpretacji**: na uniwersum,
+  w którym sektory się rozjeżdżają, globalne średnie |t| wynosi **2.12 przy 9 cechach ponad |t| ≥ 2**,
+  a po neutralizacji **0.74 przy zerze**. Pierwsza wersja werdyktu nazwałaby to „brak zysku — zostajemy
+  przy rankingu globalnym". To jest odwrócenie wniosku: **dowodem był sektor**, a odjęcie mediany
+  właśnie go usuwa — spadek jest informacją o DANYCH („ranking był w dużej mierze rankingiem
+  sektorów"), nie werdyktem o transformacji. Raport pyta teraz o to, **co przeżywa** (`strong_neutral`),
+  bo tylko ta resztka jest czymś, co model przekrojowy może uznać za swoje — i tylko za nią płaci
+  książka względna (D3/P3-4). Werdykt wydzielony do czystej funkcji `sector_verdict` z testami na
+  wszystkie cztery gałęzie, w tym regresyjny „spadek NIE może być opisany jako «keep ranking globally»".
+  Neutralizacja w treningu jest **domyślnie WYŁĄCZONA** (`build_dataset(sector_by_symbol=...)` —
+  argument opcjonalny); włączenie wymaga włączenia po stronie serwowania w tym samym kroku, inaczej
+  odtworzymy rozjazd. Przy 34 nazwach pomiar i tak orzeknie „nie do zmierzenia" — realnie transformacja
+  staje się testowalna dopiero przy uniwersum P3-1. `DEFAULT_UNIVERSE` w skrypcie bootstrapu przestał
+  być listą z komentarzami i jest **mapą sektor → symbole** (komentarz mógł się rozjechać z listą po
+  cichu, mapa nie może — pinuje to test). Liczniki: shared 213 (+16), risk-mgmt 116 (+2),
+  ml-pipeline 192 (+8), `scripts/` 9 (+4) → **bateria 984**; ruff + format + mypy (`--strict` na
+  shared) czyste. **Zweryfikowane na żywo (9/9)** na realnym `nats-server`: (A) realny
+  `RiskMgmtService` w reżimie kryzysu dostaje cztery realne zdarzenia `signal.aggregated` — sektory
+  „Healthcare" i „Consumer Defensive" **dostają zlecenia** (przed poprawką obie byłyby odrzucone),
+  a „Information Technology" (realnie zakazany w kryzysie) i „Crypto" (nieznany) **nadal nie**;
+  zlecenia odczytane z powrotem ze strumienia ORDERS. (B) `sector_study` przez realne HTTP do
+  realnej market-daty (20 symboli × 520 świec, 5240 wierszy): sektor 2-elementowy poprawnie ląduje
+  w grupie resztowej (`share_neutralized 0.9`), neutralizacja realnie zmienia wejście modelu,
+  odpowiedź serializuje się do JSON-a (route zwraca ją dosłownie), a werdykt wyrenderował się jako
+  „mixed — 8 silnych cech globalnie, 7 wewnątrz sektora".
+
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.

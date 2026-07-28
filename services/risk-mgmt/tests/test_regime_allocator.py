@@ -98,6 +98,26 @@ class TestIsSectorAllowed:
     def test_recovery_allows_all(self):
         assert self.alloc.is_sector_allowed("recovery", "Materials")
 
+    # FLOW-8: the allow-list is matched on the NORMALIZED sector
+    def test_vendor_spellings_are_not_silently_blocked(self):
+        """The defect this closes: matching by exact text meant a profile that
+        said "Healthcare" or "Consumer Defensive" — both ordinary vendor
+        spellings — did not match the allow-list and the BUY was refused in a
+        crisis. A data-entry difference was acting as a risk decision."""
+        assert self.alloc.is_sector_allowed("crisis", "Healthcare")
+        assert self.alloc.is_sector_allowed("crisis", "Consumer Defensive")
+        assert self.alloc.is_sector_allowed("slowdown", "Technology")
+        assert self.alloc.is_sector_allowed("slowdown", "Tech")
+
+    def test_an_unrecognized_sector_is_still_refused(self):
+        """Normalization must not become permissiveness: a string that maps to
+        no GICS sector cannot be shown to be on the list, and this gate is
+        conservative on purpose."""
+        assert not self.alloc.is_sector_allowed("crisis", "Crypto")
+        assert not self.alloc.is_sector_allowed("crisis", "")
+        # ...but an unrestricted regime still lets everything through
+        assert self.alloc.is_sector_allowed("expansion", "Crypto")
+
 
 class TestRequiredCashPct:
     def setup_method(self):

@@ -19,6 +19,12 @@ class TrainRequest(BaseModel):
     limit: int = Field(default=1500, ge=300, le=10_000)
 
 
+class SectorStudyRequest(TrainRequest):
+    # symbol -> free-form sector string; normalized to GICS on the way in.
+    # A symbol absent here is "unknown sector", which is a real answer.
+    sectors: dict[str, str | None] = Field(default_factory=dict)
+
+
 class TuneRequest(TrainRequest):
     n_folds: int = Field(default=4, ge=2, le=10)
 
@@ -77,6 +83,24 @@ async def target_study(
     is fitted, so this costs nothing against the gate's n_trials."""
     try:
         return await service.target_study(req.symbols, Interval(req.interval), limit=req.limit)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/models/sector-study")
+async def sector_study(
+    req: SectorStudyRequest, service: MLPipelineService = Depends(get_service)
+) -> dict:
+    """Compare each raw feature's standalone IC with and without sector
+    neutralization. Model-free — no model is fitted, so no trials are consumed.
+    Read `composition.share_neutralized_against_peers` first: with too few names
+    per sector the transform barely applies and the comparison means nothing."""
+    try:
+        return await service.sector_study(
+            req.symbols, Interval(req.interval), req.sectors, limit=req.limit
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:

@@ -95,3 +95,33 @@ async def test_capacity_probe_needs_a_market_client(wired: tuple[AsyncClient, ML
         json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500},
     )
     assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_sector_study_needs_a_market_client(wired: tuple[AsyncClient, MLPipelineService]):
+    # Same ops-call contract as the probe: 503, not a stack trace.
+    client, _ = wired
+    resp = await client.post(
+        "/api/v1/ml-pipeline/models/sector-study",
+        json={
+            "symbols": ["AAPL", "MSFT"],
+            "interval": "1d",
+            "limit": 500,
+            "sectors": {"AAPL": "Technology", "MSFT": "Information Technology"},
+        },
+    )
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_sector_study_accepts_an_absent_sector_map(
+    wired: tuple[AsyncClient, MLPipelineService],
+):
+    # "I have no sectors" is a real request — every name lands in the residual
+    # group and the study says so — so the field must not be required.
+    client, _ = wired
+    resp = await client.post(
+        "/api/v1/ml-pipeline/models/sector-study",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500},
+    )
+    assert resp.status_code == 503  # still unwired, but the body validated

@@ -162,8 +162,38 @@ Przy okazji wzmocniona **G2**: komparatorem jest teraz **najlepsza z WSZYSTKICH*
 (dotąd jedna zadeklarowana, `return_20d`). Wybór maksimum na tym samym oknie jest obciążony w górę,
 czyli bramka robi się trudniejsza z każdą dołożoną cechą — to właściwy kierunek błędu.
 
-**P2-2** neutralizacja sektorowa — wymaga mapy sektorów per symbol (statyczna, tania;
-`company-classifier` już operuje na `sector`).
+**P2-2 ✅ zrobione 2026-07-28 (zbudowane + mierzalne; adopcja czeka na pomiar)** — neutralizacja
+sektorowa. Trzy części:
+
+- **Słownik sektorów** (`trading_common.sectors`): 11 nazw GICS + `normalize_sector`. To zamyka
+  przesłankę FLOW-8 i **naprawia realny defekt**: `RegimeAllocator.is_sector_allowed` porównywał
+  tekst dosłownie, więc profil mówiący „Technology" albo „Healthcare" nie trafiał na listę i BUY był
+  po cichu odrzucany w recesji. Różnica w zapisie danych działała jak decyzja ryzyka. Ciąg, który
+  nie normalizuje się do niczego, **nadal jest odrzucany** — normalizacja nie jest pobłażliwością.
+- **Transformacja** (`trading_common.ranking.sector_neutralize`): **odjęcie mediany sektora**, nie
+  rangowanie wewnątrz sektora. Przy 34 nazwach na 11 sektorów to ~3 nazwy na sektor, a percentyl po
+  3 wartościach to zbiór {0, 0.5, 1} — dokładnie ta degeneracja, przed którą broni `min_universe`.
+  Odjęcie mediany i **globalne** rangowanie zachowuje rozdzielczość całego przekroju. Sektory poniżej
+  `MIN_SECTOR_SIZE` (4) trafiają do jednej grupy resztowej, a nie zostają nietknięte — inaczej
+  część nazw byłaby na innej skali niż reszta. Symbol o nieznanym sektorze też tam trafia (uczciwe
+  „nie znam grupy odniesienia", nigdy zgadywanie).
+- **Pomiar** (`POST /models/sector-study`, `--sector-study`): samodzielne IC + t-stat każdej surowej
+  cechy, liczone przez **prawdziwy `build_dataset`** w obu wariantach. Model-free, `n_trials`
+  nietknięte.
+
+**Kierunku nie czyta się „wyżej = lepiej"** — to wyszło dopiero przy budowie fixture'a i o mało nie
+trafiło do raportu w odwrotnej interpretacji. Na uniwersum, w którym sektory się rozjeżdżają,
+globalne średnie |t| wynosiło **2.12 przy 9 cechach ponad progiem |t| ≥ 2**, a po neutralizacji
+**0.74 przy zerze**. Nic się nie zepsuło — **dowodem był sektor**, a odjęcie mediany właśnie go
+usuwa. Spadek jest więc informacją o DANYCH („ranking był w dużej mierze rankingiem sektorów"), nie
+werdyktem o transformacji. Raport pyta o to, **co przeżywa**: tylko ta resztka jest czymś, co model
+przekrojowy może uznać za swoje — i tylko za nią płaci książka względna (D3/P3-4).
+
+Neutralizacja jest **domyślnie WYŁĄCZONA** w treningu (`build_dataset(sector_by_symbol=...)` —
+opcjonalny argument). Włączenie jej w treningu wymaga włączenia po stronie serwowania w tym samym
+kroku, inaczej odtworzymy rozjazd trening/serwowanie. Przy 34 nazwach pomiar i tak orzeknie „nie do
+zmierzenia" (grupa resztowa pochłania większość) — realnie transformacja staje się testowalna
+dopiero przy uniwersum P3-1.
 
 **P2-3** **fundamenty point-in-time** — najdroższe i najbardziej wartościowe zadanie w tym etapie:
 wypełnić `filed_at` z EDGAR (`acceptanceDateTime`), zapisać **panel historyczny** w Postgresie
