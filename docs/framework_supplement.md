@@ -1,5 +1,13 @@
 # Framework Supplement — podniesienie systemu do poziomu 9/10
 
+> **Status 2026-07-28: REFERENCJA, nie plan.** Wszystkie 12 komponentów jest wdrożonych i
+> podpiętych (szczegóły w `CLAUDE.md`). Dokument pełni dziś dwie role: (1) specyfikacja i
+> uzasadnienie każdego komponentu, (2) **archiwum referencyjnych implementacji kodu usuniętego
+> z repozytorium** — `vol_regime`, `earnings_decay`, `cross_asset` zostały skasowane
+> 2026-07-25 jako martwy kod i ich implementacje żyją już tylko tutaj oraz w historii gita.
+> „Tydzień implementacji" przy komponentach to relikt pierwotnego harmonogramu — kolejność prac
+> wyznacza dziś [`plan_2026_07_28_prediction.md`](plan_2026_07_28_prediction.md).
+
 ## Cel dokumentu
 
 Uzupełnienia do trzech istniejących dokumentów (`Plan_Rozwoju`, `ml_integration_plan`, `CLAUDE.md`)

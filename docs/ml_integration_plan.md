@@ -1,5 +1,14 @@
 # ML Integration Plan (serwisy 10–13 → ml-pipeline)
 
+> **Status 2026-07-28: ARCHITEKTURA — obowiązuje. PARAMETRY — częściowo zastąpione.**
+> ML-0…ML-3 są zaimplementowane, a decyzje architektoniczne z tego dokumentu (uczenie przekrojowe,
+> triple barrier, ML jako głos bez poziomów, rejestr MLflow, integracja z agregatorem) nadal
+> obowiązują i opisują działający kod. Zastąpione są **wybory ilościowe**:
+> §6 bramka aktywacji → `ml-pipeline/src/core/gate.py` (G0–G5, patrz banner w tamtej sekcji);
+> §4–§5 horyzont, szerokość barier, zestaw cech i metryka decyzyjna → są przedmiotem
+> [`plan_2026_07_28_prediction.md`](plan_2026_07_28_prediction.md) (etapy E1–E3).
+> Czytaj ten plik, gdy pytasz „jak to jest zbudowane i dlaczego"; tamten, gdy pytasz „co dalej".
+
 > Authoritative design for the ML phase, written **before** the deep ML work per the standing
 > rule in CLAUDE.md. Everything here is chosen for the data this system actually has — daily
 > OHLCV for a small/medium US-equity universe, annual fundamentals, macro indicators — not for

@@ -1,5 +1,17 @@
 # Trading System — brief do przeglądu zewnętrznego
 
+> ## 🗄️ ARCHIWUM — zamrożony snapshot stanu na 2026-07-26
+>
+> Ten opis powstał dla zewnętrznego recenzenta i **spełnił swoje zadanie** — na jego podstawie
+> powstał [`review_2026_07_27_external_audit.md`](review_2026_07_27_external_audit.md).
+>
+> **Zawiera nieaktualne liczby i decyzje** — m.in. starą bramkę aktywacji (opartą na samym
+> Sharpe), stare progi i wyniki pierwszego treningu. Aktualny obraz systemu:
+> [`../../README.md`](../../README.md) i [`../../CLAUDE.md`](../../CLAUDE.md).
+>
+> Do kolejnego przeglądu zewnętrznego **generujemy nowy brief**, nie odświeżamy tego — inaczej
+> stracimy możliwość powiedzenia „tak system wyglądał wtedy".
+
 > **Do czego służy ten plik.** Jest samowystarczalnym opisem systemu: architektury, ścieżki
 > decyzyjnej, wszystkich progów i parametrów oraz wyników pierwszego prawdziwego treningu.
 > Czytelnik **nie ma dostępu do repozytorium** — wszystko, co potrzebne do oceny logiki,

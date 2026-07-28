@@ -285,3 +285,47 @@ na sygnale bez przewagi tylko filtruje szum — precyzyjniej, ale nadal szum.
    i tym samym rebalans stanie się miesięczny.
 3. **Książka względna** (P3-4) — czy docelowo chcemy handlować long-short/względem benchmarku,
    czy zostajemy przy long-only. To zmienia i metrykę, i to, czy szerokość w ogóle rośnie.
+
+---
+
+## 13. Co ten plan dziedziczy po `backlog_2026_07_27.md`
+
+Backlog po audycie zewnętrznym zostaje **zarchiwizowany** (`docs/archive/`) — ten plan jest jego
+następcą dla toru predykcji. Żeby archiwizacja niczego nie zgubiła, poniżej pełne mapowanie
+niezamkniętych pozycji:
+
+| Backlog | Tutaj | Zmiana względem backlogu |
+|---|---|---|
+| T1-1 uniwersum 200–500 point-in-time | **P3-1** | uzasadnienie zmienione: **moc pomiarowa**, nie szerokość (ta się nasyca — §1) |
+| T1-2 historia od 2005 | **P3-2** | bez zmian |
+| T1-4 `momentum_12_1`, `momentum_6_1`, vol-scaled, `dist_52w_high`, `beta_60` | **P2-1** | rozszerzone o rewersję 1M osobno od momentum, MAX, Amihud, dollar volume; + twardy warunek `lookback` po obu stronach |
+| T1-5 `filed_at` point-in-time | **P2-3** | rozszerzone: potrzebny **panel historyczny**, nie tylko pole (dziś latest-per-symbol w pamięci) |
+| T2-1 Tier-2 do treningu | **P2-3** | to samo zadanie — fundamenty wchodzą razem z panelem |
+| T2-2 historia makro z vintage/lag | **P2-4** (nowe) | makro jako cecha wymaga danych vintage, inaczej to look-ahead na rewizjach |
+| T2-3 LightGBM + logreg jako baseline | **P4-1** | + **regresja logistyczna jako obowiązkowy baseline liniowy** — model, który nie bije liniowego, nie zasługuje na sieć |
+| T2-4 rekalibracja barier 2.0 → 1.0 | **P1-1** | poparte pomiarem (46.3% pionowa przy 1.0σ) |
+| T2-5 neutralizacja sektorowa | **P2-2** | + zależność od FLOW-8 (sektory jako wolne łańcuchy znaków) |
+| T2-6 meta-labeling | **P5-1** | warunek wejścia: G1 bramki spełnione |
+| T3 CPCV + PBO | **P4-4** | DSR już zrobione (G5); dochodzi PBO (probability of backtest overfitting) |
+| T3 σ-skalowany stop-loss | **P5-3** | dziś SL są procentowe |
+| T3 fractional differentiation | **P2-5** (opcjonalne) | do rozważenia dopiero, gdy cechy stacjonarne wyczerpią się |
+
+**Pozycje z backlogu, które NIE należą do toru predykcji**, przeniesione do „Known issues /
+tech debt" w `CLAUDE.md`: FLOW-2 (arbitralne 200 bps w filtrze kosztów), FLOW-3/D3 (makro liczone
+podwójnie), FLOW-4 (stan portfela tylko po HTTP), FLOW-5 (rozliczanie wyniku strategii),
+FLOW-7 (brak okresu próbnego w monitorze degradacji), FLOW-8 (sektory jako łańcuchy znaków),
+FLOW-9 (kryterium przejścia na realny kapitał), zatrzask wyłącznika, event sourcing,
+konsumenci pull.
+
+### Decyzje otwarte, przeniesione z backlogu (D1–D8)
+
+| # | Decyzja | Status |
+|---|---|---|
+| D1 | Rozmiar/źródło uniwersum | **otwarta** → §12 pkt 1; rekomendacja zmieniona na rekonstrukcję po obrocie (odtwarzalna, bez survivorship) |
+| D2 | Horyzont 10 vs 21 | **otwarta** → rozszerzona do 10/21/63, rozstrzyga pomiar (P1-2) |
+| D3 | Makro: usunąć z agregatora | **otwarta** — nie zrobione; `REGIME_BIAS` nadal działa. Przeniesione do tech debt |
+| D4 | Meta-labeling zamiast równoległego głosowania | kierunek przyjęty → **P5-1**, po bramce E4 |
+| D5 | Filtr RSI | **otwarta** → wchodzi jako zwykły kandydat do oceny per cecha w **E2** |
+| D6 | `llm-svc` | **rozstrzygnięta: odłożone** (§11) |
+| D7 | Backtest na nakładających się transzach | **otwarta** — silnik backtestu nadal dzienny, więc backtest i ocena ML są nieporównywalne |
+| D8 | Reżim jako cecha czy warunkowanie | **otwarta** → wraca razem z P2-4 (makro vintage) |

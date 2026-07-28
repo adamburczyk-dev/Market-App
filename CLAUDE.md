@@ -7,15 +7,18 @@ via NATS JetStream (events) and HTTP (request/response).
 
 **Key docs:**
 - **Project context/status/direction: this file** — see "Project status & direction" below (single source of truth I read every session)
-- Full 24-week development plan: `Plan_Rozwoju_Systemu_Tradingowego_2.md` (repo root)
-- **Plan poprawy przewidywania (2026-07-28): `docs/plan_2026_07_28_prediction.md`** — stan wejścia
-  modelu zweryfikowany w kodzie, próg wykrywalności IC, nasycenie szerokości w książce long-only,
-  etapy E0–E5 z bramkami decyzyjnymi
-- Framework supplement — 12 components (risk envelope, drift/decay monitors, cost filter, regime allocator, …): `docs/framework_supplement.md`
-- **ML/AI integration plan: `docs/ml_integration_plan.md`** — authoritative design for the ML
-  phase (cross-sectional shallow model on ranked features, triple-barrier labels, purged
-  walk-forward, MLflow, `ml.signal_generated` → aggregator, drift monitoring, roadmap ML-0…ML-4).
-  Read it before touching ml-pipeline.
+- **Map of every document and which one wins: `docs/README.md`** — read it before adding a doc
+- **CURRENT working plan (prediction track): `docs/plan_2026_07_28_prediction.md`** — the model's
+  actual inputs verified in code, the IC detection floor, breadth saturation in a long-only book,
+  stages E0–E5 with decision gates, and §13 carrying every open item from the archived backlog
+- Founding architecture + 24-week build guide (build phase executed): `Plan_Rozwoju_Systemu_Tradingowego_2.md` (repo root)
+- Framework supplement — reference for the 12 components + reference implementations of deleted
+  calculators: `docs/framework_supplement.md`
+- **ML architecture: `docs/ml_integration_plan.md`** — cross-sectional shallow model on ranked
+  features, triple-barrier labels, purged walk-forward, MLflow, `ml.signal_generated` → aggregator,
+  drift monitoring, roadmap ML-0…ML-4. **Architecture still binding; the quantitative choices
+  (§4–§6: horizon, barrier width, feature set, gate) are superseded** by `core/gate.py` and the
+  prediction plan. Read it before touching ml-pipeline.
 
 ## Project status & direction
 
@@ -335,6 +338,30 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4. **Contracts-first** always: extend `shared/trading-common` before adding any cross-service type.
 
 **Known issues / tech debt** (propose a fix when you touch the area):
+- [**from the archived audit backlog, 2026-07-28** — these are NOT part of the prediction track and
+  would otherwise have been lost when `backlog_2026_07_27.md` was archived]
+  - **FLOW-2** `CostAwareFilter`'s `base_edge_bps = 200` is a constant pulled from thin air. Units
+    are consistent (verified — the audit was wrong on that), but the number should be a calibrated
+    expected return, e.g. `(2p−1)·pt_mult·σ·√h`; the function already accepts
+    `expected_return_bps` when given.
+  - **FLOW-3 / D3** the macro regime is applied TWICE: as a directional bias in the aggregator
+    (`REGIME_BIAS`) and as exposure/sector caps in risk-mgmt. The caps are its proper home; the
+    aggregator bias is market timing on one global variable. Open decision.
+  - **FLOW-4** portfolio state reaches risk-mgmt only over HTTP (`push_portfolio`); a failed call
+    silently desynchronizes sizing from reality. An event would be the honest channel.
+  - **FLOW-5** the adaptive-weight loop learns from a *modelled* outcome for the strategy source
+    (ML now uses realized triple-barrier outcomes — ML-3); strategy should get the same treatment.
+  - **FLOW-7** `StrategyDecayMonitor` has no probation trial period — a strategy is demoted on the
+    metric with no observation window.
+  - **FLOW-8** sectors are free-form strings; an unmatched name blocks in restrictive regimes
+    (conservative but silent). A GICS enum + a per-symbol map is a prerequisite for the
+    sector-neutral ranks planned in the prediction plan (P2-2).
+  - **FLOW-9** no written criterion for moving from paper to real capital beyond "30 days positive
+    Sharpe" — needs the full checklist (max drawdown observed, fill realism, breaker rehearsal).
+  - **Circuit breaker does not latch**: BLACK auto-clears when the metric recovers. A real system
+    requires a manual reset out of BLACK.
+  - **D7** the backtest engine still rebalances daily while ML evaluation uses `1/h` overlapping
+    tranches — the two are not comparable until the engine gets tranches too.
 - [P1 ✅ done 2026-07-07] **R1 resolved as (a)** — the signal-aggregator is the **decision node**:
   `SignalAggregatedEvent` extended with price/SL/TP/strategy_name (attached only when the final
   direction matches the strategy component's); risk-mgmt's subscription switched to
@@ -1006,7 +1033,8 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   `/ready` ml-pipeline raportuje teraz `model_registry` (nie bramkuje gotowości — degradacja ma być
   WIDOCZNA), a skrypt bootstrapu głośno ostrzega przy `version: null`.
 
-- 2026-07-27 — **Audyt zewnętrzny przyjęty, plan przestawiony** (`docs/backlog_2026_07_27.md`).
+- 2026-07-27 — **Audyt zewnętrzny przyjęty, plan przestawiony** (backlog — od 2026-07-28 w
+  `docs/archive/backlog_2026_07_27.md`).
   Audyt prosił o weryfikację swoich twierdzeń przed wdrożeniem, więc sprawdziłem je na kodzie i na
   danych z realnego biegu. **Potwierdzone:** (F2) triple barrier zdegenerowany — uruchomienie
   realnego `triple_barrier_label` na GBM daje przy `pt=sl=2.0` **90.8% rozstrzygnięć na barierze
@@ -1207,41 +1235,52 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   ml-pipeline 168 testów (+6); ruff + format + mypy czyste; sonda zweryfikowana na żywo po HTTP
   (10/10 asercji).
 
-**Next:** plan przestawiony po audycie zewnętrznym — **`docs/backlog_2026_07_27.md` jest teraz
-listą roboczą** (audyt + moja weryfikacja jego twierdzeń + 2 znaleziska własne). Reguła nadrzędna:
-**żadnego kolejnego treningu przed zamknięciem całego Tier 0** — pierwszy bieg nie tyle pokazał
-brak sygnału, co *nie mógł niczego pokazać* (metryka bez mocy statystycznej, 6 realnych cech
-krótkoterminowych, 34 nazwy, 6 lat jednego reżimu).
+- 2026-07-28 — **Uporządkowanie dokumentacji: jedna lista robocza, jedna mapa.** Pytanie
+  użytkownika („który plik jest prawidłowy?") było zasadne — `docs/` miał trzy dokumenty
+  opisujące plan (backlog po audycie, plan fazy ML, nowy plan predykcji) i dwa opisujące stan
+  (brief dla recenzenta, audyt), bez hierarchii. Teraz: nowy **`docs/README.md`** jest mapą i
+  mówi wprost, który plik wygrywa przy sprzeczności (CLAUDE.md > reszta). **Zarchiwizowane**
+  (`docs/archive/`, każdy z nagłówkiem wyjaśniającym, dlaczego zamrożony): brief dla recenzenta
+  (spełnił zadanie, zawiera nieaktualne progi — kolejny przegląd wymaga NOWEGO briefu, nie
+  odświeżenia tego), audyt zewnętrzny (jego twierdzenia zweryfikowane, część odrzucona) oraz
+  backlog po audycie. **Przed archiwizacją backlogu przeniesiono wszystko, co niezamknięte**:
+  pozycje toru predykcji → §13 planu z mapowaniem ID 1:1 (T1-1→P3-1, T1-4→P2-1, T2-3→P4-1 itd.)
+  wraz z decyzjami D1–D8, a pozycje spoza tego toru (FLOW-2…FLOW-9, zatrzask wyłącznika, event
+  sourcing, konsumenci pull, D7) → do „Known issues / tech debt" wyżej. `ml_integration_plan.md`
+  i `framework_supplement.md` **zostają**, ale z nagłówkami statusu: pierwszy to architektura
+  (obowiązuje) z zastąpionymi wyborami ilościowymi, drugi to referencja + archiwum implementacji
+  skasowanego kodu. Wszystkie odsyłacze sprawdzone programowo (24 pliki md + 370 py): zero
+  martwych linków; dwa pozostałe odwołania do nieistniejących plików to zapis ich **usunięcia**
+  w logu z 2026-06-25, więc są poprawne jako historia.
 
-Kolejność:
-1. ✅ **Tier 0 ZAMKNIĘTY 2026-07-27** (szczegóły w logu wyżej): T0-1 kontrakt danych treningowych + raport
-   rozstrzygnięć etykiet; T0-2 usunięcie cech o zerowej wariancji (makro — **potwierdzony rozjazd
-   trening/serwowanie**); T0-3 diagnostyka „niedouczenie vs brak sygnału" (`auc_train`, `pred_std`
-   przed/po kalibracji, temperatura); T0-5 metryki relatywne (IC/ICIR, benchmark EW, long-short,
-   gross/net, baseline'y) — **to jest sedno naprawy pomiaru**; T0-4 nakładające się transze `1/h`;
-   T0-7 duplikat `momentum_20`; T0-6 `min_universe` → 20.
-2. ✅ **N1 + N2 ZAMKNIĘTE 2026-07-27** (szczegóły w logu wyżej): **N1** — `execution` konsumuje
-   `risk.circuit_breaker` i BLACK realnie zamyka książkę (`OrderIntent.LIQUIDATE` omija halt);
-   **N2** — agregator scala komponenty w oknie 5 s, a risk-mgmt jest idempotentny per
-   (symbol, strona, sesja), więc spóźniony głos ML nie podwaja pozycji.
-3. ✅ **Rerun treningu WYKONANY 2026-07-27** (`reports/training-2.json`): `auc_train` ≈ 0.520 →
-   model nie dopasowuje się nawet do danych treningowych, więc **samo rozszerzanie danych niczego
-   nie naprawi**. Przyczyny (a) optymalizacja i (b) brak sygnału są przy tak płaskim treningu
-   nierozróżnialne — rozstrzyga świadome przeuczenie modelu o dużej pojemności.
-4. ✅ **T1-3 ZROBIONE 2026-07-27 — bramka G0–G5** (szczegóły w logu wyżej): sanity → IC t-stat →
-   przewaga nad baseline → ekonomia → kalibracja → deflated Sharpe na sklejonej krzywej OOS;
-   werdykt per warunek w raporcie; test przechodzalności przechodzi, liczby biegu #2 oblewają 5/6.
-5. ✅ **Sonda pojemności ZBUDOWANA 2026-07-27** (szczegóły w logu wyżej) —
-   `--capacity-probe`. ← **Bieg rozstrzygający czeka na maszynie użytkownika**: jeśli różnica
-   real − shuffled ≈ 0, cechy nie niosą informacji i reszta Tier 1 musi zacząć się od CECH, a nie
-   od uniwersum.
-6. **Reszta Tier 1**: uniwersum 200–500 point-in-time (survivorship!), historia od 2005, cechy
-   długiego horyzontu (`momentum_12_1`), point-in-time fundamentów (`filed_at` istnieje w
-   kontrakcie, ale **nikt go nie wypełnia**) → **trening #3**.
+**Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
+zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
+„który plik wygrywa": `docs/README.md`.
 
-Decyzje czekające na człowieka (D1–D8 w backlogu): rozmiar/źródło uniwersum, horyzont 10 vs 21,
-usunięcie makro z agregatora, meta-labeling, filtr RSI, `llm-svc`, transze w backteście,
-reżim jako cecha vs warunkowanie.
+Punkt wyjścia planu, zweryfikowany odczytem kodu 2026-07-28: model dostaje **7 cech cenowych**,
+z czego 4 mierzą to samo; **dywidendy nie są uwzględnione** (`auto_adjust=False`, `Adj Close`
+odrzucany, brak `adj_close` w kontrakcie/ORM/schemacie); etykiety rozstrzygają się w **90.9%** na
+barierze pionowej; wiersze nie są ważone mimo nakładania (ESS 523 z 48 827); `lookback=250` po
+obu stronach **uniemożliwia** policzenie momentum 12-1 i odległości od maks. 52-tyg.; fundamenty
+są liczone i serwowane, ale **trening ich nie widzi**.
+
+Dwie liczby, które porządkują kolejność:
+- **próg wykrywalności IC = 0.022** (ic_std 0.28, 630 sesji OOS) przy realistycznym efekcie
+  0.01–0.03 → dziś nie odróżnimy „brak przewagi" od „przewaga niewidoczna";
+- **szerokość książki long-only nasyca się na ~4 nazwach** (ρ = 0.253 → N_eff → 1/ρ = 3.95), więc
+  dokładanie spółek NIE dodaje zakładów — rośnie tylko moc pomiarowa. Szerokość rośnie dopiero
+  w książce względnej (long-short/active) → nowe zadanie **P3-4**.
+
+Kolejność: **E0** poprawność danych (ceny skorygowane, kontrola splitów, wagi unikalności) →
+**E1** cel (kalibracja barier, horyzont 10/21/63 rozstrzygnięty pomiarem, etykieta nadwyżkowa) →
+**E2** cechy (rodzina cenowa, neutralizacja sektorowa, fundamenty point-in-time) → **E3** uniwersum
+point-in-time + historia od 2005 + metryka względna → **E4** klasa modelu (GBDT, baseline liniowy,
+ensembling, CPCV) → **E5** wejście ze zleceniem (meta-labeling, realny model kosztów, sizing).
+Każdy etap ma bramkę, łącznie z jawnym warunkiem zakończenia „na tych danych nie ma przewagi".
+
+Decyzje czekające na człowieka: źródło uniwersum point-in-time (rekomendacja: rekonstrukcja po
+obrocie), zgoda na horyzont wybrany pomiarem, long-short vs long-only; plus D3, D5, D7, D8
+przeniesione z backlogu (§13 planu).
 
 ## Architecture rules (non-negotiable)
 

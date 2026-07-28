@@ -1,5 +1,14 @@
 # REVIEW-2026-07-27 — Audyt systemu tradingowego i backlog naprawczy
 
+> ## 🗄️ ARCHIWUM — audyt zewnętrzny, dokument historyczny
+>
+> Wejściem był [`project_brief_for_review.md`](project_brief_for_review.md) (stan 2026-07-26).
+> **Każde twierdzenie tego audytu zostało zweryfikowane na kodzie i na danych z realnego biegu**
+> — wyniki weryfikacji (w tym cztery korekty i dwa znaleziska własne) są w
+> [`backlog_2026_07_27.md`](backlog_2026_07_27.md) §1–2 oraz w logu postępu w
+> [`../../CLAUDE.md`](../../CLAUDE.md). Nie traktuj zaleceń stąd jako obowiązujących bez
+> sprawdzenia tamtej weryfikacji: część została przyjęta ze zmianami, część odrzucona.
+
 > **Wejście:** `project_brief_for_review.md` (stan 2026-07-26, 13 serwisów, 849 testów, pierwszy trening ML odrzucony przez bramkę).
 > **Zakres:** logika ML, logika przepływu zdarzeń, ocena parametrów, priorytetyzacja, roadmapa.
 > **Format:** dokument roboczy dla Claude Code. Każde zadanie ma ID, serwis, ścieżki, kryteria akceptacji.

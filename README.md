@@ -5,7 +5,9 @@ System tradingowy oparty na mikroserwisach: event-driven, Kubernetes-ready od dn
 **Stan: 13 serwisów, wszystkie funkcjonalnie zaimplementowane** (brak szkieletów). Działa pełna pętla paper tradingu — od pobrania danych rynkowych, przez cechy, sygnały reguł i głos modelu ML, agregację, kontrolę ryzyka, aż po symulowane wypełnienia i sprzężenie zwrotne do portfela. Warstwa ML (trening, rejestr MLflow, serwowanie, dzienny monitoring driftu) jest kompletna; pierwszy trening na realnych danych uruchamia się dwiema komendami — patrz [Bootstrap danych i trening](#bootstrap-danych-i-pierwszy-trening).
 
 > Kontekst projektu, historia decyzji i bieżące priorytety: [`CLAUDE.md`](CLAUDE.md).
-> Projekt fazy ML (etykiety, walidacja, bramka aktywacji): [`docs/ml_integration_plan.md`](docs/ml_integration_plan.md).
+> Architektura fazy ML (etykiety, walidacja, rejestr): [`docs/ml_integration_plan.md`](docs/ml_integration_plan.md).
+> Bieżący plan poprawy przewidywania: [`docs/plan_2026_07_28_prediction.md`](docs/plan_2026_07_28_prediction.md).
+> Mapa całej dokumentacji: [`docs/README.md`](docs/README.md).
 
 ---
 
@@ -456,8 +458,11 @@ Market-App/
 ├── .env.example                     # Szablon sekretów
 │
 ├── docs/
-│   ├── ml_integration_plan.md       # Wiążący projekt fazy ML (ML-0…ML-4)
-│   └── framework_supplement.md      # Specyfikacje 12 komponentów frameworku
+│   ├── README.md                    # Mapa dokumentacji — który plik obowiązuje
+│   ├── plan_2026_07_28_prediction.md# Bieżąca lista robocza (etapy E0–E5)
+│   ├── ml_integration_plan.md       # Architektura fazy ML (ML-0…ML-4)
+│   ├── framework_supplement.md      # Referencja 12 komponentów + usunięty kod
+│   └── archive/                     # Zamrożone: brief, audyt, backlog po audycie
 │
 ├── .github/workflows/               # ci.yml · build-images.yml · deploy.yml
 │
