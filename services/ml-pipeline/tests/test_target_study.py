@@ -109,8 +109,12 @@ def test_excess_and_absolute_disagree_when_the_market_moves():
 
 
 def test_target_scoring_is_model_free_and_ranks_candidates():
+    # Long enough that all `max_sessions` scored sessions clear the default
+    # min_history (P2-1 raised it to a year + a month, so a 320-bar universe
+    # would silently score a third of the sessions asked for — and a thinner
+    # sample makes every IC below look larger).
     result = score_targets(
-        universe(n_symbols=22, n=320),
+        universe(n_symbols=22, n=520),
         horizons=(10, 21),
         multipliers=(1.0, 2.0),
         excess_options=(False, True),
@@ -120,8 +124,14 @@ def test_target_scoring_is_model_free_and_ranks_candidates():
     assert result["best"]["horizon"] in (10, 21)
     assert "no trials were consumed" in result["note"]
     for candidate in result["candidates"]:
-        # GBM has no signal: every feature's IC must sit near zero.
-        assert abs(candidate["best_feature_ic"]) < 0.2
+        # GBM has no signal, so the ICs must sit near zero — but read the MEAN
+        # across features, not the max. Per-session ICs on a 10-day label are
+        # ~90% overlapping, so 120 sessions carry maybe a dozen independent
+        # observations; the largest of a dozen noisy means is routinely 0.1 and
+        # is not evidence of anything. That is exactly why the report ranks
+        # features by t-statistic rather than by IC level.
+        assert candidate["mean_abs_ic"] < 0.05
+        assert abs(candidate["best_feature_ic"]) < 0.25
         assert candidate["n_samples"] > 0
 
 

@@ -545,6 +545,21 @@ def relative_metrics(
     )
 
 
+def _feature_ic_series(
+    dates: list[datetime],
+    feature_column: np.ndarray,
+    next_returns: np.ndarray,
+) -> list[float]:
+    by_date: dict[datetime, list[int]] = defaultdict(list)
+    for i, d in enumerate(dates):
+        by_date[d].append(i)
+    return [
+        _spearman(feature_column[rows], next_returns[rows])
+        for rows in by_date.values()
+        if len(rows) >= 3
+    ]
+
+
 def baseline_feature_ic(
     dates: list[datetime],
     feature_column: np.ndarray,
@@ -555,15 +570,49 @@ def baseline_feature_ic(
     The rule this encodes: a model that cannot beat the rank of one feature has
     not earned the ML layer.
     """
-    by_date: dict[datetime, list[int]] = defaultdict(list)
-    for i, d in enumerate(dates):
-        by_date[d].append(i)
-    ics = [
-        _spearman(feature_column[rows], next_returns[rows])
-        for rows in by_date.values()
-        if len(rows) >= 3
-    ]
+    ics = _feature_ic_series(dates, feature_column, next_returns)
     return float(np.mean(ics)) if ics else 0.0
+
+
+@dataclass(frozen=True)
+class FeatureIC:
+    """One raw feature's standalone ranking power over a window."""
+
+    mean: float
+    tstat: float
+    n_sessions: int
+
+    def as_dict(self) -> dict[str, float | int]:
+        return {"ic": round(self.mean, 5), "t": round(self.tstat, 2), "n": self.n_sessions}
+
+
+def per_feature_ic(
+    dates: list[datetime],
+    x: np.ndarray,
+    feature_names: list[str],
+    next_returns: np.ndarray,
+) -> dict[str, FeatureIC]:
+    """Standalone IC (and its t-statistic) for EVERY raw feature — the E2 instrument.
+
+    The stage-2 rule is that a feature family enters the model only if it raises
+    the evidence, and "raises the evidence" has to mean something measurable
+    before the model is fitted. This is that measurement: no model, no trials
+    consumed, one number per feature saying whether its own rank predicts.
+
+    The t-statistic, not the level, is what to read. At 34 names an IC of 0.02
+    and an IC of −0.02 are the same observation seen twice unless the number of
+    cross-sections makes them distinguishable.
+    """
+    out: dict[str, FeatureIC] = {}
+    for j, name in enumerate(feature_names):
+        ics = _feature_ic_series(dates, x[:, j], next_returns)
+        if not ics:
+            continue
+        mean = float(np.mean(ics))
+        std = float(np.std(ics, ddof=1)) if len(ics) > 1 else 0.0
+        tstat = mean / (std / math.sqrt(len(ics))) if std > 0 else 0.0
+        out[name] = FeatureIC(mean=mean, tstat=tstat, n_sessions=len(ics))
+    return out
 
 
 def _overlapping_portfolio(

@@ -48,6 +48,10 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   **ML-0**: the pure feature/rank definitions moved here — `trading_common.features`
   (`compute_feature_vector`) + `trading_common.ranking` (`cross_sectional_rank`) — so ml-pipeline
   training reproduces feature-engine serving bit-for-bit (numpy is now a trading-common dependency).
+  **P2-1**: that module also owns the **window contract** — `FEATURE_LOOKBACK` (300, the trailing
+  history both paths feed in) and `FULL_HISTORY` (253, what the slowest feature needs). Training
+  (`DatasetParams`) and serving (feature-engine `FEATURE_LOOKBACK`) read the same constants, so
+  they cannot drift apart into computing different numbers under identical feature names.
   **N1/N2**: `OrderIntent` (NEW/REDUCE/LIQUIDATE) on `OrderRequestedEvent` — halts block only NEW,
   so a BLACK liquidation is never refused by the halt that preceded it; `SignalAggregatedEvent
   .components_present` names the sources that actually contributed to a decision.
@@ -1328,6 +1332,48 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   strony: liczby biegu #2 nadal oblewają, model z AUC 0.59 w granicach szumu przechodzi, a ten
   sam model z różnicą 6× większą niż SE — nie. `POST /models/target-study` +
   `bootstrap-universe.py --target-study`. ml-pipeline 181 testów (+7); ruff + format + mypy czyste.
+
+- 2026-07-28 — **Etap E2 / P2-1: rodzina cech cenowych + okno jako WSPÓLNA STAŁA.** Wejście modelu
+  7 → 15 kolumn: `momentum_12_1`, `momentum_6_1` (Jegadeesh–Titman — obie **pomijają ostatni
+  miesiąc**), `dist_52w_high` (George–Hwang), `max_ret_1m` (MAX, Bali i in. — „loteryjność", rankuje
+  przeciwnie do średniej, więc to nie jest kolejny proxy zmienności), `downside_vol_20`
+  (semiodchylenie względem zera — seria, która tylko rośnie, jest zmienna dla `realized_vol_20`
+  i bezryzykowna dla tej cechy), `skew_60`, `amihud_20` (wpływ na cenę na milion dolarów obrotu)
+  i `dollar_volume_20`. **`reversal_1m` świadomie NIE powstał** — to dosłownie `return_20d`, a
+  osobna nazwa dla tej samej kolumny odtworzyłaby duplikat `momentum_20`, który T0-7 dopiero co
+  usunął; wymóg „rewersja osobno od momentum" realizuje pominięcie ostatniego miesiąca po stronie
+  momentum, więc okna są teraz rozłączne. `beta_60`/`idio_vol_60` **odłożone z powodu strukturalnego**:
+  `compute_feature_vector` z definicji widzi jeden symbol, a serwowanie liczy wektor per symbol na
+  `features.ready` — seria rynkowa wymaga zmiany kontraktu, nie dopisania linijki.
+  **Okno naprawione strukturalnie, nie przez zgodę dwóch domyślnych ustawień**: `FEATURE_LOOKBACK
+  = 300` i `FULL_HISTORY = 253` (wymóg NAJWOLNIEJSZEJ cechy) żyją w `trading_common.features`,
+  a `DatasetParams.lookback/min_history` (trening) i `Settings.FEATURE_LOOKBACK` (feature-engine)
+  czytają **te same stałe** — dwa niezależne 250 to był rozjazd czekający na wystąpienie.
+  Test pinuje `FEATURE_LOOKBACK >= FULL_HISTORY`, więc okno niezdolne policzyć pełnego zestawu
+  jest błędem przy starcie, a nie cichym wypełnieniem neutralną rangą 0.5 na produkcji.
+  **Wzmocniona G2**: komparatorem jest **najlepsza z WSZYSTKICH** surowych cech (dotąd jedna
+  zadeklarowana, `return_20d`); maksimum wybierane na tym samym oknie jest obciążone w górę, więc
+  bramka robi się trudniejsza z każdą dołożoną cechą — właściwy kierunek błędu. Do tego
+  **narzędzie bramki E2**: `evaluation.per_feature_ic` liczy samodzielne IC **i jego t-stat** dla
+  każdej surowej cechy (model-free, `n_trials` nietknięte), raport bootstrapu drukuje tabelę
+  sortowaną po |t| z gwiazdką przy |t| ≥ 2. **Znalezione przy okazji, warte zapamiętania**: test
+  „GBM nie ma sygnału" opierał się na |IC| najlepszej cechy < 0.2 — a przy etykiecie 10-dniowej
+  sąsiednie sesje pokrywają się w ~90%, więc 120 sesji to kilkanaście niezależnych obserwacji
+  i największa z kilkunastu zaszumionych średnich rutynowo wynosi 0.1. Test porównuje teraz
+  **średnią po cechach** (zmierzone 0.026), a nie maksimum — dokładnie z tego samego powodu, dla
+  którego raport rankuje po t-stacie, a nie po poziomie IC. Liczniki: shared 197 (+9),
+  ml-pipeline 184 (+3), pozostałe bez zmian → **bateria 949** (+5 testów `scripts/`); ruff +
+  format + mypy (`--strict` na shared) czyste. **Zweryfikowane na żywo (13/13)** na realnym
+  `nats-server`: realny market-data (własny lifespan, silnik podmieniony na sqlite, fetcher na
+  syntetyczny — routes/repozytorium/upsert/cache/JetStream produkcyjne) + **nietknięty**
+  feature-engine, 24 symbole × 520 świec. Serwowany po HTTP wektor niesie całą rodzinę i **równa
+  się co do bitu** `compute_feature_vector(ostatnie 300 świec)`, przy czym ten sam wektor liczony
+  z 250 świec **nie ma** `momentum_12_1` ani `dist_52w_high` — to jest ten rozjazd, który byłby
+  niewidoczny. Po stronie treningu: ten sam kontrakt cech (20 kolumn = 15 technicznych + 5 makro,
+  po odrzuceniu stałych → 15 wejść modelu), **zero wypełnień neutralną 0.5** na wolnych cechach,
+  6264 wiersze mimo podniesionego `min_history`, a wiersz zbioru **jest identyczny** z rangą
+  przekrojową wektorów serwowanych dla tej sesji. Koszt czasu: 0.24 ms/wektor przy oknie 300
+  (0.25 ms przy 250) — szersze okno nie kosztuje, bo praca jest w numpy, nie w pętli.
 
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada

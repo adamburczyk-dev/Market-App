@@ -23,9 +23,9 @@ from src.core.evaluation import (
     RelativeMetrics,
     SelectionDiagnostics,
     auc,
-    baseline_feature_ic,
     brier,
     effective_sample_size,
+    per_feature_ic,
     relative_metrics,
     selection_diagnostics,
     top_quantile_portfolio,
@@ -48,7 +48,6 @@ class TrainingParams:
     quantile: float = 0.2
     cost_bps: float = 5.0
     gate_sharpe: float = 0.5
-    baseline_feature: str = "return_20d"  # single-feature yardstick (T0-5)
     # T0-4: hold a position for the label horizon instead of rebalancing the
     # whole book daily, so the evaluated object matches the trained one.
     overlapping_tranches: bool = True
@@ -85,6 +84,9 @@ class FoldReport:
     # model; IC/ICIR and the long-short leg do not have that failure mode.
     relative: RelativeMetrics | None = None
     baseline_ic: dict[str, float] = field(default_factory=dict)
+    # P2-1: the same features with their IC t-statistics — the stage-2 gate
+    # ("a family enters only if it raises the evidence") is read off this.
+    feature_ic: dict[str, Any] = field(default_factory=dict)
     # P0-4: what this particular window was made of — label mix, independent
     # information, cross-section width. A fold's metrics are not comparable to
     # another's without it.
@@ -144,6 +146,7 @@ class GateReport:
                     else {}
                 ),
                 **{f"baseline_ic_{k}": round(v, 5) for k, v in f.baseline_ic.items()},
+                "feature_ic": f.feature_ic,
                 **f.window,
             }
 
@@ -262,12 +265,11 @@ def score_window(
     paired = (probs - y_true) ** 2 - (base_rate - y_true) ** 2
     brier_delta = float(paired.mean()) if len(paired) else 0.0
     brier_delta_se = float(paired.std(ddof=1) / np.sqrt(len(paired))) if len(paired) > 1 else 0.0
-    baseline_ic: dict[str, float] = {}
-    if params.baseline_feature in ds.feature_names:
-        column = ds.x[mask][:, ds.feature_names.index(params.baseline_feature)]
-        baseline_ic[params.baseline_feature] = baseline_feature_ic(
-            dates, column, ds.next_returns[mask]
-        )
+    # Every feature's standalone IC, not just one declared yardstick (P2-1).
+    # G2 takes the MAX of these, so adding a feature can only make the gate
+    # harder — the right direction for a comparator selected on the same window.
+    feature_ic = per_feature_ic(dates, ds.x[mask], ds.feature_names, ds.next_returns[mask])
+    baseline_ic = {name: f.mean for name, f in feature_ic.items()}
 
     auc_train = 0.5
     if fit_dates:
@@ -286,6 +288,7 @@ def score_window(
         fit=dict(model.diagnostics),
         relative=relative,
         baseline_ic=baseline_ic,
+        feature_ic={name: f.as_dict() for name, f in feature_ic.items()},
         window=window_stats,
         brier_delta=brier_delta,
         brier_delta_se=brier_delta_se,

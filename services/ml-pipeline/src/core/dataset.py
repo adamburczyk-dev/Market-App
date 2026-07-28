@@ -18,7 +18,7 @@ from datetime import datetime
 
 import numpy as np
 import structlog
-from trading_common.features import compute_feature_vector
+from trading_common.features import FEATURE_LOOKBACK, FULL_HISTORY, compute_feature_vector
 from trading_common.prices import adjusted_ohlc
 from trading_common.ranking import cross_sectional_rank
 from trading_common.schemas import OHLCVBar
@@ -46,8 +46,14 @@ MIN_FEATURE_VARIANCE = 1e-6
 @dataclass(frozen=True)
 class DatasetParams:
     label: LabelParams = field(default_factory=LabelParams)
-    min_history: int = 60  # sessions required before a symbol contributes rows
-    lookback: int = 250  # trailing window fed to the feature computation (as served)
+    # P2-1: below FULL_HISTORY a row is missing the slowest features
+    # (`momentum_12_1`, `dist_52w_high`) and fills them with the neutral rank
+    # 0.5 — a made-up value that is not the median of anything. The floor is the
+    # FEATURE requirement, so it moves with the feature set, not with a round
+    # number. Both constants come from trading-common so training and serving
+    # cannot drift apart (see trading_common.features).
+    min_history: int = FULL_HISTORY  # sessions before a symbol contributes rows
+    lookback: int = FEATURE_LOOKBACK  # trailing window, exactly as served
     # T0-6: a percentile rank over 2 names is the set {0, 1} — pure noise pooled
     # into the training set. A meaningful quintile needs >= 4 names per bucket.
     min_universe: int = 20  # sessions with a thinner cross-section are skipped

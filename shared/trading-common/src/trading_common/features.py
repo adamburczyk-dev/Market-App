@@ -13,6 +13,23 @@ and API; the *definitions* are a shared contract like the event schemas.
 Note: the vol_regime calculator (VIX-based) is intentionally NOT applied here —
 it expects market-wide implied vol, not single-symbol realized vol. It belongs
 in the macro/regime context. `realized_vol_20` is exposed as a plain feature.
+
+P2-1 adds the documented cross-sectional families (momentum, reversal, risk,
+liquidity). Two constraints shaped what could be added HERE rather than in a
+universe-level stage:
+
+- this function sees ONE symbol's bars, so anything needing a market series
+  (beta, idiosyncratic vol) cannot live here without changing the serving
+  contract — deferred deliberately, not forgotten;
+- `momentum_12_1` and `dist_52w_high` need 252+ sessions of trailing history.
+  The window is set by the CALLER (ml-pipeline's `DatasetParams.lookback` when
+  training, feature-engine's `FEATURE_LOOKBACK` when serving); raising one
+  without the other reintroduces train/serve skew, which is why both moved to
+  300 in the same change.
+
+There is deliberately no `reversal_1m`: the one-month return is already
+`return_20d`, and adding a second name for the same column is exactly the
+`momentum_20` duplication that was removed from the model input.
 """
 
 import math
@@ -23,6 +40,21 @@ from trading_common.prices import adjusted_closes
 from trading_common.schemas import FeatureVector, OHLCVBar
 
 _TRADING_DAYS = 252
+_MONTH = 21
+_HALF_YEAR = 126
+_YEAR = 252
+
+# Bars required before EVERY feature is present. Set by the slowest one
+# (`momentum_12_1`: a year plus the skipped month). Below this a vector is
+# legal but incomplete, and the missing columns get the neutral rank 0.5.
+FULL_HISTORY = _YEAR + 1
+
+# The trailing window both paths feed this function. It lives here — next to the
+# definitions it constrains — because training (ml-pipeline `DatasetParams`) and
+# serving (feature-engine `FEATURE_LOOKBACK`) must pass the SAME window or they
+# compute different numbers under identical feature names. Two independent
+# defaults are a skew waiting to happen; one shared constant is not.
+FEATURE_LOOKBACK = 300
 
 
 def _rsi(closes: np.ndarray, period: int = 14) -> float:
@@ -56,6 +88,10 @@ def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
     # the two silently biases every dividend payer's momentum downward.
     closes = adjusted_closes(bars)
     raw_close = float(bars[-1].close)
+    # Dollar volume is the amount of money that actually changed hands, so it
+    # is the RAW close times the raw volume — adjusting the price here would
+    # inflate historical turnover by every split factor since.
+    raw_closes = np.array([b.close for b in bars], dtype=float)
     volumes = np.array([b.volume for b in bars], dtype=float)
     n = len(closes)
     last = bars[-1]
@@ -93,6 +129,54 @@ def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
         avg_volume = volumes[-20:].mean()
         if avg_volume > 0:
             feats["volume_ratio"] = float(volumes[-1] / avg_volume)
+
+        # MAX (Bali, Cakici & Whitelaw 2011): the single best day of the month.
+        # Lottery-like payoffs are systematically overpriced, so this ranks
+        # opposite to the mean — which is why it is not just another vol proxy.
+        feats["max_ret_1m"] = float(daily_returns.max())
+
+        # Downside semideviation against a zero target (the Sortino
+        # convention): total vol treats a violent rally as risk, this does not.
+        downside = np.minimum(daily_returns, 0.0)
+        feats["downside_vol_20"] = float(
+            math.sqrt(float(np.mean(downside**2))) * math.sqrt(_TRADING_DAYS)
+        )
+
+        # Liquidity. `dollar_volume_20` is a level, but unlike price its
+        # cross-sectional rank is a real characteristic (size/liquidity), so it
+        # stays in the model input while `close` and the SMAs do not.
+        dollar_volume = raw_closes * volumes
+        recent_dv = dollar_volume[-20:]
+        mean_dv = float(recent_dv.mean())
+        if mean_dv > 0:
+            feats["dollar_volume_20"] = mean_dv
+        # Amihud (2002) illiquidity: price impact per million dollars traded.
+        # Same 20 bars as `daily_returns`, so the two arrays line up.
+        tradeable = recent_dv > 0
+        if bool(tradeable.any()):
+            impact = np.abs(daily_returns)[tradeable] / recent_dv[tradeable]
+            feats["amihud_20"] = float(np.mean(impact) * 1e6)
+
+    if n >= 61:
+        returns_60 = np.diff(closes[-61:]) / closes[-61:-1]
+        sd = float(returns_60.std(ddof=1))
+        if sd > 0:
+            centred = (returns_60 - returns_60.mean()) / sd
+            feats["skew_60"] = float(np.mean(centred**3))
+
+    # Momentum, deliberately skipping the most recent month: the last 21
+    # sessions are short-term REVERSAL (Lehmann 1990) and pool with the opposite
+    # sign, which is what makes 12-1 work (Jegadeesh & Titman 1993).
+    if n >= _HALF_YEAR + 1:
+        feats["momentum_6_1"] = float(closes[-1 - _MONTH] / closes[-1 - _HALF_YEAR] - 1.0)
+    if n >= _YEAR + 1:
+        feats["momentum_12_1"] = float(closes[-1 - _MONTH] / closes[-1 - _YEAR] - 1.0)
+    if n >= _YEAR:
+        # George & Hwang (2004): nearness to the 52-week high predicts better
+        # than the past return it is derived from. In (0, 1]; 1.0 = at the high.
+        high_52w = float(closes[-_YEAR:].max())
+        if high_52w > 0:
+            feats["dist_52w_high"] = float(closes[-1] / high_52w)
 
     return FeatureVector(
         symbol=last.symbol,

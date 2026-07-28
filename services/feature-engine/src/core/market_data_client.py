@@ -11,7 +11,7 @@ logger = structlog.get_logger()
 
 class MarketDataClient(Protocol):
     async def get_ohlcv(
-        self, symbol: str, interval: Interval, limit: int = 250
+        self, symbol: str, interval: Interval, limit: int = 300
     ) -> list[OHLCVBar]: ...
 
 
@@ -22,7 +22,7 @@ class HttpMarketDataClient:
         self._base = base_url.rstrip("/")
         self._client = httpx.AsyncClient(timeout=timeout_s)
 
-    async def get_ohlcv(self, symbol: str, interval: Interval, limit: int = 250) -> list[OHLCVBar]:
+    async def get_ohlcv(self, symbol: str, interval: Interval, limit: int = 300) -> list[OHLCVBar]:
         url = f"{self._base}/api/v1/market-data/ohlcv/{symbol}"
         resp = await self._client.get(url, params={"interval": interval.value, "limit": limit})
         resp.raise_for_status()

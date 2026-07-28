@@ -148,13 +148,17 @@ def test_no_duplicate_feature_columns():
     T0-2's subject.
     """
     rng = np.random.default_rng(11)
+    # Long enough for the DEFAULT min_history, so every P2-1 feature is present
+    # and gets compared — the slow ones (momentum_12_1, dist_52w_high) are the
+    # most likely to collide with the fast ones they are derived from.
     universe = {
         f"S{k}": make_bars(
-            f"S{k}", [float(v) for v in 100 * np.cumprod(1 + rng.normal(0.0004, 0.012, 200))]
+            f"S{k}", [float(v) for v in 100 * np.cumprod(1 + rng.normal(0.0004, 0.012, 400))]
         )
         for k in range(25)
     }
     ds = build_dataset(universe, DatasetParams(min_universe=2))
+    assert "momentum_12_1" in ds.feature_names  # the family under test is in play
     assert "momentum_20" not in ds.feature_names
     assert "return_20d" in ds.feature_names
 

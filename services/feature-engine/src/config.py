@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from trading_common.features import FEATURE_LOOKBACK as SHARED_FEATURE_LOOKBACK
 
 
 class Settings(BaseSettings):
@@ -30,7 +31,11 @@ class Settings(BaseSettings):
     NATS_COMPANY_DURABLE: str = "feature-engine-company"
 
     # Feature computation
-    FEATURE_LOOKBACK: int = 250
+    # Shared with ml-pipeline's DatasetParams.lookback: both paths call the
+    # SAME feature function, so a different window is train/serve skew hiding
+    # under identical feature names (P2-1). Overridable per deployment, but
+    # then it must be overridden on BOTH sides.
+    FEATURE_LOOKBACK: int = SHARED_FEATURE_LOOKBACK
     FEATURE_MIN_BARS: int = 20
 
     @property

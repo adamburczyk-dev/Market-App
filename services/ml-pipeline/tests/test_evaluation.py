@@ -9,6 +9,7 @@ from src.core.evaluation import (
     auc,
     baseline_feature_ic,
     brier,
+    per_feature_ic,
     relative_metrics,
     selection_diagnostics,
     top_quantile_portfolio,
@@ -187,6 +188,42 @@ def test_baseline_feature_ic_matches_a_known_ranking():
             rets.append(float(k) / 100.0)  # monotone in the feature
     ic = baseline_feature_ic(dates, np.array(feature), np.array(rets))
     assert ic == pytest.approx(1.0, abs=1e-9)
+
+
+def test_per_feature_ic_separates_a_predictor_from_noise():
+    """P2-1: the instrument the stage-2 gate reads.
+
+    One column orders the forward return, one is random. Both are scored; only
+    the first may clear |t| >= 2, and the t — not the IC level — is what tells
+    them apart.
+    """
+    rng = np.random.default_rng(7)
+    dates: list[datetime] = []
+    rows: list[list[float]] = []
+    rets: list[float] = []
+    for s in range(80):
+        day = D0 + timedelta(days=s)
+        for k in range(12):
+            dates.append(day)
+            rows.append([float(k), float(rng.normal())])
+            rets.append(float(k) / 100.0 + float(rng.normal(0, 0.005)))
+    table = per_feature_ic(dates, np.array(rows), ["signal", "noise"], np.array(rets))
+
+    assert set(table) == {"signal", "noise"}
+    assert table["signal"].mean > 0.9
+    assert table["signal"].tstat > 2.0
+    assert abs(table["noise"].tstat) < 2.0
+    assert table["signal"].n_sessions == 80
+    assert table["signal"].as_dict()["t"] == pytest.approx(round(table["signal"].tstat, 2))
+
+
+def test_per_feature_ic_refuses_rather_than_guesses_on_one_session():
+    """A single cross-section has no standard error, so it has no t."""
+    dates = [D0] * 10
+    rows = np.array([[float(k)] for k in range(10)])
+    table = per_feature_ic(dates, rows, ["only"], np.arange(10, dtype=float))
+    assert table["only"].mean == pytest.approx(1.0)
+    assert table["only"].tstat == 0.0  # not "infinite confidence"
 
 
 # --- T0-4: overlapping tranches ---

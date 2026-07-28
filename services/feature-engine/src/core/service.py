@@ -18,7 +18,7 @@ from trading_common.events import (
     FundamentalsUpdatedEvent,
     MarketDataUpdatedEvent,
 )
-from trading_common.features import compute_feature_vector
+from trading_common.features import FEATURE_LOOKBACK, compute_feature_vector
 from trading_common.ranking import cross_sectional_rank
 from trading_common.schemas import FeatureVector, Interval
 
@@ -38,7 +38,7 @@ class FeatureEngineService:
         client: MarketDataClient,
         store: FeatureStore,
         publisher: Publisher,
-        lookback: int = 250,
+        lookback: int = FEATURE_LOOKBACK,
         min_bars: int = 20,
         attributes: SymbolAttributeStore | None = None,
         fundamentals_client: FundamentalsClient | None = None,

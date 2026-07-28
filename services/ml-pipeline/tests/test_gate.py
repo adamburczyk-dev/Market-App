@@ -10,6 +10,7 @@ tinguishable from a working gate until the day a real model deserved to pass.
 """
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -201,6 +202,20 @@ def test_g2_rejects_a_model_that_loses_to_one_raw_feature():
     holdout = fold("holdout", sharpe=2.2, ic=0.05, baseline_ic=0.06)
     outcome = evaluate_gate(holdout, [fold("f", sharpe=1.0)] * 3, THRESHOLDS)
     assert "G2" in failed(outcome)
+
+
+def test_g2_compares_against_the_best_feature_not_the_first():
+    """P2-1 widened the comparator from one declared yardstick to every raw
+    feature. A model that beats `return_20d` but loses to `momentum_12_1` used
+    to pass this condition; now it cannot, and the reason names the winner."""
+    holdout = fold("holdout", sharpe=2.2, ic=0.05)
+    beaten = replace(holdout, baseline_ic={"return_20d": 0.01, "momentum_12_1": 0.09})
+    outcome = evaluate_gate(beaten, [fold("f", sharpe=1.0)] * 3, THRESHOLDS)
+    assert "G2" in failed(outcome)
+    assert any("momentum_12_1" in r for r in outcome.reasons)
+    # ...and the same model passes once it out-ranks every one of them
+    ahead = replace(holdout, baseline_ic={"return_20d": 0.01, "momentum_12_1": 0.03})
+    assert "G2" not in failed(evaluate_gate(ahead, [fold("f", sharpe=1.0)] * 3, THRESHOLDS))
 
 
 def test_g3_rejects_beta_dressed_as_alpha():

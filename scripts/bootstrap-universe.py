@@ -267,6 +267,34 @@ def _print_fold(fold: dict) -> None:
     )
 
 
+def _print_feature_ic(holdout: dict) -> None:
+    """Per-feature standalone IC on the holdout — the stage-2 (E2) instrument.
+
+    The rule the plan sets is that a feature family enters the model only if it
+    raises the evidence. This table is where that is read: each raw feature's
+    own IC and its t-statistic, model-free. Read the t, not the level — at 34
+    names an IC of 0.02 is not distinguishable from −0.02 without it.
+    """
+    table = holdout.get("feature_ic") or {}
+    if not table:
+        return
+    ranked = sorted(
+        table.items(), key=lambda kv: abs(kv[1].get("t", 0.0)), reverse=True
+    )
+    print("\n  Standalone IC per raw feature (holdout, model-free):")
+    print(f"    {'feature':<20} {'IC':>9} {'t':>7}")
+    for name, stats in ranked:
+        t = stats.get("t", 0.0)
+        mark = "  *" if abs(t) >= 2.0 else ""
+        print(f"    {name:<20} {stats.get('ic', 0.0):>+9.4f} {t:>7.2f}{mark}")
+    strong = [n for n, s in ranked if abs(s.get("t", 0.0)) >= 2.0]
+    print(
+        f"    * |t| >= 2 → {len(strong)} of {len(ranked)} features rank better than chance"
+        if strong
+        else "    no feature ranks better than chance on its own (|t| < 2 everywhere)"
+    )
+
+
 def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
@@ -330,17 +358,19 @@ def _print_verdict(gate: dict, holdout: dict) -> None:
             verdict = "some rank edge"
         icir_txt = f", ICIR {icir:.2f}" if icir is not None else ""
         print(f"  - IC {ic:+.4f}{icir_txt} → {verdict}")
+    best_name, best_value = "", None
     for key, value in baseline.items():
-        if value is None:
-            continue
-        feature = key.removeprefix("baseline_ic_")
+        if value is not None and (best_value is None or value > best_value):
+            best_name, best_value = key.removeprefix("baseline_ic_"), value
+    if best_value is not None:
         # Signed, not absolute: a model with IC −0.02 does not "beat" a baseline
         # of +0.003 — it ranks the universe upside down.
-        beaten = ic is not None and ic > value and ic > 0
+        beaten = ic is not None and ic > best_value and ic > 0
         print(
-            f"  - baseline IC of raw {feature}: {value:+.4f} → the model"
-            f" {'beats' if beaten else 'does NOT beat'} a single feature's rank"
+            f"  - best single raw feature: {best_name} IC {best_value:+.4f} → the model"
+            f" {'beats' if beaten else 'does NOT beat'} it"
         )
+    _print_feature_ic(holdout)
     print(
         "  - net = long-only Sharpe after costs; active = vs the equal-weight universe."
         "\n    A high net with a low active means the MARKET paid, not the model."

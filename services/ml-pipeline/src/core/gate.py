@@ -137,14 +137,20 @@ def evaluate_gate(
         )
 
     # --- G2: is the ML layer earning its place? ---
-    baseline = max(holdout.baseline_ic.values(), default=0.0)
+    # The comparator is the BEST of every raw feature's standalone IC, chosen on
+    # the same window — which biases it upward and therefore makes this
+    # condition harder as features are added. That is the correct direction: a
+    # model that cannot out-rank the luckiest single column has not earned a
+    # layer of parameters on top of that column.
+    best_feature = max(holdout.baseline_ic, key=lambda k: holdout.baseline_ic[k], default="")
+    baseline = holdout.baseline_ic.get(best_feature, 0.0)
     model_ic = rel.ic_mean if rel is not None else 0.0
     conditions.append(
         GateCondition(
             "G2",
             "beats the single-feature baseline",
             model_ic > baseline,
-            f"model IC {model_ic:+.4f} vs best raw feature {baseline:+.4f}",
+            f"model IC {model_ic:+.4f} vs best raw feature {best_feature or 'n/a'} {baseline:+.4f}",
         )
     )
 

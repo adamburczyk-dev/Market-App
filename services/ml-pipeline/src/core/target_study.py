@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 import structlog
-from trading_common.features import compute_feature_vector
+from trading_common.features import FEATURE_LOOKBACK, FULL_HISTORY, compute_feature_vector
 from trading_common.prices import adjusted_ohlc
 from trading_common.ranking import cross_sectional_rank
 from trading_common.schemas import OHLCVBar
@@ -195,8 +195,8 @@ def score_targets(
     horizons: tuple[int, ...] = DEFAULT_HORIZONS,
     multipliers: tuple[float, ...] = DEFAULT_MULTIPLIERS,
     excess_options: tuple[bool, ...] = (False, True),
-    lookback: int = 250,
-    min_history: int = 60,
+    lookback: int = FEATURE_LOOKBACK,
+    min_history: int = FULL_HISTORY,
     min_universe: int = 20,
     max_sessions: int = 500,
 ) -> dict:

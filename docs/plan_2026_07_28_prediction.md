@@ -17,12 +17,12 @@ Zweryfikowane odczytem kodu (`trading_common/features.py`, `ml-pipeline/src/core
 
 | Fakt | Wartość | Konsekwencja |
 |---|---|---|
-| Cechy wejściowe modelu | **7**: `return_1d`, `return_5d`, `return_20d`, `price_to_sma50`, `rsi_14`, `realized_vol_20`, `volume_ratio` | Cztery pierwsze mierzą **to samo** — niedawny kierunek ceny. Realnie ~2–3 niezależne wymiary informacji, nie 7 |
+| Cechy wejściowe modelu (P2-1 podniosło do 15 — patrz §5) | **7**: `return_1d`, `return_5d`, `return_20d`, `price_to_sma50`, `rsi_14`, `realized_vol_20`, `volume_ratio` | Cztery pierwsze mierzą **to samo** — niedawny kierunek ceny. Realnie ~2–3 niezależne wymiary informacji, nie 7 |
 | Ceny | `auto_adjust=False`, zapisywany wyłącznie surowy `Close`; **`Adj Close` odrzucany**, brak kolumny `adj_close` w kontrakcie, ORM i schemacie | **Dywidendy nie są uwzględnione.** Spółki dywidendowe (PG, KO, XOM, JNJ, CVX, PFE…) mają systematycznie zaniżony zwrot względem niepłacących (NVDA, AMZN, GOOGL, TSLA) — o rząd wielkości porównywalny z poszukiwaną alfą |
 | Etykiety | triple barrier `pt=sl=2.0σ`, `h=10`; **90.9% rozstrzyga bariera pionowa** (zmierzone przez pełny pipeline) | Etykieta jest de facto znakiem zwrotu 10-dniowego. Bariery nie pracują |
 | Ważenie próbek | brak — każdy wiersz waży tyle samo | Etykieta h=10 przy próbkowaniu dziennym nakłada się z ~9 sąsiednimi. Model widzi 48 827 wierszy, informacji ma **523** |
 | Efektywna próba | **523** z 48 827; **3.64** niezależne nazwy z 34; średnia korelacja par 0.253 | To jest podstawa wszystkich testów istotności |
-| Okno cech | `lookback=250` w treningu **i** `limit=250` w feature-engine | **Momentum 12-1 i odległość od maksimum 52-tyg. są dziś nieobliczalne** (potrzebują ≥252 sesji). Podniesienie musi nastąpić po OBU stronach, inaczej odtworzymy rozjazd trening/serwowanie |
+| Okno cech (naprawione 2026-07-28 → 300 z jednej wspólnej stałej) | `lookback=250` w treningu **i** `limit=250` w feature-engine | **Momentum 12-1 i odległość od maksimum 52-tyg. są dziś nieobliczalne** (potrzebują ≥252 sesji). Podniesienie musi nastąpić po OBU stronach, inaczej odtworzymy rozjazd trening/serwowanie |
 | Fundamenty | `fundamental-data` liczy pełny 9-sygnałowy F-Score, `feature-engine` wstrzykuje go do `/ranked` | **Trening ich nie widzi** — `build_dataset` liczy cechy z samych świec. Serwowanie składa wiersz w kolejności z metadanych, więc dodatkowe klucze są ignorowane (to nie błąd, ale zmarnowana infrastruktura) |
 | Historia fundamentów | `fundamental-data` trzyma **latest-per-symbol w pamięci**; `filed_at` istnieje w kontrakcie, **nikt go nie wypełnia** | Panelu point-in-time nie ma. Bez niego fundamenty w treningu = look-ahead |
 
@@ -141,8 +141,26 @@ Rodziny cech z udokumentowaną przewagą przekrojową, których **nie mamy** (li
 | Kontekst | **rangi neutralizowane sektorowo** (ranga wewnątrz sektora GICS) | Sektor to dziś ukryty zakład — przy 34 nazwach z 11 sektorów ranking globalny jest w dużej mierze rankingiem sektorów |
 | Fundamenty (P2-3) | F-Score (mamy!), gross profitability, B/M, E/P, wzrost aktywów, accruals | Novy-Marx 2013; Fama–French 2015 |
 
-**P2-1** rodzina cenowa (tania, bez nowych źródeł) — z jednym twardym warunkiem: podniesienie
-`lookback` do ≥ 300 **jednocześnie** w `DatasetParams` i w kliencie feature-engine.
+**P2-1 ✅ zrobione 2026-07-28** — rodzina cenowa (tania, bez nowych źródeł). Wdrożone 8 cech:
+`momentum_12_1`, `momentum_6_1`, `dist_52w_high`, `max_ret_1m` (MAX), `downside_vol_20`, `skew_60`,
+`amihud_20`, `dollar_volume_20` → wejście modelu 7 → 15 kolumn. Trzy decyzje warte zapamiętania:
+
+- **`reversal_1m` NIE powstał** — to dosłownie `return_20d`, który już mamy. Osobna nazwa dla tej
+  samej kolumny odtworzyłaby duplikat `momentum_20`, który T0-7 właśnie usunął z wejścia modelu.
+  Wymóg planu „rewersja osobno od momentum" spełnia rozdzielenie w drugą stronę: `momentum_12_1`
+  **pomija** ostatni miesiąc, więc obie cechy mierzą teraz rozłączne okna.
+- **`beta_60` i `idio_vol_60` odłożone** — wymagają serii rynkowej, a `compute_feature_vector`
+  z definicji widzi jeden symbol. Dodanie ich zmienia kontrakt serwowania (feature-engine liczy
+  wektor per symbol na `features.ready`), więc to osobne zadanie, nie efekt uboczny tego.
+- **Okno podniesione po obu stronach naraz i strukturalnie**: `FEATURE_LOOKBACK = 300`
+  i `FULL_HISTORY = 253` żyją teraz w `trading_common.features`, a `DatasetParams` (trening)
+  i `Settings.FEATURE_LOOKBACK` (serwowanie) czytają **tę samą stałą**. Dwa niezależne domyślne
+  ustawienia to rozjazd czekający na wystąpienie; jedna stała nim nie jest. `min_history` wynika
+  z wymagania NAJWOLNIEJSZEJ cechy, więc porusza się razem ze zbiorem cech.
+
+Przy okazji wzmocniona **G2**: komparatorem jest teraz **najlepsza z WSZYSTKICH** surowych cech
+(dotąd jedna zadeklarowana, `return_20d`). Wybór maksimum na tym samym oknie jest obciążony w górę,
+czyli bramka robi się trudniejsza z każdą dołożoną cechą — to właściwy kierunek błędu.
 
 **P2-2** neutralizacja sektorowa — wymaga mapy sektorów per symbol (statyczna, tania;
 `company-classifier` już operuje na `sector`).
@@ -154,6 +172,11 @@ look-ahead, nie cecha.
 
 **Bramka E2:** każda nowa rodzina cech oceniana **osobno** po t-stacie IC na foldach, zanim wejdzie
 do zbioru. Cecha, która nie podnosi t-statu, jest wymiarem do przeuczenia, nie informacją.
+
+Narzędzie pomiaru gotowe (P2-1): `evaluation.per_feature_ic` liczy **samodzielne IC i jego t-stat
+dla KAŻDEJ surowej cechy**, model-free (nie zużywa `n_trials`), a raport bootstrapu drukuje tabelę
+posortowaną po |t| z gwiazdką przy |t| ≥ 2. Czytamy **t, nie poziom IC**: przy 34 nazwach IC 0.02
+i −0.02 to ta sama obserwacja widziana dwa razy, dopóki liczba przekrojów ich nie rozróżni.
 
 ---
 
