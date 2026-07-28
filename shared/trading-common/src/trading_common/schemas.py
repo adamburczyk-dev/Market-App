@@ -28,6 +28,13 @@ class OHLCVBar(BaseModel):
     low: float = Field(gt=0)
     close: float = Field(gt=0)
     volume: float = Field(ge=0)
+    # Dividend- and split-adjusted close. The raw OHLC above is what an order
+    # would have paid; THIS is what a return is measured on. Without it a
+    # cross-sectional model systematically under-rates dividend payers, which
+    # is precisely the value/quality axis a ranking model is supposed to see.
+    # Optional so bars stored before 2026-07-28 stay valid — consumers fall
+    # back to `close` and lose only the dividend component.
+    adj_close: float | None = Field(default=None, gt=0)
     source: str | None = None
 
     @model_validator(mode="after")

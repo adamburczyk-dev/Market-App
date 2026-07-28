@@ -22,6 +22,7 @@ def _to_row(bar: OHLCVBar) -> OHLCVRow:
         low=bar.low,
         close=bar.close,
         volume=bar.volume,
+        adj_close=bar.adj_close,
         source=bar.source,
     )
 
@@ -36,6 +37,7 @@ def _to_bar(row: OHLCVRow) -> OHLCVBar:
         low=row.low,
         close=row.close,
         volume=row.volume,
+        adj_close=row.adj_close,
         source=row.source,
     )
 

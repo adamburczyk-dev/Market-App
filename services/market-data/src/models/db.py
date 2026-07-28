@@ -35,6 +35,9 @@ class OHLCVRow(Base):
     low: Mapped[float] = mapped_column(Float)
     close: Mapped[float] = mapped_column(Float)
     volume: Mapped[float] = mapped_column(Float)
+    # Dividend/split adjusted close — nullable because rows written before
+    # 2026-07-28 do not have it; readers fall back to `close`.
+    adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     source: Mapped[str | None] = mapped_column(String, nullable=True)
     # NOTE: created_at is handled by the DB (server default NOW()) and intentionally
     # not mapped here, so idempotent merges never overwrite it.

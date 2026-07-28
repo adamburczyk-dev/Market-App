@@ -30,6 +30,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # `create_all` creates missing TABLES, never missing COLUMNS — a
+            # database created before adj_close existed would keep silently
+            # storing bars without it. No migration tool in this project, so
+            # the one additive, idempotent statement lives here. Postgres only:
+            # a fresh sqlite (tests) already gets the column from create_all.
+            if engine.dialect.name == "postgresql":
+                await conn.execute(
+                    text("ALTER TABLE ohlcv ADD COLUMN IF NOT EXISTS adj_close DOUBLE PRECISION")
+                )
     except Exception as exc:  # noqa: BLE001 - keep the app up for health probes
         logger.error("Database init failed", error=str(exc))
     repository = OHLCVRepository(sessionmaker)

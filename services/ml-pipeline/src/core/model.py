@@ -94,11 +94,16 @@ def train_classifier(
     y_val: np.ndarray,
     feature_names: list[str],
     config: TrainConfig | None = None,
+    sample_weights: np.ndarray | None = None,
 ) -> TrainedModel:
     """Fit the MLP with early stopping on the validation fold, then calibrate.
 
     The validation fold does double duty: early stopping and temperature
     calibration. Class imbalance is handled with ``pos_weight``.
+
+    ``sample_weights`` are the average-uniqueness weights (P0-3): rows whose
+    label windows overlap share one market episode, so they must not each count
+    as full evidence. Passing None keeps every row at weight 1.
     """
     cfg = config or TrainConfig()
     torch.manual_seed(cfg.seed)
@@ -113,7 +118,20 @@ def train_classifier(
     positives = float(yt.sum().item())
     negatives = float(len(yt) - positives)
     pos_weight = torch.tensor(negatives / positives if positives > 0 else 1.0)
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
+    if sample_weights is None:
+        wt = torch.ones(len(yt), dtype=torch.float32)
+    else:
+        wt = torch.as_tensor(np.asarray(sample_weights, dtype=float), dtype=torch.float32)
+        if len(wt) != len(yt):
+            raise ValueError(f"sample_weights has {len(wt)} rows, y_train has {len(yt)}")
+
+    def weighted(logits: torch.Tensor, targets: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        # Normalize by the weight sum, not the row count: otherwise down-weighting
+        # rows also shrinks the gradient, which is a learning-rate change in
+        # disguise rather than a change in what the model is asked to fit.
+        return (loss_fn(logits, targets) * w).sum() / w.sum().clamp(min=1e-12)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
     best_val = float("inf")
@@ -130,13 +148,13 @@ def train_classifier(
         for start in range(0, len(xt), cfg.batch_size):
             batch = permutation[start : start + cfg.batch_size]
             optimizer.zero_grad()
-            loss = loss_fn(model(xt[batch]), yt[batch])
+            loss = weighted(model(xt[batch]), yt[batch], wt[batch])
             loss.backward()
             optimizer.step()
 
         model.eval()
         with torch.no_grad():
-            val_loss = float(loss_fn(model(xv), yv).item())
+            val_loss = float(weighted(model(xv), yv, torch.ones(len(yv))).item())
         if val_loss < best_val - 1e-6:
             best_val = val_loss
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
@@ -161,7 +179,7 @@ def train_classifier(
         # requires the spread BEFORE calibration and the temperature itself.
         pred_std_pre = float(torch.sigmoid(val_logits).std().item())
         pred_std_post = float(torch.sigmoid(val_logits / temperature).std().item())
-        train_loss = float(loss_fn(model(xt), yt).item())
+        train_loss = float(weighted(model(xt), yt, wt).item())
 
     logger.info(
         "Classifier trained",

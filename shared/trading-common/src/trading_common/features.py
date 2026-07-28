@@ -19,6 +19,7 @@ import math
 
 import numpy as np
 
+from trading_common.prices import adjusted_closes
 from trading_common.schemas import FeatureVector, OHLCVBar
 
 _TRADING_DAYS = 252
@@ -50,12 +51,16 @@ def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
     history is available, so short series still yield a (smaller) vector.
     """
     bars = sorted(bars, key=lambda b: b.timestamp)
-    closes = np.array([b.close for b in bars], dtype=float)
+    # Returns are measured on the ADJUSTED close (dividends + splits); the raw
+    # close stays the execution price and is exposed separately below. Mixing
+    # the two silently biases every dividend payer's momentum downward.
+    closes = adjusted_closes(bars)
+    raw_close = float(bars[-1].close)
     volumes = np.array([b.volume for b in bars], dtype=float)
     n = len(closes)
     last = bars[-1]
 
-    feats: dict[str, float] = {"close": float(closes[-1])}
+    feats: dict[str, float] = {"close": raw_close}
 
     if n >= 2:
         returns = np.diff(closes) / closes[:-1]

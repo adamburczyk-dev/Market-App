@@ -4,6 +4,7 @@ import uuid
 
 import structlog
 from trading_common.events import BacktestCompletedEvent, StrategyRevalidatedEvent
+from trading_common.prices import adjusted_closes
 from trading_common.schemas import Interval
 
 from src.core.continuous_validation import WalkForwardResult
@@ -82,7 +83,9 @@ class BacktestService:
     ) -> WalkForwardResult:
         """Walk-forward revalidation: compare current OOS Sharpe vs the original baseline."""
         bars = await self._market.get_ohlcv(symbol, interval, limit=limit)
-        ohlcv = [{"close": bar.close} for bar in bars]
+        # Returns on the adjusted close — the same definition the ML side uses,
+        # otherwise a backtest and a model evaluation measure different assets.
+        ohlcv = [{"close": float(c)} for c in adjusted_closes(bars)]
 
         wf = EngineWalkForward(
             params=self._merge_params(params),

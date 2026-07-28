@@ -19,10 +19,12 @@ from datetime import datetime
 import numpy as np
 import structlog
 from trading_common.features import compute_feature_vector
+from trading_common.prices import adjusted_ohlc
 from trading_common.ranking import cross_sectional_rank
 from trading_common.schemas import OHLCVBar
 
 from src.core.labels import BarrierOutcome, LabelParams, triple_barrier_label
+from src.core.uniqueness import average_uniqueness
 
 logger = structlog.get_logger()
 
@@ -64,6 +66,14 @@ class Dataset:
     # invisible — the dataset just looks smaller than expected.
     label_resolution: dict[str, int] = field(default_factory=dict)
     sessions_skipped_thin: int = 0
+    # P0-3: average-uniqueness weight per row. Overlapping labels are not
+    # independent evidence; without this the loss counts one market episode
+    # `horizon` times over. Empty means "unweighted" (older datasets).
+    weights: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    # P0-4: which barrier resolved each row, so the report can show the label
+    # mix PER FOLD — a window where 95% of labels time out and one where 55%
+    # touch a barrier are different problems that look identical in aggregate.
+    barriers: list[str] = field(default_factory=list)
 
     @property
     def n_samples(self) -> int:
@@ -135,10 +145,13 @@ def build_dataset(
     for symbol, bars in bars_by_symbol.items():
         ordered = sorted(bars, key=lambda b: b.timestamp)
         bars_sorted[symbol] = ordered
+        _, adj_high, adj_low, adj_close = adjusted_ohlc(ordered)
         series[symbol] = {
-            "closes": np.array([b.close for b in ordered], dtype=float),
-            "highs": np.array([b.high for b in ordered], dtype=float),
-            "lows": np.array([b.low for b in ordered], dtype=float),
+            # Adjusted OHLC: barriers are compared against highs and lows, so
+            # the whole bar must live on one scale (see trading_common.prices).
+            "closes": adj_close,
+            "highs": adj_high,
+            "lows": adj_low,
         }
         index_by_date[symbol] = {b.timestamp: i for i, b in enumerate(ordered)}
 
@@ -152,6 +165,8 @@ def build_dataset(
     row_symbols: list[str] = []
     row_labels: list[int] = []
     row_next_returns: list[float] = []
+    row_spans: list[tuple[str, int, int]] = []
+    row_barriers: list[str] = []
 
     for session in all_dates:
         # Rank over the FULL feature-bearing cross-section (exactly what serving
@@ -194,6 +209,14 @@ def build_dataset(
             row_dates.append(session)
             row_symbols.append(symbol)
             row_labels.append(outcome.label)
+            # (symbol, first, last) index span the label actually occupied —
+            # the input to the uniqueness weights below.
+            row_spans.append((symbol, i, outcome.touch_index))
+            row_barriers.append(
+                "vertical"
+                if outcome.touch_index - i >= p.label.horizon
+                else ("upper" if outcome.label == 1 else "lower")
+            )
             # a labeled row always has a next bar (labels need future data);
             # the 1-session forward return feeds the daily-rebalance evaluation
             row_next_returns.append(float(closes[i + 1] / closes[i] - 1.0))
@@ -207,6 +230,7 @@ def build_dataset(
     ).reshape(len(rows), len(feature_names))
     y = np.array(row_labels, dtype=float)
     next_returns = np.array(row_next_returns, dtype=float)
+    weights = average_uniqueness(row_spans)
 
     logger.info(
         "Dataset built",
@@ -223,6 +247,8 @@ def build_dataset(
         dates=row_dates,
         symbols=row_symbols,
         feature_names=feature_names,
+        weights=weights,
+        barriers=row_barriers,
         label_resolution=resolution,
         sessions_skipped_thin=sessions_skipped_thin,
     )

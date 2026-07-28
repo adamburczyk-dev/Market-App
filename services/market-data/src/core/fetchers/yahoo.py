@@ -43,6 +43,9 @@ class YahooFetcher(Fetcher):
             start=start,
             end=end,
             period=None if start else _DEFAULT_PERIOD,
+            # auto_adjust=False keeps raw OHLC (what an order pays) AND the
+            # separate Adj Close (what a return is measured on). We store both;
+            # auto_adjust=True would overwrite OHLC and lose the execution price.
             auto_adjust=False,
             progress=False,
             threads=False,
@@ -73,6 +76,7 @@ class YahooFetcher(Fetcher):
                     low=float(row["Low"]),
                     close=float(row["Close"]),
                     volume=float(row["Volume"]),
+                    adj_close=_adj_close(row),
                     source="yahoo",
                 )
             except (ValueError, KeyError, TypeError) as exc:
@@ -81,3 +85,17 @@ class YahooFetcher(Fetcher):
                 continue
             bars.append(bar)
         return bars
+
+
+def _adj_close(row: dict[str, Any]) -> float | None:
+    """Yahoo's dividend+split adjusted close, when the response carries it.
+
+    Missing or non-positive -> None, and the consumer falls back to the raw
+    close (losing only the dividend component) rather than failing the bar.
+    """
+    value = row.get("Adj Close")
+    try:
+        adjusted = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return adjusted if adjusted > 0 else None

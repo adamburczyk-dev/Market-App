@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS market_data.ohlcv (
     low         DOUBLE PRECISION NOT NULL,
     close       DOUBLE PRECISION NOT NULL,
     volume      DOUBLE PRECISION NOT NULL,
+    -- Dividend/split adjusted close. Raw OHLC is the execution price; returns
+    -- are measured on this. Nullable: bars stored before 2026-07-28 lack it.
+    adj_close   DOUBLE PRECISION,
     source      TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- Natural key: enables idempotent upserts (ON CONFLICT / merge) and dedupe.

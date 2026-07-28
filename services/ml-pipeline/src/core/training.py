@@ -25,6 +25,7 @@ from src.core.evaluation import (
     auc,
     baseline_feature_ic,
     brier,
+    effective_sample_size,
     relative_metrics,
     selection_diagnostics,
     top_quantile_portfolio,
@@ -77,6 +78,10 @@ class FoldReport:
     # model; IC/ICIR and the long-short leg do not have that failure mode.
     relative: RelativeMetrics | None = None
     baseline_ic: dict[str, float] = field(default_factory=dict)
+    # P0-4: what this particular window was made of — label mix, independent
+    # information, cross-section width. A fold's metrics are not comparable to
+    # another's without it.
+    window: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,7 @@ class GateReport:
                     else {}
                 ),
                 **{f"baseline_ic_{k}": round(v, 5) for k, v in f.baseline_ic.items()},
+                **f.window,
             }
 
         return {
@@ -167,6 +173,8 @@ def fit_on_dates(ds: Dataset, dates: list[datetime], params: TrainingParams) -> 
         ds.y[val_mask],
         ds.feature_names,
         params.model,
+        # P0-3: overlapping labels are one episode, not `horizon` episodes.
+        sample_weights=ds.weights[fit_mask] if len(ds.weights) == len(ds.dates) else None,
     )
 
 
@@ -178,6 +186,31 @@ def gate_outcome(holdout: FoldReport, folds: list[FoldReport], p: TrainingParams
     """
     thresholds = replace(p.gate, sharpe=p.gate_sharpe)
     return evaluate_gate(holdout, folds, thresholds)
+
+
+def _window_stats(ds: Dataset, mask: np.ndarray, params: TrainingParams) -> dict[str, Any]:
+    """Label mix and independent information of one evaluation window (P0-4)."""
+    n = int(mask.sum())
+    if n == 0:
+        return {}
+    stats: dict[str, Any] = {"window_rows": n}
+    if len(ds.barriers) == len(ds.dates):
+        counts: dict[str, int] = {}
+        for barrier, keep in zip(ds.barriers, mask, strict=True):
+            if keep:
+                counts[barrier] = counts.get(barrier, 0) + 1
+        stats["window_label_resolution"] = counts
+        stats["window_vertical_share"] = round(counts.get("vertical", 0) / n, 4)
+    if len(ds.weights) == len(ds.dates):
+        stats["window_weighted_rows"] = round(float(ds.weights[mask].sum()), 1)
+    ess = effective_sample_size(
+        [d for d, m in zip(ds.dates, mask, strict=True) if m],
+        [s for s, m in zip(ds.symbols, mask, strict=True) if m],
+        ds.next_returns[mask],
+        params.horizon,
+    )
+    stats["window_effective_samples"] = round(ess.n_effective_samples, 1)
+    return stats
 
 
 def score_window(
@@ -214,6 +247,7 @@ def score_window(
     )
     # The rule: a model that cannot beat the raw rank of one feature has not
     # earned the ML layer. return_20d is the strongest single candidate here.
+    window_stats = _window_stats(ds, mask, params)
     baseline_ic: dict[str, float] = {}
     if params.baseline_feature in ds.feature_names:
         column = ds.x[mask][:, ds.feature_names.index(params.baseline_feature)]
@@ -238,6 +272,7 @@ def score_window(
         fit=dict(model.diagnostics),
         relative=relative,
         baseline_ic=baseline_ic,
+        window=window_stats,
     )
 
 

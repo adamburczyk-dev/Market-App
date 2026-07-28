@@ -175,6 +175,27 @@ def validate_coverage(
         stamps = [datetime.fromisoformat(b["timestamp"]).date() for b in bars]
         max_gap = max(((b - a).days for a, b in itertools.pairwise(stamps)), default=0)
         note = []
+        # An unadjusted split shows up as a one-session return no market makes:
+        # a 4:1 split reads as -75%, a 10:1 as -90%. Cheaper to detect here than
+        # to discover it as a "signal" the model learned.
+        jumps = [
+            (stamps[i + 1].isoformat(), round(curr / prev - 1.0, 3))
+            for i, (prev, curr) in enumerate(
+                itertools.pairwise([float(b["close"]) for b in bars])
+            )
+            if prev > 0 and (curr / prev - 1.0 <= -0.35 or curr / prev - 1.0 >= 0.60)
+        ]
+        if jumps:
+            note.append(
+                "suspected unadjusted corporate action: "
+                + ", ".join(f"{d} {r:+.0%}" for d, r in jumps[:3])
+            )
+        missing_adj = sum(1 for b in bars if b.get("adj_close") in (None, ""))
+        if missing_adj:
+            note.append(
+                f"{missing_adj}/{len(bars)} bars without adj_close "
+                "(returns exclude dividends — re-run the backfill)"
+            )
         if len(stamps) < MIN_SESSIONS_FOR_TRAINING:
             note.append(
                 f"only {len(stamps)} sessions (<{MIN_SESSIONS_FOR_TRAINING} for training)"

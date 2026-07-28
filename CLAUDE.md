@@ -1253,6 +1253,37 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   martwych linków; dwa pozostałe odwołania do nieistniejących plików to zapis ich **usunięcia**
   w logu z 2026-06-25, więc są poprawne jako historia.
 
+- 2026-07-28 — **Decyzje D1/D2/D3 podjęte + Etap E0 (poprawność danych) zamknięty.**
+  **Decyzje** (uzasadnienie w planie §12): (D1) uniwersum point-in-time **rekonstruowane z naszych
+  danych po obrocie** — odtwarzalne, bez survivorship z definicji, bez zewnętrznego dostawcy,
+  z jawnym raportowaniem resztkowej ekspozycji na delisting; (D2) horyzont **wybiera pomiar**
+  (10/21/63), z priorem na 21 — anomalie przekrojowe w akcjach są udokumentowane przy rebalansie
+  miesięcznym, a 10 dni leży w hałaśliwej strefie między rewersją a momentum; (D3) **metryka
+  decyzyjna przechodzi na książkę względną, handel zostaje long-only** — bo szerokość long-only
+  nasyca się na ~4 nazwach (ρ=0.253), a shorty wymagają modelowania end-to-end (silnik, sizing,
+  broker) i to osobna świadoma decyzja.
+  **E0 — P0-1 ceny skorygowane**: contracts-first `adj_close` w `OHLCVBar` (opcjonalne, więc stare
+  wiersze pozostają ważne) + kolumna w ORM, `init-db.sql` i **idempotentny `ALTER TABLE ... ADD
+  COLUMN IF NOT EXISTS` w starcie market-daty** — `create_all` tworzy brakujące TABELE, nigdy
+  brakujących KOLUMN, więc baza użytkownika po cichu zapisywałaby dalej bez dywidend. Nowy wspólny
+  moduł **`trading_common.prices`**: jedno miejsce decydujące, czym jest zwrot; współczynnik
+  `adj_close/close` stosowany do **całej świecy**, bo bariery triple-barrier porównują się z high/low
+  i mieszanie skal fałszowałoby dotknięcia. Cechy i etykiety liczą się teraz na serii skorygowanej,
+  **surowy `close` zostaje ceną egzekucji** (strategy nadal bierze `features["close"]`); backtest
+  też przeszedł na skorygowaną, inaczej backtest i ocena ML mierzyłyby różne aktywa.
+  **P0-2**: kontrola pokrycia wykrywa teraz **nieskorygowane zdarzenia korporacyjne** (jednosesyjny
+  zwrot ≤ −35% lub ≥ +60%) i brak `adj_close` — taniej wyłapać to tutaj niż odkryć jako „sygnał",
+  którego model się nauczył. **P0-3 wagi unikalności** (`core/uniqueness.py`, AFML rozdz. 4): etykieta
+  h=10 przy próbkowaniu dziennym dzieli okno z ~9 sąsiadami, więc strata liczyła jeden epizod
+  rynkowy dziesięć razy; waga = średnia z 1/(liczba równocześnie otwartych etykiet na symbolu),
+  liczona **per symbol**. `train_classifier` przyjmuje `sample_weights` i normalizuje po **sumie wag**,
+  nie po liczbie wierszy — inaczej osłabienie wag byłoby przebraną zmianą kroku uczenia.
+  **P0-4**: każdy fold raportuje własny rozkład barier, udział pionowych, ważoną liczbę wierszy
+  i efektywną próbę. Liczniki: shared 188 (+5), ml-pipeline 174 (+12) → **bateria 931**; ruff +
+  format + mypy czyste. **Zweryfikowane na prawdziwym PostgreSQL-u** (7/7): kolumna dodana do
+  tabeli utworzonej BEZ niej, stary wiersz przeżył z NULL-em, zapis/odczyt round-trip, surowy close
+  nietknięty, a na parze świec z luką dywidendową zwrot surowy pokazuje −2%, skorygowany 0%.
+
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.
