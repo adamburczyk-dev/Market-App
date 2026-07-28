@@ -36,6 +36,7 @@ from src.core.outcomes import OutcomeResolver
 from src.core.registry import ModelBaseline, ModelRegistry
 from src.core.serving import ServingEngine
 from src.core.training import TrainingParams, run_training
+from src.core.tuning import SweepReport, run_sweep
 from src.events.publisher import Publisher
 
 logger = structlog.get_logger()
@@ -234,6 +235,29 @@ class MLPipelineService:
             "dataset": _dataset_diagnostics(dataset, symbols),
             "dropped_zero_variance": dropped,
             "probe": probe.as_dict(),
+        }
+
+    async def tune(
+        self,
+        symbols: list[str],
+        interval: Interval,
+        limit: int = 1500,
+        n_folds: int = 4,
+        params: TrainingParams | None = None,
+    ) -> dict[str, Any]:
+        """Score several training configurations on the walk-forward folds.
+
+        Selection never sees the holdout, and the report carries `n_trials` so
+        the activation gate can deflate for the number of configurations tried.
+        Nothing is registered — this chooses a setup, not a model.
+        """
+        dataset, _ = await self.build_training_dataset(symbols, interval, limit)
+        dataset, dropped = drop_zero_variance_features(dataset)
+        report: SweepReport = run_sweep(dataset, params, n_folds=n_folds)
+        return {
+            "dataset": _dataset_diagnostics(dataset, symbols),
+            "dropped_zero_variance": dropped,
+            "sweep": report.as_dict(),
         }
 
     async def train(

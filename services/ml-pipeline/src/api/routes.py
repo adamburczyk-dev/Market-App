@@ -19,6 +19,10 @@ class TrainRequest(BaseModel):
     limit: int = Field(default=1500, ge=300, le=10_000)
 
 
+class TuneRequest(TrainRequest):
+    n_folds: int = Field(default=4, ge=2, le=10)
+
+
 class BaselineRequest(BaseModel):
     reference_features: dict[str, list[float]]
     baseline_sharpe: float
@@ -77,6 +81,21 @@ async def capacity_probe(
     except RuntimeError as exc:  # market-data client not configured
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:  # dataset too small / single class
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/models/tune")
+async def tune(req: TuneRequest, service: MLPipelineService = Depends(get_service)) -> dict:
+    """Compare training configurations on the walk-forward folds (never the
+    holdout) and report the winner plus the number of configurations tried —
+    that count is what the gate's deflated Sharpe must be told."""
+    try:
+        return await service.tune(
+            req.symbols, Interval(req.interval), limit=req.limit, n_folds=req.n_folds
+        )
+    except RuntimeError as exc:  # market-data client not configured
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:  # dataset too short to split
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

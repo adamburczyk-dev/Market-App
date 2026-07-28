@@ -1182,6 +1182,28 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   konfiguracja produkcyjna dała tam `auc_train` **0.5255**, czyli praktycznie tę samą sygnaturę co
   realny bieg #2 (0.5135).
 
+- 2026-07-28 — **Pierwszy bieg sondy pojemności u użytkownika + wzmocnienie sondy + sweep konfiguracji.**
+  Bieg na realnych danych (34 symbole, 40 000 wierszy — sonda ucięła do `max_rows`, zbiór ma 48 827):
+  real **0.6279**, shuffled **0.5761**, produkcyjna konfiguracja **0.5341**, gap **+0.0518** przy
+  progu 0.05. **Werdykt przeważył o 0.0018 na pojedynczym dopasowaniu na stronę — to nie jest
+  werdykt.** Stąd (a) sonda robi teraz **po kilka dopasowań na stronę** (2 real, 3 kontrole, każda
+  ze świeżą permutacją) i wymaga *zarówno* gapu ≥ progu, *jak i* pełnej separacji (najgorszy real >
+  najlepsza kontrola); przy samym gapie werdykt brzmi **INCONCLUSIVE**, a nie „struktura istnieje".
+  `max_rows` 40k → 60k, żeby realny zbiór wchodził w całości. **Kalibracja z próby generalnej,
+  ważna dla interpretacji**: na danych syntetycznych BEZ alfy sonda pokazuje gap **+0.023 przy
+  pełnej separacji** (real 0.601/0.609 vs kontrole 0.578–0.586) — czyli **zero nie jest podłogą**;
+  sam fakt separacji nic nie znaczy, próg 0.05 wykonuje realną pracę, a wynik +0.0518 leży tuż nad
+  tą podłogą. (b) Nowy **sweep konfiguracji** (`core/tuning.py`, `POST /models/tune`,
+  `--tune`): 6 kandydatów po osiach, które implikuje diagnoza biegu #2 (pojemność, dropout, długość
+  fitu, lr), każdy oceniany na foldach walk-forward. Dwie reguły uczciwości wbudowane w projekt:
+  **holdout nie bierze udziału w selekcji** (test pinuje to, śledząc każdą sesję, którą sweep w
+  ogóle zobaczył) i **liczba prób wychodzi z raportu jako `n_trials`**, żeby G5 wiedziało, ile razy
+  patrzyliśmy. Ranking po **t-stat IC**, nie po Sharpe foldu — na 63 sesjach Sharpe nie odróżnia
+  kandydatów. Przy okazji `_fit_on_dates`/`_score` w `training.py` stały się publiczne
+  (`fit_on_dates`/`score_window`) — sweep ich używa i importowanie prywatnych byłoby zapachem.
+  ml-pipeline 168 testów (+6); ruff + format + mypy czyste; sonda zweryfikowana na żywo po HTTP
+  (10/10 asercji).
+
 **Next:** plan przestawiony po audycie zewnętrznym — **`docs/backlog_2026_07_27.md` jest teraz
 listą roboczą** (audyt + moja weryfikacja jego twierdzeń + 2 znaleziska własne). Reguła nadrzędna:
 **żadnego kolejnego treningu przed zamknięciem całego Tier 0** — pierwszy bieg nie tyle pokazał

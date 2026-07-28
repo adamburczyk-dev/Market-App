@@ -47,7 +47,40 @@ def test_probe_finds_structure_when_there_is_some():
     probe = run_capacity_probe(learnable(), production_config=PRODUCTION, overfit_config=PROBE)
     assert probe.auc_train_real > probe.auc_train_shuffled + 0.05
     assert probe.gap > 0.05
+    assert probe.separated, "real and control fits must not overlap for a positive verdict"
     assert "EXISTS" in probe.verdict
+
+
+def test_probe_repeats_both_sides():
+    """One fit per side cannot separate a small gap from seed noise — the first
+    real run landed at +0.0518 against a 0.05 threshold."""
+    probe = run_capacity_probe(
+        learnable(), production_config=PRODUCTION, overfit_config=PROBE, n_real=2, n_shuffles=3
+    )
+    assert len(probe.real_runs) == 2
+    assert len(probe.shuffled_runs) == 3
+    assert len(set(probe.shuffled_runs)) == 3, "each control must be a fresh permutation"
+    assert probe.auc_train_real == pytest.approx(sum(probe.real_runs) / 2)
+    assert probe.margin == pytest.approx(min(probe.real_runs) - max(probe.shuffled_runs))
+
+
+def test_overlapping_runs_are_called_inconclusive():
+    """A mean gap over the threshold whose runs overlap is not a verdict."""
+    import src.core.capacity as capacity
+
+    # real .62/.54 (mean .58), controls .55/.50/.51 (mean .52) -> gap .06, but the
+    # worst real fit (.54) sits BELOW the best control (.55): the runs overlap.
+    scores = iter([0.62, 0.54, 0.55, 0.50, 0.51, 0.53])
+    original = capacity._fit_and_score
+    capacity._fit_and_score = lambda *a, **k: next(scores)  # type: ignore[assignment]
+    try:
+        probe = run_capacity_probe(learnable(), n_real=2, n_shuffles=3)
+    finally:
+        capacity._fit_and_score = original  # type: ignore[assignment]
+
+    assert probe.gap >= 0.05
+    assert not probe.separated
+    assert "INCONCLUSIVE" in probe.verdict
 
 
 def test_probe_calls_memorization_what_it_is():

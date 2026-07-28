@@ -147,9 +147,7 @@ def _mask(dates: list[datetime], allowed: set[datetime]) -> np.ndarray:
     return np.array([d in allowed for d in dates], dtype=bool)
 
 
-def _fit_on_dates(
-    ds: Dataset, dates: list[datetime], params: TrainingParams
-) -> TrainedModel | None:
+def fit_on_dates(ds: Dataset, dates: list[datetime], params: TrainingParams) -> TrainedModel | None:
     """Train with the window's tail as the (purged) validation fold."""
     gap = params.horizon + params.embargo
     if len(dates) < params.val_size + gap + 20:  # need a real fit set left over
@@ -182,7 +180,7 @@ def gate_outcome(holdout: FoldReport, folds: list[FoldReport], p: TrainingParams
     return evaluate_gate(holdout, folds, thresholds)
 
 
-def _score(
+def score_window(
     ds: Dataset,
     model: TrainedModel,
     test_dates: set[datetime],
@@ -267,12 +265,12 @@ def run_training(
     folds = purged_walk_forward(work, p.train_size, p.test_size, p.horizon, p.embargo)
     fold_reports: list[FoldReport] = []
     for k, fold in enumerate(folds):
-        model = _fit_on_dates(ds, list(fold.train_dates), p)
+        model = fit_on_dates(ds, list(fold.train_dates), p)
         if model is None:
             logger.warning("Fold skipped — untrainable window", fold=k)
             continue
         fold_reports.append(
-            _score(
+            score_window(
                 ds,
                 model,
                 set(fold.test_dates),
@@ -286,10 +284,10 @@ def run_training(
     # Holdout model: trained on everything BEFORE the holdout, purged at the seam.
     gap = p.horizon + p.embargo
     holdout_train = work[:-gap] if gap else work
-    holdout_model = _fit_on_dates(ds, holdout_train, p)
+    holdout_model = fit_on_dates(ds, holdout_train, p)
     if holdout_model is None:
         raise ValueError("holdout window is untrainable (too small or single-class)")
-    holdout_report = _score(
+    holdout_report = score_window(
         ds,
         holdout_model,
         set(holdout),
@@ -318,7 +316,7 @@ def run_training(
     )
 
     # Final model on the full history (fresh val split at the very end).
-    final_model = _fit_on_dates(ds, sessions, p)
+    final_model = fit_on_dates(ds, sessions, p)
     if final_model is None:
         raise ValueError("full-history window is untrainable")
     return final_model, report

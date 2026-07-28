@@ -330,14 +330,71 @@ def run_capacity_probe(
         report["capacity_probe"] = body
 
     probe = body.get("probe", {})
+    runs = ", ".join(f"{v:.4f}" for v in probe.get("real_runs", []))
+    controls = ", ".join(f"{v:.4f}" for v in probe.get("shuffled_runs", []))
     print(
         f"  rows {probe.get('n_rows'):,}, {probe.get('n_features')} features\n"
-        f"  train AUC  real {probe.get('auc_train_real'):.4f}   "
-        f"shuffled labels {probe.get('auc_train_shuffled'):.4f}   "
-        f"production config {probe.get('auc_train_production'):.4f}\n"
-        f"  gap (real − shuffled): {probe.get('gap'):+.4f}"
+        f"  train AUC  real {probe.get('auc_train_real'):.4f} [{runs}]\n"
+        f"             shuffled {probe.get('auc_train_shuffled'):.4f} [{controls}]\n"
+        f"             production config {probe.get('auc_train_production'):.4f}\n"
+        f"  gap (mean real − mean shuffled): {probe.get('gap'):+.4f}\n"
+        f"  margin (worst real − best control): {probe.get('margin'):+.4f} "
+        f"→ {'separated' if probe.get('separated') else 'OVERLAPPING'}"
     )
     print(f"\n  {probe.get('verdict')}")
+    return 0
+
+
+def run_sweep(
+    ml_url: str,
+    symbols: list[str],
+    limit: int,
+    timeout_s: float,
+    report: dict | None = None,
+) -> int:
+    """Compare training configurations on the walk-forward folds."""
+    print(
+        f"\nConfiguration sweep on {len(symbols)} symbols (sync — several minutes)..."
+    )
+    try:
+        status, body = _request(
+            "POST",
+            f"{ml_url}/api/v1/ml-pipeline/models/tune",
+            {"symbols": symbols, "interval": "1d", "limit": limit},
+            timeout=timeout_s,
+        )
+    except OSError as exc:
+        print(f"Sweep failed: {exc}")
+        if report is not None:
+            report["sweep_error"] = str(exc)
+        return 1
+    if status != 200:
+        print(f"Sweep failed: HTTP {status}: {body.get('detail', body)}")
+        if report is not None:
+            report["sweep_error"] = f"HTTP {status}: {body.get('detail', body)}"
+        return 1
+    if report is not None:
+        report["sweep"] = body
+
+    sweep = body.get("sweep", {})
+    print(
+        f"  {'config':<20} {'IC':>9} {'t':>6} {'AUCval':>8} {'AUCtr':>8} {'lift':>8} {'predσ':>8}"
+    )
+    for candidate in sweep.get("candidates", []):
+        print(
+            f"  {candidate['name']:<20} {candidate['ic_mean']:>9.5f} "
+            f"{candidate['ic_tstat']:>6.2f} {candidate['auc_val_mean']:>8.4f} "
+            f"{candidate['auc_train_mean']:>8.4f} {candidate['lift_mean']:>8.4f} "
+            f"{candidate['pred_std_mean']:>8.4f}"
+        )
+    print(
+        f"\n  best by IC t-stat: {sweep.get('best')}  |  configurations tried: "
+        f"{sweep.get('n_trials')}"
+    )
+    print(
+        "  Selection used folds only — the holdout is still untouched. Feed n_trials to the\n"
+        "  gate (G5) so the deflated Sharpe knows how many times we looked."
+    )
     return 0
 
 
@@ -464,6 +521,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--tune",
+        action="store_true",
+        help=(
+            "Score several training configurations on the walk-forward folds "
+            "(never the holdout) and report the winner plus how many were tried."
+        ),
+    )
+    parser.add_argument(
         "--skip-backfill",
         action="store_true",
         help=(
@@ -569,6 +634,16 @@ def main() -> int:
         exit_code = max(
             exit_code,
             run_capacity_probe(
+                ml_url, trainable, args.train_limit, args.train_timeout, report=report
+            ),
+        )
+    if args.tune:
+        trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
+        ml_url = args.ml_pipeline_url.rstrip("/")
+        _check_service(ml_url, "ml-pipeline")
+        exit_code = max(
+            exit_code,
+            run_sweep(
                 ml_url, trainable, args.train_limit, args.train_timeout, report=report
             ),
         )
