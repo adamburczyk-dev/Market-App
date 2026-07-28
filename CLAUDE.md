@@ -8,6 +8,9 @@ via NATS JetStream (events) and HTTP (request/response).
 **Key docs:**
 - **Project context/status/direction: this file** — see "Project status & direction" below (single source of truth I read every session)
 - Full 24-week development plan: `Plan_Rozwoju_Systemu_Tradingowego_2.md` (repo root)
+- **Plan poprawy przewidywania (2026-07-28): `docs/plan_2026_07_28_prediction.md`** — stan wejścia
+  modelu zweryfikowany w kodzie, próg wykrywalności IC, nasycenie szerokości w książce long-only,
+  etapy E0–E5 z bramkami decyzyjnymi
 - Framework supplement — 12 components (risk envelope, drift/decay monitors, cost filter, regime allocator, …): `docs/framework_supplement.md`
 - **ML/AI integration plan: `docs/ml_integration_plan.md`** — authoritative design for the ML
   phase (cross-sectional shallow model on ranked features, triple-barrier labels, purged
