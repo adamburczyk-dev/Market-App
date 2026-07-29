@@ -20,6 +20,7 @@ from trading_common.events import ModelDriftDetectedEvent
 from trading_common.schemas import FinancialStatements, Interval
 
 from src.core.capacity import run_capacity_probe
+from src.core.cpcv_run import cpcv_trials, run_cpcv
 from src.core.data_contract import TrainingDataContract
 from src.core.dataset import (
     Dataset,
@@ -309,6 +310,35 @@ class MLPipelineService:
         if not bars_by_symbol:
             raise ValueError("no history for any requested symbol")
         return run_sector_study(bars_by_symbol, sector_by_symbol, self._dataset_params)
+
+    async def cpcv(
+        self,
+        symbols: list[str],
+        interval: Interval,
+        limit: int = 1500,
+        n_groups: int = 6,
+        test_groups: int = 2,
+        params: TrainingParams | None = None,
+    ) -> dict[str, Any]:
+        """Combinatorial purged CV — the DISPERSION of the result across paths.
+
+        Walk-forward gives one out-of-sample path; this gives several from the
+        same data and reports how much they differ. Expensive (C(N,k) fits) and
+        deliberately not part of every training call. Nothing is registered:
+        this measures uncertainty, it does not produce a candidate.
+        """
+        dataset, _, selection = await self.build_training_dataset(symbols, interval, limit)
+        dataset, dropped = drop_zero_variance_features(dataset)
+        report = run_cpcv(dataset, params, n_groups=n_groups, test_groups=test_groups)
+        return {
+            "symbols": len(symbols),
+            "dataset": _dataset_diagnostics(dataset, symbols),
+            "selection": selection,
+            "dropped_zero_variance": dropped,
+            "cpcv": report,
+            # The honesty input to G5: every path is another look at this data.
+            "suggested_n_trials": cpcv_trials(n_groups, test_groups),
+        }
 
     async def capacity_probe(
         self, symbols: list[str], interval: Interval, limit: int = 1500

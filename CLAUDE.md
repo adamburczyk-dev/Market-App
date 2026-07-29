@@ -1533,6 +1533,24 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   walk-forward i tę samą bramkę (identyczna struktura raportu, tyle samo foldów, ten sam
   `n_test`), więc różnica między raportami dotyczy klasy modelu, a nie otoczenia.
 
+- 2026-07-29 — **Etap E4 (część 2): CPCV — rozrzut zamiast pojedynczej liczby.** `core/cpcv.py`
+  + `core/cpcv_run.py`, `POST /models/cpcv`, `--cpcv`. Walk-forward daje **jedną** ścieżkę OOS, a
+  każda liczba w bramce jest jednym losowaniem z jej rozkładu — bieg #2 pokazał, jak szerokiego
+  (foldy od Sharpe −1.61 do +4.54 na tych samych danych i tej samej konfiguracji). CPCV dzieli oś
+  czasu na N grup, testuje każdą kombinację k z nich (N=6, k=2 → 15 podziałów → **5 ścieżek**),
+  z purge i embargo **po obu stronach każdego bloku testowego**. Raport prowadzi **rozrzutem**, a
+  nie średnią; najważniejsza liczba to `share_positive` — strategia dodatnia na 3 z 5 sposobów
+  pocięcia tych samych danych **nie została pokazana**, cokolwiek mówi średnia. `suggested_n_trials`
+  wraca do bramki: każda ścieżka to kolejne spojrzenie na te same dane, więc G5 ma o tym wiedzieć.
+  **Błąd popełniony i naprawiony przy budowie**: pierwsza wersja składała ścieżki z **rozłącznych**
+  podziałów, szukając ich zachłannie. To jest 1-faktoryzacja grafu pełnego — nie istnieje dla
+  większości (N, k) — a zachłanne szukanie **po cichu zwróciło jedną zdegenerowaną ścieżkę**
+  (pokryte grupy `[0,0,0,0,0,1,2,3,4,5]`) i raportowało `n_paths=1`; test, który pisałem obok,
+  to złapał. Poprawna konstrukcja AFML: każda grupa występuje w dokładnie C(N−1,k−1) podziałach,
+  czyli tyle, ile jest ścieżek, więc **j-ty podział testujący grupę g dostarcza predykcji dla g
+  w ścieżce j** — jeden podział **służy wielu ścieżkom**, po razie na każdą testowaną grupę.
+  Liczniki: ml-pipeline 237 (+13) → **bateria 1042**; ruff + format + mypy czyste.
+
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.

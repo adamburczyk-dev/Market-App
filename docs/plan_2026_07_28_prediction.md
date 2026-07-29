@@ -286,7 +286,7 @@ w tych danych naprawdę widać.
 | **P4-1 ✅ 2026-07-29** | **Challenger GBDT** (LightGBM/XGBoost) obok MLP | Przy tej wielkości próby i tabelarycznych cechach drzewa zwykle wygrywają; sieci wygrywają dopiero przy bardzo szerokim przekroju i wielu charakterystykach (Gu–Kelly–Xiu). Nasza sonda pojemności mierzy to samo pytanie od strony MLP |
 | **P4-2 ✅ 2026-07-29** | **Ensembling po ziarnach** (5–10 modeli, uśrednione predykcje) | Zmienność fold-do-foldu w biegu #2 jest częściowo szumem inicjalizacji; uśrednianie to najtańsza redukcja wariancji |
 | **P4-3** | Wagi próbek (z P0-3) + neutralizacja sektorowa w funkcji straty | Model przestaje wygrywać na sektorze i na skorelowanych, nakładających się wierszach |
-| **P4-4** | **CPCV** — kombinatoryczna walidacja purged (AFML rozdz. 12) | Daje *rozkład* ścieżek OOS zamiast jednej; przy naszej próbie pojedyncza ścieżka walk-forward jest jednym losowaniem |
+| **P4-4 ✅ 2026-07-29** | **CPCV** — kombinatoryczna walidacja purged (AFML rozdz. 12) | Daje *rozkład* ścieżek OOS zamiast jednej; przy naszej próbie pojedyncza ścieżka walk-forward jest jednym losowaniem |
 
 **P4-1 — challenger, nie następca.** `core/gbdt.py` (LightGBM, natywne API — wrapper sklearna ma
 już zdeprecjonowany `eval_set`). Zbudowany tak, żeby był **porównywalny**, a nie po prostu dobry:
@@ -309,6 +309,21 @@ Dwie decyzje, które chronią G0: „ensemble" z jednego członka **zwraca po pr
 (rozbieżność 0.0 czytałaby się jako doskonała zgodność, a nie jako brak pomiaru), a raportowany
 `best_epoch` to **minimum** po członkach — inaczej jeden model przywrócony z epoki 1 zniknąłby za
 pozostałymi, czyli dokładnie awaria, którą bieg #2 miał dwa razy.
+
+**P4-4 — CPCV, czyli rozrzut zamiast liczby.** `core/cpcv.py` + `core/cpcv_run.py`,
+`POST /models/cpcv`, `--cpcv`. Oś czasu dzielona na N grup, testujemy każdą kombinację k z nich
+(N=6, k=2 → 15 podziałów → **5 ścieżek OOS** zamiast jednej), z purge i embargo **po obu stronach
+każdego bloku testowego**. Raport prowadzi **rozrzutem, nie średnią**, a najważniejsza liczba to
+`share_positive`: strategia dodatnia na 3 z 5 sposobów pocięcia tych samych danych **nie została
+pokazana**, cokolwiek mówi jej średnia.
+
+**Błąd popełniony i naprawiony przy budowie**: pierwsza wersja składała ścieżki z **rozłącznych**
+podziałów, szukając ich zachłannie. To jest 1-faktoryzacja grafu pełnego — dla większości (N, k)
+nie istnieje, a zachłanne szukanie po cichu zwróciło **jedną zdegenerowaną ścieżkę** (pokryte grupy
+`[0,0,0,0,0,1,2,3,4,5]`) i raportowało `n_paths=1`. Poprawna konstrukcja AFML: każda grupa
+występuje w dokładnie C(N−1,k−1) podziałach, czyli tyle, ile jest ścieżek, więc **j-ty podział
+testujący grupę g dostarcza predykcji dla g w ścieżce j** — jeden podział **służy wielu ścieżkom**,
+po razie na każdą testowaną grupę. Test pinuje obie własności.
 
 **Uwaga o `n_trials`:** każda z tych prób podnosi liczbę spojrzeń na te same dane. Sweep już
 wypuszcza `n_trials` do bramki (G5); przy CPCV i ensemblingu trzeba to prowadzić dalej —

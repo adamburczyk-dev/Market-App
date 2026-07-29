@@ -620,6 +620,90 @@ def run_sector_study(
     return 0
 
 
+def run_cpcv(
+    ml_url: str,
+    symbols: list[str],
+    limit: int,
+    timeout_s: float,
+    report: dict | None = None,
+    model_kind: str = "mlp",
+    n_groups: int = 6,
+    test_groups: int = 2,
+) -> int:
+    """Several out-of-sample paths from the same data, reported as a spread.
+
+    Walk-forward gives one path and every gate number is a single draw from its
+    distribution — run #2's folds ran from Sharpe -1.61 to +4.54 on identical
+    data. This says how much of a result is the particular way the data was cut.
+    """
+    print(
+        f"\nCPCV on {len(symbols)} symbols: {n_groups} groups, {test_groups} tested "
+        "at a time (sync — many fits)..."
+    )
+    try:
+        status, body = _request(
+            "POST",
+            f"{ml_url}/api/v1/ml-pipeline/models/cpcv",
+            {
+                "symbols": symbols,
+                "interval": "1d",
+                "limit": limit,
+                "model_kind": model_kind,
+                "n_groups": n_groups,
+                "test_groups": test_groups,
+            },
+            timeout=timeout_s,
+        )
+    except OSError as exc:
+        print(f"CPCV failed: {exc}")
+        if report is not None:
+            report["cpcv_error"] = str(exc)
+        return 1
+    if status != 200:
+        print(f"CPCV failed: HTTP {status}: {body.get('detail', body)}")
+        if report is not None:
+            report["cpcv_error"] = f"HTTP {status}: {body.get('detail', body)}"
+        return 1
+    if report is not None:
+        report["cpcv"] = body
+
+    result = body.get("cpcv", {})
+    print(
+        f"  {result.get('n_splits_trained')}/{result.get('n_splits')} splits trained → "
+        f"{result.get('n_paths_evaluated')} out-of-sample paths"
+    )
+    print(f"  {'metric':<14} {'mean':>8} {'std':>8} {'min':>8} {'max':>8} {'>0':>6}")
+    for name in ("sharpe_active", "sharpe", "ic"):
+        stats = result.get(name) or {}
+        print(
+            f"  {name:<14} {stats.get('mean', 0):>8.3f} {stats.get('std', 0):>8.3f} "
+            f"{stats.get('min', 0):>8.3f} {stats.get('max', 0):>8.3f} "
+            f"{stats.get('share_positive', 0):>6.0%}"
+        )
+    active = result.get("sharpe_active") or {}
+    share = active.get("share_positive", 0.0)
+    # The reading, not the average: the decision metric is active (P3-4), and a
+    # result that survives only some ways of cutting the data has not survived.
+    if share >= 0.8:
+        print("\n  READ: the active result holds across nearly every path.")
+    elif share >= 0.5:
+        print(
+            f"\n  READ: active is positive on only {share:.0%} of paths — the single "
+            "walk-forward\n  number was one draw from a wide distribution, not a result."
+        )
+    else:
+        print(
+            f"\n  READ: active is positive on {share:.0%} of paths. Whatever the mean "
+            "says, cutting\n  the same data differently mostly loses to the universe."
+        )
+    suggested = body.get("suggested_n_trials")
+    if suggested:
+        print(
+            f"  every path is another look at this data — raise n_trials by {suggested}"
+        )
+    return 0
+
+
 def run_capacity_probe(
     ml_url: str,
     symbols: list[str],
@@ -888,6 +972,15 @@ def main() -> int:
         "--train", action="store_true", help="Run a training pass after backfill"
     )
     parser.add_argument(
+        "--cpcv",
+        action="store_true",
+        help=(
+            "Combinatorial purged CV (P4-4): several out-of-sample paths from the "
+            "same data, reported as a spread. Answers how much a result is the "
+            "particular way the data was cut. Expensive — C(N,k) fits."
+        ),
+    )
+    parser.add_argument(
         "--model-kind",
         choices=("mlp", "gbdt"),
         default="mlp",
@@ -1127,6 +1220,21 @@ def main() -> int:
             exit_code,
             run_sector_study(
                 ml_url, trainable, args.train_limit, args.train_timeout, report=report
+            ),
+        )
+    if args.cpcv:
+        trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
+        ml_url = args.ml_pipeline_url.rstrip("/")
+        _check_service(ml_url, "ml-pipeline")
+        exit_code = max(
+            exit_code,
+            run_cpcv(
+                ml_url,
+                trainable,
+                args.train_limit,
+                args.train_timeout,
+                report=report,
+                model_kind=args.model_kind,
             ),
         )
     if args.capacity_probe:

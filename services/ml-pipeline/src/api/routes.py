@@ -43,6 +43,11 @@ class SectorStudyRequest(TrainRequest):
     sectors: dict[str, str | None] = Field(default_factory=dict)
 
 
+class CpcvRequest(TrainRequest):
+    n_groups: int = Field(default=6, ge=3, le=12)
+    test_groups: int = Field(default=2, ge=1, le=4)
+
+
 class TuneRequest(TrainRequest):
     n_folds: int = Field(default=4, ge=2, le=10)
 
@@ -131,6 +136,26 @@ async def sector_study(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/models/cpcv")
+async def cpcv(req: CpcvRequest, service: MLPipelineService = Depends(get_service)) -> dict:
+    """Combinatorial purged CV: several out-of-sample paths from the same data,
+    reported as a dispersion rather than a single number. Expensive (C(N,k)
+    fits) and diagnostic only — nothing is registered or promotable from it."""
+    try:
+        return await service.cpcv(
+            req.symbols,
+            Interval(req.interval),
+            limit=req.limit,
+            n_groups=req.n_groups,
+            test_groups=req.test_groups,
+            params=TrainingParams(model_kind=req.model_kind, n_seeds=req.n_seeds),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:  # too few sessions for the requested design
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
