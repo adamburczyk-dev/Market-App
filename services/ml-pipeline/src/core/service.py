@@ -19,7 +19,10 @@ import structlog
 from trading_common.events import ModelDriftDetectedEvent
 from trading_common.schemas import FinancialStatements, Interval
 
+from src.core.alpha_decay import DEFAULT_DELAYS, DEFAULT_HORIZONS, run_alpha_decay
 from src.core.capacity import run_capacity_probe
+from src.core.cost_study import run_cost_study
+from src.core.costs import CostParams
 from src.core.cpcv_run import cpcv_trials, run_cpcv
 from src.core.data_contract import TrainingDataContract
 from src.core.dataset import (
@@ -310,6 +313,62 @@ class MLPipelineService:
         if not bars_by_symbol:
             raise ValueError("no history for any requested symbol")
         return run_sector_study(bars_by_symbol, sector_by_symbol, self._dataset_params)
+
+    async def alpha_decay(
+        self,
+        symbols: list[str],
+        interval: Interval,
+        limit: int = 1500,
+        horizons: tuple[int, ...] = DEFAULT_HORIZONS,
+        delays: tuple[int, ...] = DEFAULT_DELAYS,
+    ) -> dict[str, Any]:
+        """How long the signal lasts, and how much a delayed entry costs.
+
+        The holding period (and the tranche count) currently follow the label's
+        horizon by assumption. This measures whether that is right. Model-free:
+        raw feature ranks against forward returns, no fit, no trials consumed.
+        """
+        if self._market is None:
+            raise RuntimeError("market-data client not configured")
+        bars_by_symbol = {}
+        for symbol in symbols:
+            bars = await self._market.get_ohlcv(symbol, interval, limit=limit)
+            if bars:
+                bars_by_symbol[symbol] = bars
+        if not bars_by_symbol:
+            raise ValueError("no history for any requested symbol")
+        return run_alpha_decay(
+            bars_by_symbol, self._dataset_params, horizons=horizons, delays=delays
+        )
+
+    async def cost_study(
+        self,
+        symbols: list[str],
+        interval: Interval,
+        limit: int = 1500,
+        aum_usd: float = 1_000_000.0,
+        turnover_daily: float | None = None,
+    ) -> dict[str, Any]:
+        """What trading this universe costs, per name and across book sizes.
+
+        Replaces the flat 5 bps with a spread + square-root-impact estimate, and
+        reports the capacity curve — the statement a flat rate cannot make.
+        Model-free: nothing is fitted and no trials are consumed.
+        """
+        if self._market is None:
+            raise RuntimeError("market-data client not configured")
+        bars_by_symbol = {}
+        for symbol in symbols:
+            bars = await self._market.get_ohlcv(symbol, interval, limit=limit)
+            if bars:
+                bars_by_symbol[symbol] = bars
+        if not bars_by_symbol:
+            raise ValueError("no history for any requested symbol")
+        return run_cost_study(
+            bars_by_symbol,
+            base_params=CostParams(aum_usd=aum_usd),
+            turnover_daily=turnover_daily,
+        )
 
     async def cpcv(
         self,

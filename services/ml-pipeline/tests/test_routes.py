@@ -125,3 +125,55 @@ async def test_sector_study_accepts_an_absent_sector_map(
         json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500},
     )
     assert resp.status_code == 503  # still unwired, but the body validated
+
+
+@pytest.mark.asyncio
+async def test_cost_study_needs_a_market_client(wired: tuple[AsyncClient, MLPipelineService]):
+    # Same ops-call contract as the other studies: 503, not a stack trace.
+    client, _ = wired
+    resp = await client.post(
+        "/api/v1/ml-pipeline/models/cost-study",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500, "aum_usd": 5_000_000},
+    )
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_cost_study_defaults_the_book_size(wired: tuple[AsyncClient, MLPipelineService]):
+    """A cost number is meaningless without a size, so the size must always be
+    present — defaulted rather than optional-and-absent."""
+    client, _ = wired
+    resp = await client.post(
+        "/api/v1/ml-pipeline/models/cost-study",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500},
+    )
+    assert resp.status_code == 503  # unwired, but the body validated
+    bad = await client.post(
+        "/api/v1/ml-pipeline/models/cost-study",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500, "aum_usd": 0},
+    )
+    assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_alpha_decay_needs_a_market_client(wired: tuple[AsyncClient, MLPipelineService]):
+    client, _ = wired
+    resp = await client.post(
+        "/api/v1/ml-pipeline/models/alpha-decay",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500},
+    )
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_alpha_decay_refuses_an_empty_horizon_list(
+    wired: tuple[AsyncClient, MLPipelineService],
+):
+    """A decay profile with no horizons is not a smaller study, it is no study
+    — better a 422 than a report with an empty table."""
+    client, _ = wired
+    resp = await client.post(
+        "/api/v1/ml-pipeline/models/alpha-decay",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500, "horizons": []},
+    )
+    assert resp.status_code == 422

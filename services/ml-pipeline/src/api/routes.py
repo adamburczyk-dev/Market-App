@@ -48,6 +48,25 @@ class CpcvRequest(TrainRequest):
     test_groups: int = Field(default=2, ge=1, le=4)
 
 
+class AlphaDecayRequest(TrainRequest):
+    # Holding horizons to profile, in sessions. The label's own horizon is
+    # always measured too, since that is what selects which features to profile.
+    horizons: list[int] = Field(default=[1, 5, 10, 21, 63], min_length=1, max_length=8)
+    # Entry delays, in sessions — how stale a signal may be before it stops
+    # being worth acting on.
+    delays: list[int] = Field(default=[0, 1, 2, 3, 5], min_length=1, max_length=8)
+
+
+class CostStudyRequest(TrainRequest):
+    # The reference book size the per-name table is priced at. The capacity
+    # curve spans several sizes regardless — a single size cannot answer
+    # "how large can this get".
+    aum_usd: float = Field(default=1_000_000.0, gt=0)
+    # Measured turnover from a training run, if there is one: it converts bps
+    # into annual drag, which is the only unit comparable to a Sharpe.
+    turnover_daily: float | None = Field(default=None, ge=0, le=1)
+
+
 class TuneRequest(TrainRequest):
     n_folds: int = Field(default=4, ge=2, le=10)
 
@@ -132,6 +151,50 @@ async def sector_study(
     try:
         return await service.sector_study(
             req.symbols, Interval(req.interval), req.sectors, limit=req.limit
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/models/alpha-decay")
+async def alpha_decay(
+    req: AlphaDecayRequest, service: MLPipelineService = Depends(get_service)
+) -> dict:
+    """How long the predictive content lasts and what a delayed entry costs.
+    The holding period and the tranche count currently follow the label horizon
+    by assumption; this measures whether that is right. Model-free — no fit, no
+    trials consumed. Read the t-statistics, not the IC levels."""
+    try:
+        return await service.alpha_decay(
+            req.symbols,
+            Interval(req.interval),
+            limit=req.limit,
+            horizons=tuple(req.horizons),
+            delays=tuple(req.delays),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/models/cost-study")
+async def cost_study(
+    req: CostStudyRequest, service: MLPipelineService = Depends(get_service)
+) -> dict:
+    """Price the universe per name and across book sizes instead of at a flat
+    5 bps. Read `capacity_curve`: impact grows with the square root of size
+    while the edge does not grow at all, so a result that survives at $1M need
+    not survive at $50M. Model-free — no fit, no trials consumed."""
+    try:
+        return await service.cost_study(
+            req.symbols,
+            Interval(req.interval),
+            limit=req.limit,
+            aum_usd=req.aum_usd,
+            turnover_daily=req.turnover_daily,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

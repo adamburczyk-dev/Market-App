@@ -704,6 +704,160 @@ def run_cpcv(
     return 0
 
 
+def run_alpha_decay(
+    ml_url: str,
+    symbols: list[str],
+    limit: int,
+    timeout_s: float,
+    report: dict | None = None,
+) -> int:
+    """How long the signal lasts and what a delayed entry costs (P5-4).
+
+    The holding period and the tranche count follow the label's horizon by
+    assumption. This is the measurement that turns them into a decision, and it
+    is model-free — raw feature ranks against forward returns, no fit.
+    """
+    print(f"\nAlpha decay on {len(symbols)} symbols (model-free)...")
+    try:
+        status, body = _request(
+            "POST",
+            f"{ml_url}/api/v1/ml-pipeline/models/alpha-decay",
+            {"symbols": symbols, "interval": "1d", "limit": limit},
+            timeout=timeout_s,
+        )
+    except OSError as exc:
+        print(f"Alpha decay failed: {exc}")
+        if report is not None:
+            report["alpha_decay_error"] = str(exc)
+        return 1
+    if status != 200:
+        print(f"Alpha decay failed: HTTP {status}: {body.get('detail', body)}")
+        if report is not None:
+            report["alpha_decay_error"] = f"HTTP {status}: {body.get('detail', body)}"
+        return 1
+    if report is not None:
+        report["alpha_decay"] = body
+
+    horizons = body.get("horizons_tested", [])
+    print(
+        f"  {body.get('sessions')} sessions, {body.get('samples')} rows; "
+        f"label horizon {body.get('current_horizon')}"
+    )
+    head = "  " + f"{'feature':<18}" + "".join(f"{f'h={h}':>12}" for h in horizons)
+    print(head + f"{'peak':>8}{'half-life':>11}")
+    for feature in body.get("features", []):
+        cells = "".join(
+            f"{p['ic']:>7.4f}{'*' if abs(p['t']) >= 2 else ' '}{p['t']:>4.1f}"
+            for p in feature["holding"]
+        )
+        half = feature.get("half_life_sessions")
+        half_text = f"{half:.1f}" if half is not None else "none"
+        print(
+            f"  {feature['feature']:<18}{cells}"
+            f"{feature['peak_horizon']:>8}{half_text:>11}"
+        )
+    print("  (* = |t| >= 2; the t-statistic is the number to read, not the IC)")
+
+    decayers = [f for f in body.get("features", []) if f.get("ic_retained_by_delay")]
+    if decayers:
+        print("\n  IC retained when entry is delayed:")
+        delays = [e["delay"] for e in decayers[0]["ic_retained_by_delay"]]
+        print("  " + f"{'feature':<18}" + "".join(f"{f'+{d}d':>9}" for d in delays))
+        for feature in decayers:
+            cells = "".join(
+                f"{e['ic_retained']:>8.0%} " for e in feature["ic_retained_by_delay"]
+            )
+            print(f"  {feature['feature']:<18}{cells}")
+    print(f"\n  READ: {body.get('verdict', '')}")
+    return 0
+
+
+def run_cost_study(
+    ml_url: str,
+    symbols: list[str],
+    limit: int,
+    timeout_s: float,
+    report: dict | None = None,
+    aum_usd: float = 1_000_000.0,
+    turnover_daily: float | None = None,
+) -> int:
+    """Price the universe per name and across book sizes (P5-2).
+
+    Every evaluation so far charged a flat 5 bps regardless of the name or the
+    size of the book. That hides capacity: a strategy can be real at small size
+    and impossible at large, because impact grows with the square root of size
+    while the edge does not grow at all.
+    """
+    print(f"\nCost study on {len(symbols)} symbols at ${aum_usd:,.0f}...")
+    payload: dict = {
+        "symbols": symbols,
+        "interval": "1d",
+        "limit": limit,
+        "aum_usd": aum_usd,
+    }
+    if turnover_daily is not None:
+        payload["turnover_daily"] = turnover_daily
+    try:
+        status, body = _request(
+            "POST",
+            f"{ml_url}/api/v1/ml-pipeline/models/cost-study",
+            payload,
+            timeout=timeout_s,
+        )
+    except OSError as exc:
+        print(f"Cost study failed: {exc}")
+        if report is not None:
+            report["cost_study_error"] = str(exc)
+        return 1
+    if status != 200:
+        print(f"Cost study failed: HTTP {status}: {body.get('detail', body)}")
+        if report is not None:
+            report["cost_study_error"] = f"HTTP {status}: {body.get('detail', body)}"
+        return 1
+    if report is not None:
+        report["cost_study"] = body
+
+    reference = body.get("reference", {})
+    total = reference.get("total_bps", {})
+    print(
+        f"  reference ${reference.get('aum_usd', 0):,.0f}: median "
+        f"{total.get('median', 0):.1f} bps "
+        f"({reference.get('cost_ratio_vs_flat', 0):.1f}x the flat 5 bps "
+        f"assumed so far); spreads identified for "
+        f"{reference.get('spread_identified_share', 0):.0%} of names"
+    )
+    curve = body.get("capacity_curve", [])
+    has_drag = any("annual_cost_drag" in p for p in curve)
+    header = (
+        f"  {'AUM':>14} {'median bps':>11} {'p90 bps':>9} "
+        f"{'vs flat':>8} {'untradeable':>12}"
+    )
+    print(header + (f" {'ann. drag':>10}" if has_drag else ""))
+    for point in curve:
+        line = (
+            f"  {point['aum_usd']:>14,.0f} {point['median_total_bps']:>11.1f} "
+            f"{point['p90_total_bps']:>9.1f} {point['cost_ratio_vs_flat']:>7.1f}x "
+            f"{point['untradeable_share']:>11.0%}"
+        )
+        if "annual_cost_drag" in point:
+            line += f" {point['annual_cost_drag']:>10.3f}"
+        print(line)
+
+    worst = body.get("per_symbol", [])[:5]
+    if worst:
+        print("  most expensive names at the reference size:")
+        for row in worst:
+            flag = "" if row["tradeable"] else "  UNTRADEABLE"
+            print(
+                f"    {row['symbol']:<8} {row['total_bps']:>7.1f} bps "
+                f"(spread {row['half_spread_bps']:.1f} + "
+                f"impact {row['impact_bps']:.1f}), "
+                f"participation {row['participation']:.1%}{flag}"
+            )
+    print(f"\n  READ: {body.get('verdict', '')}")
+    return 0
+
+
 def run_capacity_probe(
     ml_url: str,
     symbols: list[str],
@@ -981,6 +1135,40 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--alpha-decay",
+        action="store_true",
+        help=(
+            "Profile how fast the signal decays (P5-4): IC by holding horizon "
+            "and by entry delay. Decides the holding period and says whether "
+            "execution latency matters. Model-free — no fit, no trials."
+        ),
+    )
+    parser.add_argument(
+        "--cost-study",
+        action="store_true",
+        help=(
+            "Price the universe per name and across book sizes (P5-2) instead "
+            "of the flat 5 bps every evaluation has assumed. Model-free — no "
+            "fit, no trials consumed. Impact grows with sqrt(size), so read "
+            "the capacity curve, not the single number."
+        ),
+    )
+    parser.add_argument(
+        "--cost-aum",
+        type=float,
+        default=1_000_000.0,
+        help="Reference book size for --cost-study (default $1M).",
+    )
+    parser.add_argument(
+        "--cost-turnover",
+        type=float,
+        default=None,
+        help=(
+            "Measured daily turnover from a training run. Converts bps into an "
+            "annual drag, which is the only unit comparable to a Sharpe."
+        ),
+    )
+    parser.add_argument(
         "--model-kind",
         choices=("mlp", "gbdt"),
         default="mlp",
@@ -1235,6 +1423,32 @@ def main() -> int:
                 args.train_timeout,
                 report=report,
                 model_kind=args.model_kind,
+            ),
+        )
+    if args.alpha_decay:
+        trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
+        ml_url = args.ml_pipeline_url.rstrip("/")
+        _check_service(ml_url, "ml-pipeline")
+        exit_code = max(
+            exit_code,
+            run_alpha_decay(
+                ml_url, trainable, args.train_limit, args.train_timeout, report=report
+            ),
+        )
+    if args.cost_study:
+        trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
+        ml_url = args.ml_pipeline_url.rstrip("/")
+        _check_service(ml_url, "ml-pipeline")
+        exit_code = max(
+            exit_code,
+            run_cost_study(
+                ml_url,
+                trainable,
+                args.train_limit,
+                args.train_timeout,
+                report=report,
+                aum_usd=args.cost_aum,
+                turnover_daily=args.cost_turnover,
             ),
         )
     if args.capacity_probe:

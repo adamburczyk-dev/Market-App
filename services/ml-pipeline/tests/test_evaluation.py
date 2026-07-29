@@ -293,3 +293,152 @@ def test_single_tranche_is_the_previous_behaviour():
         dates, symbols, probs, rets, quantile=0.25, cost_bps=10.0, tranches=1
     )
     assert a == b
+
+
+# --- per-symbol costs (P5-2) ------------------------------------------------
+
+
+def test_a_flat_cost_table_reproduces_the_flat_rate_exactly():
+    """The property that makes per-name costs a safe addition rather than a
+    redefinition: give every name the same cost and nothing may move. Without
+    this, every historical result silently becomes incomparable to a new one.
+    """
+    dates, symbols, probs, rets = bull_market_inputs(n_sessions=120, n_symbols=20, seed=7)
+    flat_table = dict.fromkeys(set(symbols), 8.0)
+    for tranches in (1, 10):
+        base = top_quantile_portfolio(dates, symbols, probs, rets, cost_bps=8.0, tranches=tranches)
+        table = top_quantile_portfolio(
+            dates,
+            symbols,
+            probs,
+            rets,
+            cost_bps=8.0,
+            tranches=tranches,
+            cost_bps_by_symbol=flat_table,
+        )
+        assert base == table, f"tranches={tranches}"
+        assert relative_metrics(
+            dates, symbols, probs, rets, cost_bps=8.0, tranches=tranches
+        ) == relative_metrics(
+            dates,
+            symbols,
+            probs,
+            rets,
+            cost_bps=8.0,
+            tranches=tranches,
+            cost_bps_by_symbol=flat_table,
+        )
+
+
+def test_the_book_pays_for_the_names_it_actually_buys():
+    """A flat rate charges the average name; a real book charges the names the
+    model picked. If the model happens to like the expensive half of the
+    universe, the flat rate flatters it — and that is exactly the failure a
+    per-name table exists to expose.
+    """
+    # Half the universe is always preferred, and which of those it holds still
+    # rotates — so the book demonstrably buys one group, and buys it often.
+    rng = np.random.default_rng(9)
+    dates, symbols, probs, rets = [], [], [], []
+    for s in range(120):
+        day = D0 + timedelta(days=s)
+        for k in range(20):
+            dates.append(day)
+            symbols.append(f"S{k}")
+            probs.append(float(rng.random()) + (1.0 if k < 10 else 0.0))
+            rets.append(float(rng.normal(0.0012, 0.01)))
+    probs, rets = np.array(probs), np.array(rets)
+
+    favourites = {f"S{k}" for k in range(10)}
+    rest = {f"S{k}" for k in range(10, 20)}
+    expensive = {**dict.fromkeys(favourites, 50.0), **dict.fromkeys(rest, 5.0)}
+    cheap = {**dict.fromkeys(favourites, 5.0), **dict.fromkeys(rest, 50.0)}
+
+    dear = relative_metrics(dates, symbols, probs, rets, cost_bps=5.0, cost_bps_by_symbol=expensive)
+    keen = relative_metrics(dates, symbols, probs, rets, cost_bps=5.0, cost_bps_by_symbol=cheap)
+    assert dear.cost_drag_annualized > keen.cost_drag_annualized
+    assert dear.sharpe_net < keen.sharpe_net
+    # gross is untouched — costs must not leak into the pre-cost series
+    assert dear.sharpe_gross == pytest.approx(keen.sharpe_gross)
+    # ...and turnover is a property of the book, not of what it paid
+    assert dear.turnover_daily_mean == pytest.approx(keen.turnover_daily_mean)
+
+
+def test_an_uncosted_name_falls_back_to_the_flat_rate_not_to_free():
+    """A partial table is the normal case — a name can drop out of the cost run
+    for want of history. Treating the gap as zero would make the least-known
+    names look like the cheapest ones to trade."""
+    dates, symbols, probs, rets = bull_market_inputs(n_sessions=60, n_symbols=10, seed=3)
+    full = relative_metrics(dates, symbols, probs, rets, cost_bps=20.0)
+    empty_table = relative_metrics(
+        dates, symbols, probs, rets, cost_bps=20.0, cost_bps_by_symbol={}
+    )
+    assert full == empty_table
+
+
+# --- overlapping-window t-statistics (found via P5-4) ----------------------
+
+
+def test_the_default_ic_tstat_is_unchanged_for_one_session_returns():
+    """Every existing caller scores `next_returns` — one session, no overlap —
+    so the correction must be strictly opt-in or it silently restates the whole
+    E2 feature table and the sector study."""
+    dates, symbols, probs, rets = bull_market_inputs(n_sessions=120, n_symbols=20, seed=2)
+    del symbols
+    x = np.column_stack([probs, probs**2])
+    a = per_feature_ic(dates, x, ["a", "b"], rets)
+    b = per_feature_ic(dates, x, ["a", "b"], rets, overlap=1)
+    assert a == b
+
+
+def test_overlapping_forward_windows_do_not_get_an_independent_sample_tstat():
+    """The bug P5-4's live check caught: consecutive ICs measured on windows
+    that share h-1 sessions are not independent draws, so dividing by sqrt(n)
+    understates the error by roughly sqrt(h). It inflates MORE at longer
+    horizons, which is what makes it dangerous for a decay profile — the
+    holding-period recommendation would drift to the longest horizon tested for
+    a purely mechanical reason.
+
+    Overlapping returns are only half of it — and getting this wrong is easy.
+    If the feature were serially independent, consecutive ICs would be nearly
+    independent too despite the shared return window. The autocorrelation comes
+    from the feature ALSO being persistent, which every real one is: momentum,
+    RSI and distance-to-average all change slowly. So the feature here is a
+    trailing sum, like momentum, against an overlapping forward sum.
+    """
+    rng = np.random.default_rng(11)
+    n_sessions, n_symbols, horizon = 200, 12, 10
+    steps = rng.normal(0.0, 0.01, (n_sessions + 2 * horizon, n_symbols))
+    dates, feature, forward = [], [], []
+    for s in range(horizon, n_sessions + horizon):
+        for k in range(n_symbols):
+            dates.append(D0 + timedelta(days=s))
+            feature.append(float(steps[s - horizon : s, k].sum()))  # trailing momentum
+            forward.append(float(steps[s + 1 : s + 1 + horizon, k].sum()))
+    x = np.asarray(feature).reshape(-1, 1)
+    rets = np.asarray(forward)
+
+    naive = per_feature_ic(dates, x, ["f"], rets)["f"]
+    corrected = per_feature_ic(dates, x, ["f"], rets, overlap=horizon)["f"]
+    assert corrected.mean == naive.mean  # only the error bar changes
+    assert corrected.n_sessions == naive.n_sessions
+    assert abs(corrected.tstat) < abs(naive.tstat), (naive.tstat, corrected.tstat)
+
+
+def test_the_correction_is_neutral_when_the_series_is_not_autocorrelated():
+    """It must not be a blanket penalty. Given genuinely independent ICs, the
+    corrected error should land close to the plain one — otherwise it would just
+    be a thumb on the scale against long horizons."""
+    rng = np.random.default_rng(5)
+    n_sessions, n_symbols = 300, 15
+    dates, feature, forward = [], [], []
+    for s in range(n_sessions):
+        for _k in range(n_symbols):
+            dates.append(D0 + timedelta(days=s))
+            feature.append(float(rng.normal()))
+            forward.append(float(rng.normal()))  # independent across sessions
+    x = np.asarray(feature).reshape(-1, 1)
+    rets = np.asarray(forward)
+    naive = per_feature_ic(dates, x, ["f"], rets)["f"]
+    corrected = per_feature_ic(dates, x, ["f"], rets, overlap=10)["f"]
+    assert abs(corrected.tstat) == pytest.approx(abs(naive.tstat), rel=0.5)

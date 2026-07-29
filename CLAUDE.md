@@ -1551,6 +1551,80 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   w ścieżce j** — jeden podział **służy wielu ścieżkom**, po razie na każdą testowaną grupę.
   Liczniki: ml-pipeline 237 (+13) → **bateria 1042**; ruff + format + mypy czyste.
 
+- 2026-07-29 — **Etap E5 (wejście ze zleceniem) — cztery pozycje, dwie aktywne, dwie czekające
+  na dowód.** **P5-2 — realistyczny model kosztów**: `core/costs.py` (pół spreadu
+  Corwina–Schultza + impact `k·σ·√(udział w wolumenie)`, per nazwa) i `core/cost_study.py`
+  z **krzywą pojemności**, bo zdanie, którego płaska stawka nie umie wypowiedzieć, brzmi
+  „ta strategia jest realna przy 1 mln i niemożliwa przy 50". Koszty per symbol wpięte
+  **addytywnie** w `evaluation.py`: opłatę liczy `_tranche_holdings` (jedyne miejsce, które wie,
+  KTÓRE nazwy zostały kupione), a płaska tablica odtwarza stare liczby **co do bitu** — inaczej
+  każdy wcześniejszy wynik stałby się nieporównywalny. **Trzy błędy w moim własnym pierwszym
+  podejściu, wszystkie znalezione pomiarem, nie przeglądem**: (1) agregowałem estymator per
+  obserwację i brałem medianę z **dodatnich** wartości, co wyrzuca ujemną połowę symetrycznego
+  szumu — seria o **zerowym** spreadzie raportowała **65 bps**; poprawnie uśrednia się β i γ
+  PRZED transformacją (test odtwarza starą wersję i wymaga, by dawała > 40 bps, inaczej
+  przestałby cokolwiek chronić); (2) brak korekty na luki nocne — luka wchodzi w zakres
+  dwudniowy, a nie w jednodniowe, więc zaniża estymatę (przy zmienności nocnej 1.5% seria bez
+  spreadu czyta −59 zamiast −10 bps); (3) spread dzielił okno z płynnością, a rozrzut estymatora
+  spada **8.0 → 3.6 bps** przy przejściu 63 → 252 sesje, więc ma teraz własne, dłuższe okno —
+  objawiało się to skokiem kosztu mega-capa 2.5 → 8.9 bps między dwoma biegami na tym samym
+  uniwersum. **Wniosek utrwalony w dokumentacji**: poziom estymatora CS **nie jest
+  identyfikowalny** z dziennych świec (seria bez spreadu czyta −9.9 bps przy 390 obserwacjach
+  śróddziennych i +9.1 przy 4000), a realne spready S&P 500 to 0.5–3 bps, czyli poniżej szumu —
+  dla dużych spółek człon spreadu jest praktycznie podłogą, koszt jest zdominowany przez impact,
+  i `spread_identified_share` mówi to wprost zamiast udawać pomiar.
+  **P5-4 — profil zaniku alfy** (`core/alpha_decay.py`, `POST /models/alpha-decay`,
+  `--alpha-decay`): IC surowych cech według **horyzontu trzymania** i według **opóźnienia
+  wejścia**, plus okres półtrwania — dwie rzeczy rozstrzygane dotąd założeniem (okres trzymania
+  = horyzont etykiety; opóźnienie egzekucji = zakładamy, że nie boli). Model-free, `n_trials`
+  nietknięte. **Najważniejsze znalezisko etapu, złapane przez kontrolę na żywo**: t-statystyki
+  na **nakładających się** oknach forward są zawyżone — kolejne sesje dzielą h−1 sesji okna, więc
+  dzielenie przez √n zaniża błąd o ~√h, i **bardziej przy dłuższych horyzontach**, czyli dokładnie
+  w kierunku, który przesuwałby rekomendację ku najdłuższemu testowanemu horyzontowi. Na
+  uniwersum **niezależnych błądzeń losowych** dawało to 6 cech „istotnych" przy |t| ~ 5. Poprawka:
+  opcjonalny `overlap` (**Newey–West**) w `per_feature_ic`; istniejący wywołujący (raport
+  treningu, badanie sektorowe) liczą na zwrocie 1-sesyjnym, więc są nietknięci — sprawdzone.
+  Subtelność warta zapamiętania: samo nakładanie zwrotów NIE wystarcza — ICs są skorelowane
+  dopiero, gdy **cecha też jest trwała**, a każda realna jest (pierwsza wersja testu tego nie
+  miała i słusznie nie wykryła różnicy). To jednak nie zamknęło sprawy: Newey–West koryguje
+  nakładanie okna zwrotu, nie trwałość cechy ponad ten lag (`price_to_sma50` obejmuje 50 sesji),
+  więc **4 z 5** uniwersów bez sygnału nadal przechodziło stały próg |t| ≥ 2. Dlatego badanie
+  **liczy własny null**, tą samą dyscypliną co sonda pojemności na przetasowanych etykietach:
+  permutacja **etykiet symboli** panelu cech zachowuje trwałość każdej nazwy i nakładanie okien,
+  a niszczy wyłącznie sparowanie cech ze zwrotami — największe |t|, które to przeżyje, JEST
+  progiem (`null_tstat`). Test wielo-ziarnowy pinuje, że uniwersum bez sygnału rzadko dostaje
+  pewny werdykt. **P5-3 — sizing z prawdopodobieństwa** (`trading_common.sizing`, wspólna reguła
+  jak `RiskEnvelope`/`CostAwareFilter`): ułamkowy Kelly, `f* = 2p − 1` dla symetrycznych barier,
+  domyślnie ćwierć. Bezpieczeństwo jest w kształcie funkcji: wynik to **minimum** z Kelly'ego i
+  koperty ryzyka, więc włączenie może pozycję tylko zmniejszyć, nigdy zwiększyć; `scale_to_exposure`
+  skaluje książkę proporcjonalnie do limitu 80% brutto (Kelly wycenia jeden zakład naraz i nie ma
+  zdania o dwudziestu). **P5-1 — meta-labeling** (`core/meta_label.py`): drugi model odpowiada
+  „działać czy odpuścić" na sygnałach pierwszego; etykieta = **zysk po kosztach** (z tablicą per
+  nazwa z P5-2, więc filtr może się nauczyć, że sygnał w drogiej nazwie się nie opłaca), trening
+  wyłącznie na wierszach, które książka faktycznie by trzymała, ocena na purged walk-forward.
+  **Liczbą decyzyjną nie jest precyzja**: filtr podnoszący trafność z 52% na 70% i tnący książkę
+  z 400 transakcji do 12 niczego nie poprawił — werdykt pilnuje trzech sposobów dania się nabrać
+  (brak dyskryminacji, książka wycięta do zera, precyzja bez poprawy Sharpe'a) i **nawet przy
+  dobrym wyniku nazywa warunek wejścia G1**.
+  **Warunek wejścia w E5 z planu** („model podstawowy ma IC istotnie > 0") **nie jest spełniony**,
+  więc zastosowałem go różnicująco (uzasadnienie w §8 planu): P5-2 i P5-4 to własności rynku i
+  cech, nie modelu, więc działają od razu; P5-1 i P5-3 konsumują wyjście modelu, więc są
+  zbudowane, przetestowane na danych z odpowiedzią znaną z konstrukcji i **niewpięte w ścieżkę
+  produkcyjną** — meta-model niczego nie filtruje, Kelly nie sizuje żadnego zlecenia. Ten sam
+  wzorzec co P2-2. Liczniki: shared 233 (+11), ml-pipeline 292 (+55), scripts 15 →
+  **bateria 1108**; ruff + format + mypy (`--strict` na shared) czyste. **Zweryfikowane na żywo
+  (18/18)** na realnym `nats-server` + realnej market-dacie (własny lifespan, silnik sqlite,
+  fetcher syntetyczny; route'y, repozytorium, upsert, cache i JetStream produkcyjne), 24 symbole
+  × 400 świec: koszt rośnie monotonicznie z niepłynnością (impact 1.2 → 149.1 bps, rozpiętość
+  68× tam, gdzie płaska stawka widziała jedną liczbę), pozycja 250 tys. w nazwie o obrocie 900
+  tys./dzień jest **odmówiona**, a nie wyceniona, krzywa pojemności **przecina** płaską stawkę
+  (0.0049 przy 250 tys. < 0.0063 płaskie < 0.0746 przy 100 mln — czyli 5 bps było ostrożne przy
+  małej książce i optymistyczne przy dużej, i to jest dokładnie to zdanie, którego stała nie
+  potrafi powiedzieć), te same predykcje i ta sama książka dają Sharpe **0.364 → −1.434** po
+  zmierzonych kosztach, a kontrola anty-szczęściowa potwierdza, że płaska tablica odtwarza stary
+  wynik **identycznie**. Badanie zaniku na tych danych (błądzenia losowe) poprawnie **odmawia**
+  wskazania okresu trzymania: permutowany null daje |t| = 5.63, realne cechy maksymalnie 4.3.
+
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.

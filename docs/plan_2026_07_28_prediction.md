@@ -352,15 +352,34 @@ Model wtórny uczy się **wyłącznie na sygnałach modelu podstawowego**, a jeg
 - dni do publikacji wyników (fundamental-data ma daty),
 - świeżość sygnału (ile sesji od zmiany rangi).
 
-| ID | Zadanie |
-|---|---|
-| **P5-1** | Meta-model: etykieta = „zysk po kosztach", trening tylko na wygenerowanych sygnałach, wyjście = prawdopodobieństwo → veto lub mnożnik wielkości |
-| **P5-2** | **Realistyczny model kosztów**: pół spreadu + impact ~ √(udział w wolumenie) zamiast płaskich 5 bps; per nazwa, skalowany zmiennością |
-| **P5-3** | Sizing z kalibrowanego prawdopodobieństwa (ułamkowy Kelly ograniczony istniejącą kopertą ryzyka) zamiast stałych 2% ryzyka |
-| **P5-4** | Profil zaniku alfy → z niego wynika okres trzymania i pilność wejścia (transze z T0-4 są pierwszym przybliżeniem) |
+| ID | Zadanie | Stan (2026-07-29) |
+|---|---|---|
+| **P5-1** | Meta-model: etykieta = „zysk po kosztach", trening tylko na wygenerowanych sygnałach, wyjście = prawdopodobieństwo → veto lub mnożnik wielkości | **zbudowane, domyślnie WYŁĄCZONE** — `ml-pipeline/src/core/meta_label.py`; czeka na G1 |
+| **P5-2** | **Realistyczny model kosztów**: pół spreadu + impact ~ √(udział w wolumenie) zamiast płaskich 5 bps; per nazwa, skalowany zmiennością | **gotowe i aktywne** — `core/costs.py` + `core/cost_study.py`, `POST /models/cost-study`, `--cost-study` |
+| **P5-3** | Sizing z kalibrowanego prawdopodobieństwa (ułamkowy Kelly ograniczony istniejącą kopertą ryzyka) zamiast stałych 2% ryzyka | **zbudowane, NIE wpięte w risk-mgmt** — `trading_common.sizing`; czeka na G1 + G4 |
+| **P5-4** | Profil zaniku alfy → z niego wynika okres trzymania i pilność wejścia (transze z T0-4 są pierwszym przybliżeniem) | **gotowe i aktywne** — `core/alpha_decay.py`, `POST /models/alpha-decay`, `--alpha-decay` |
 
 **Warunek wejścia w etap 5:** model podstawowy ma IC istotnie > 0 (G1 bramki). Meta-labeling
 na sygnale bez przewagi tylko filtruje szum — precyzyjniej, ale nadal szum.
+
+**Jak ten warunek został zastosowany (2026-07-29).** Nie jest jednakowy dla wszystkich czterech
+pozycji, bo nie wszystkie zależą od modelu:
+
+- **P5-2 i P5-4 są własnościami RYNKU i CECH, nie modelu.** Koszt transakcji istnieje niezależnie
+  od tego, czy mamy przewagę, a profil zaniku liczy się z surowych rang cech, bez dopasowywania
+  czegokolwiek. Oba działają od razu i oba już zmieniają liczby: przy 5 mln USD zmierzone koszty
+  przesunęły Sharpe tego samego portfela z 0.36 na −1.43.
+- **P5-1 i P5-3 konsumują wyjście modelu podstawowego**, więc warunek obowiązuje w pełni.
+  Zostały **zbudowane i przetestowane na danych, gdzie odpowiedź jest znana z konstrukcji**
+  (uniwersum z prawdziwym powodem do veta; prawdopodobieństwo z kalibracją), ale **nie są wpięte
+  w ścieżkę produkcyjną**: meta-model niczego nie filtruje, a reguła Kelly'ego nie sizuje
+  żadnego zlecenia. To ten sam wzorzec co neutralizacja sektorowa (P2-2): zbudowane, mierzalne,
+  domyślnie wyłączone, włączane pomiarem — a nie decyzją, że „pewnie pomoże".
+
+Dodatkowo P5-3 ma **drugi** warunek wejścia, którego P5-1 nie ma: Kelly konsumuje **skalibrowane**
+prawdopodobieństwo, więc wymaga też **G4**. Model systematycznie zbyt pewny sizowałby systematycznie
+za dużo, a błąd Kelly'ego jest asymetryczny — dlatego funkcja zwraca **minimum** z Kelly'ego i
+koperty ryzyka: włączenie może pozycję tylko zmniejszyć, nigdy zwiększyć.
 
 ---
 
