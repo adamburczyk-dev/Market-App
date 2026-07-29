@@ -34,6 +34,7 @@ DISTRIBUTION = {
     "dotenv": "python-dotenv",
     "fastapi": "fastapi",
     "httpx": "httpx",
+    "lightgbm": "lightgbm",
     "mlflow": "mlflow",
     "nats": "nats-py",
     "numpy": "numpy",

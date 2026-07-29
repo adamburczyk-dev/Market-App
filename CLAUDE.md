@@ -1495,6 +1495,44 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   survivorship poprawnie brzmi „SURVIVOR LIST", a cały blok `selection` serializuje się do JSON-a
   (route zwraca go dosłownie).
 
+- 2026-07-29 — **Uniwersum 34 → 455 nazw (S&P 500) + 31 kandydatów na wyjścia.** Lista pokrywa
+  wszystkie 11 sektorów GICS, a każdy sektor przekracza teraz `MIN_SECTOR_SIZE`, więc badanie
+  neutralizacji sektorowej (P2-2) staje się **mierzalne** zamiast wrzucać prawie wszystko do grupy
+  resztowej. 31 nazw to spółki **usunięte z indeksu** w oknie: upadki banków 2023 (SIVB, SBNY, FRC),
+  wykup TWTR, przejęcia (ATVI, VMW, SPLK, PXD, XLNX, CERN…). Pobierane są jak każdy inny symbol —
+  bo to, czy dostawca nadal je serwuje, jest dokładnie tym otwartym pytaniem — a podsumowanie
+  **raportuje, które wróciły**. Jeśli żadna, mówi wprost: uniwersum nie zawiera ani jednego wyjścia
+  i wszystkie metryki na nim są optymistyczne o niemierzalną z wewnątrz wielkość. Trzy zastrzeżenia
+  stoją przy samej liście, nie w commicie: tickery pochodzą z wiedzy, nie od dostawcy indeksu
+  (błędny po prostu nie pobierze się i trafi do raportu); przynależność sektorowa też jest
+  point-in-time, a mapa jest **dzisiejsza** (reklasyfikacja GICS 2023 przeniosła sieci płatnicze
+  z IT do Financials); a pozostałe 424 nazwy to nadal lista ocalałych.
+
+- 2026-07-29 — **Etap E4 (część 1): challenger GBDT i uśrednianie po ziarnach.**
+  **P4-1** `core/gbdt.py` — LightGBM przez **natywne API** (wrapper sklearna ma zdeprecjonowany
+  `eval_set`). Zbudowany tak, by był **porównywalny**, a nie po prostu dobry: ten sam podział
+  fit/walidacja, te same wagi unikalności, to samo wczesne zatrzymanie i **ta sama kalibracja
+  temperaturą** marginesu — G4 ocenia kalibrację, więc zestawianie modelu skalibrowanego z
+  nieskalibrowanym nie byłoby porównaniem. Konfiguracja płytka i mocno regularyzowana, bo efektywna
+  próba to kilkaset niezależnych obserwacji, a nie 50 tys. wierszy (sonda pojemności pokazała 0.71
+  train AUC na czystym szumie). `num_threads=1` — determinizm ponad szybkość, inaczej diagnostyka
+  nie porównuje się między biegami. **GBDT nie jest rejestrowalny**: store zapisuje `state_dict`
+  MLP i odtwarza `MlpClassifier`, więc `service.train()` **odmawia zapisu** zamiast zostawić
+  artefakt, którego `load()` nie wczyta, i mówi to w odpowiedzi (`registrable: false`). Format
+  rejestru poszerzymy dopiero, gdy pomiar powie, że warto.
+  **P4-2** `core/ensemble.py` — uśrednianie skalibrowanych prawdopodobieństw po ziarnach; foldy
+  biegu #2 skakały od Sharpe −1.61 do +4.54 na tych samych danych i część tego to wyłącznie
+  inicjalizacja. Ensemble **raportuje rozbieżność** (`seed_disagreement`): jeśli członkowie różnią
+  się tak mocno jak sam sygnał, uśredniona predykcja jest podsumowaniem szumu i raport ma to
+  powiedzieć. Dwie decyzje chroniące G0: „ensemble" z jednego członka **zwraca ten model**
+  (rozbieżność 0.0 czytałaby się jako doskonała zgodność, a nie jako brak pomiaru), a raportowany
+  `best_epoch` to **minimum** po członkach — inaczej jeden model przywrócony z epoki 1 zniknąłby za
+  pozostałymi, czyli dokładnie awaria z biegu #2. Nowe flagi: `--model-kind gbdt`, `--n-seeds N`.
+  Liczniki: ml-pipeline 224 (+10), `scripts/` 15 (+4) → **bateria 1029**; ruff + format + mypy
+  czyste. Test integracyjny pinuje rzecz najważniejszą: oba rodzaje modelu przechodzą **ten sam**
+  walk-forward i tę samą bramkę (identyczna struktura raportu, tyle samo foldów, ten sam
+  `n_test`), więc różnica między raportami dotyczy klasy modelu, a nie otoczenia.
+
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.

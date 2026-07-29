@@ -8,6 +8,7 @@ from trading_common.schemas import Interval
 from src.api.deps import get_service
 from src.core.data_contract import TrainingDataContractError
 from src.core.service import MLPipelineService
+from src.core.training import TrainingParams
 from src.core.universe import UniverseParams
 
 logger = structlog.get_logger()
@@ -27,6 +28,13 @@ class TrainRequest(BaseModel):
     # symbol with bars, which on a ticker list assembled today means ranking
     # among companies chosen for having survived.
     universe_top_n: int | None = Field(default=None, ge=20, le=2000)
+    # P4-1: "mlp" (registrable) or "gbdt" (CHALLENGER — evaluated through the
+    # identical walk-forward and gate, never registered, since the store
+    # persists an MLP state_dict).
+    model_kind: str = Field(default="mlp", pattern="^(mlp|gbdt)$")
+    # P4-2: seeds to average. >1 removes initialisation variance from the fold
+    # spread and reports the members' disagreement.
+    n_seeds: int = Field(default=1, ge=1, le=10)
 
 
 class SectorStudyRequest(TrainRequest):
@@ -75,6 +83,7 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
             Interval(req.interval),
             limit=req.limit,
             fundamentals=req.fundamentals,
+            params=TrainingParams(model_kind=req.model_kind, n_seeds=req.n_seeds),
             universe_params=(
                 UniverseParams(top_n=req.universe_top_n) if req.universe_top_n is not None else None
             ),

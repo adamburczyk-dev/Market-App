@@ -18,6 +18,7 @@ import numpy as np
 import structlog
 
 from src.core.dataset import Dataset
+from src.core.ensemble import Predictor, train_ensemble
 from src.core.evaluation import (
     PortfolioResult,
     RelativeMetrics,
@@ -31,7 +32,8 @@ from src.core.evaluation import (
     top_quantile_portfolio,
 )
 from src.core.gate import GateOutcome, GateThresholds, evaluate_gate
-from src.core.model import TrainConfig, TrainedModel, train_classifier
+from src.core.gbdt import GbdtConfig, train_gbdt
+from src.core.model import TrainConfig, train_classifier
 from src.core.splits import purged_walk_forward
 
 logger = structlog.get_logger()
@@ -52,6 +54,15 @@ class TrainingParams:
     # whole book daily, so the evaluated object matches the trained one.
     overlapping_tranches: bool = True
     model: TrainConfig = field(default_factory=TrainConfig)
+    # P4-1: which model class to fit. "gbdt" is a CHALLENGER — evaluated through
+    # the identical walk-forward and gate, but not registrable (the store
+    # persists an MLP state_dict), so a comparison cannot be quietly promoted.
+    model_kind: str = "mlp"
+    gbdt: GbdtConfig = field(default_factory=GbdtConfig)
+    # P4-2: how many seeds to average. Run #2's folds swung from Sharpe -1.61 to
+    # +4.54 on identical data; part of that is the initialisation, and averaging
+    # removes exactly that part. 1 = no ensembling (the previous behaviour).
+    n_seeds: int = 1
     # T1-3: the six-condition gate. `gate_sharpe` above feeds its economics
     # condition, so the project rule (OOS Sharpe > 0.5) stays in one place.
     gate: GateThresholds = field(default_factory=GateThresholds)
@@ -165,8 +176,13 @@ def _mask(dates: list[datetime], allowed: set[datetime]) -> np.ndarray:
     return np.array([d in allowed for d in dates], dtype=bool)
 
 
-def fit_on_dates(ds: Dataset, dates: list[datetime], params: TrainingParams) -> TrainedModel | None:
-    """Train with the window's tail as the (purged) validation fold."""
+def fit_on_dates(ds: Dataset, dates: list[datetime], params: TrainingParams) -> Predictor | None:
+    """Train with the window's tail as the (purged) validation fold.
+
+    Dispatches on `model_kind` and averages over `n_seeds` — both paths get the
+    identical fit/validation split and the identical uniqueness weights, so the
+    comparison between them is about the model class, not about the setup.
+    """
     gap = params.horizon + params.embargo
     if len(dates) < params.val_size + gap + 20:  # need a real fit set left over
         return None
@@ -178,16 +194,33 @@ def fit_on_dates(ds: Dataset, dates: list[datetime], params: TrainingParams) -> 
         return None
     if len(np.unique(ds.y[fit_mask])) < 2:  # single-class window is untrainable
         return None
-    return train_classifier(
-        ds.x[fit_mask],
-        ds.y[fit_mask],
-        ds.x[val_mask],
-        ds.y[val_mask],
-        ds.feature_names,
-        params.model,
-        # P0-3: overlapping labels are one episode, not `horizon` episodes.
-        sample_weights=ds.weights[fit_mask] if len(ds.weights) == len(ds.dates) else None,
-    )
+    # P0-3: overlapping labels are one episode, not `horizon` episodes.
+    weights = ds.weights[fit_mask] if len(ds.weights) == len(ds.dates) else None
+
+    def fit_one(seed: int) -> Predictor | None:
+        if params.model_kind == "gbdt":
+            return train_gbdt(
+                ds.x[fit_mask],
+                ds.y[fit_mask],
+                ds.x[val_mask],
+                ds.y[val_mask],
+                ds.feature_names,
+                replace(params.gbdt, seed=seed),
+                sample_weights=weights,
+            )
+        return train_classifier(
+            ds.x[fit_mask],
+            ds.y[fit_mask],
+            ds.x[val_mask],
+            ds.y[val_mask],
+            ds.feature_names,
+            replace(params.model, seed=seed),
+            sample_weights=weights,
+        )
+
+    base_seed = params.gbdt.seed if params.model_kind == "gbdt" else params.model.seed
+    seeds = [base_seed + i for i in range(max(1, params.n_seeds))]
+    return train_ensemble(fit_one, seeds, reference_x=ds.x[val_mask])
 
 
 def gate_outcome(holdout: FoldReport, folds: list[FoldReport], p: TrainingParams) -> GateOutcome:
@@ -227,7 +260,7 @@ def _window_stats(ds: Dataset, mask: np.ndarray, params: TrainingParams) -> dict
 
 def score_window(
     ds: Dataset,
-    model: TrainedModel,
+    model: Predictor,
     test_dates: set[datetime],
     name: str,
     n_train: int,
@@ -295,9 +328,7 @@ def score_window(
     )
 
 
-def run_training(
-    ds: Dataset, params: TrainingParams | None = None
-) -> tuple[TrainedModel, GateReport]:
+def run_training(ds: Dataset, params: TrainingParams | None = None) -> tuple[Predictor, GateReport]:
     """Walk-forward evaluation → gate report → final model.
 
     The returned model is trained on ALL available history (with the standard

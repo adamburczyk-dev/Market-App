@@ -283,10 +283,32 @@ w tych danych naprawdę widać.
 
 | ID | Zadanie | Uzasadnienie |
 |---|---|---|
-| **P4-1** | **Challenger GBDT** (LightGBM/XGBoost) obok MLP | Przy tej wielkości próby i tabelarycznych cechach drzewa zwykle wygrywają; sieci wygrywają dopiero przy bardzo szerokim przekroju i wielu charakterystykach (Gu–Kelly–Xiu). Nasza sonda pojemności mierzy to samo pytanie od strony MLP |
-| **P4-2** | **Ensembling po ziarnach** (5–10 modeli, uśrednione predykcje) | Zmienność fold-do-foldu w biegu #2 jest częściowo szumem inicjalizacji; uśrednianie to najtańsza redukcja wariancji |
+| **P4-1 ✅ 2026-07-29** | **Challenger GBDT** (LightGBM/XGBoost) obok MLP | Przy tej wielkości próby i tabelarycznych cechach drzewa zwykle wygrywają; sieci wygrywają dopiero przy bardzo szerokim przekroju i wielu charakterystykach (Gu–Kelly–Xiu). Nasza sonda pojemności mierzy to samo pytanie od strony MLP |
+| **P4-2 ✅ 2026-07-29** | **Ensembling po ziarnach** (5–10 modeli, uśrednione predykcje) | Zmienność fold-do-foldu w biegu #2 jest częściowo szumem inicjalizacji; uśrednianie to najtańsza redukcja wariancji |
 | **P4-3** | Wagi próbek (z P0-3) + neutralizacja sektorowa w funkcji straty | Model przestaje wygrywać na sektorze i na skorelowanych, nakładających się wierszach |
 | **P4-4** | **CPCV** — kombinatoryczna walidacja purged (AFML rozdz. 12) | Daje *rozkład* ścieżek OOS zamiast jednej; przy naszej próbie pojedyncza ścieżka walk-forward jest jednym losowaniem |
+
+**P4-1 — challenger, nie następca.** `core/gbdt.py` (LightGBM, natywne API — wrapper sklearna ma
+już zdeprecjonowany `eval_set`). Zbudowany tak, żeby był **porównywalny**, a nie po prostu dobry:
+ten sam podział fit/walidacja, te same wagi unikalności, to samo wczesne zatrzymanie i **ta sama
+kalibracja temperaturą** marginesu (G4 ocenia kalibrację — porównywanie modelu skalibrowanego z
+nieskalibrowanym nie jest porównaniem). Konfiguracja jest płytka i mocno regularyzowana, bo
+efektywna próba to kilkaset niezależnych obserwacji, a nie 50 tys. wierszy z macierzy — sonda
+pojemności pokazała już, że nieregularyzowany model dochodzi do 0.71 train AUC na czystym szumie.
+**GBDT nie jest rejestrowalny**: `MlflowModelStore` zapisuje `state_dict` MLP i odtwarza
+`MlpClassifier`, więc booster nie przeszedłby round-tripu. `service.train()` **odmawia zapisu**
+zamiast zapisać artefakt, którego `load()` później nie wczyta, i mówi to w odpowiedzi
+(`registrable: false`) — challenger ma być porównany, nie po cichu awansowany. Format rejestru
+poszerzamy dopiero wtedy, gdy pomiar powie, że warto.
+
+**P4-2 — uśrednianie po ziarnach.** `core/ensemble.py`. Kluczowe: ensemble **raportuje rozbieżność
+członków** (`seed_disagreement` — średnie odchylenie standardowe per wiersz na skali
+prawdopodobieństwa). Jeśli członkowie różnią się tak samo mocno jak sam sygnał, uśredniona
+predykcja jest podsumowaniem szumu i raport ma to powiedzieć, a nie pokazać gładką liczbę.
+Dwie decyzje, które chronią G0: „ensemble" z jednego członka **zwraca po prostu ten model**
+(rozbieżność 0.0 czytałaby się jako doskonała zgodność, a nie jako brak pomiaru), a raportowany
+`best_epoch` to **minimum** po członkach — inaczej jeden model przywrócony z epoki 1 zniknąłby za
+pozostałymi, czyli dokładnie awaria, którą bieg #2 miał dwa razy.
 
 **Uwaga o `n_trials`:** każda z tych prób podnosi liczbę spojrzeń na te same dane. Sweep już
 wypuszcza `n_trials` do bramki (G5); przy CPCV i ensemblingu trzeba to prowadzić dalej —

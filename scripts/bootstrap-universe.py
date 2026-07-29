@@ -733,10 +733,16 @@ def run_training(
     report: dict | None = None,
     fundamentals: bool = False,
     universe_top_n: int | None = None,
+    model_kind: str = "mlp",
+    n_seeds: int = 1,
 ) -> int:
     extra = " + point-in-time fundamentals" if fundamentals else ""
     if universe_top_n:
         extra += f" + top-{universe_top_n} point-in-time universe"
+    if model_kind != "mlp":
+        extra += f" [{model_kind} CHALLENGER — evaluated, never registered]"
+    if n_seeds > 1:
+        extra += f" [{n_seeds}-seed ensemble]"
     print(f"\nTraining on {len(symbols)} symbols{extra} (sync — can take minutes)...")
     try:
         status, body = _request(
@@ -748,6 +754,8 @@ def run_training(
                 "limit": limit,
                 "fundamentals": fundamentals,
                 "universe_top_n": universe_top_n,
+                "model_kind": model_kind,
+                "n_seeds": n_seeds,
             },
             timeout=timeout_s,
         )
@@ -878,6 +886,25 @@ def main() -> int:
     )
     parser.add_argument(
         "--train", action="store_true", help="Run a training pass after backfill"
+    )
+    parser.add_argument(
+        "--model-kind",
+        choices=("mlp", "gbdt"),
+        default="mlp",
+        help=(
+            "Model class to fit. 'gbdt' is a CHALLENGER (P4-1): same walk-forward, "
+            "same gate, but not registrable — the store persists an MLP state_dict, "
+            "so a booster is compared and never quietly promoted."
+        ),
+    )
+    parser.add_argument(
+        "--n-seeds",
+        type=int,
+        default=1,
+        help=(
+            "Average this many seeds (P4-2). Removes initialisation variance from "
+            "the fold-to-fold spread; the report shows the members' disagreement."
+        ),
     )
     parser.add_argument(
         "--universe-top-n",
@@ -1136,6 +1163,8 @@ def main() -> int:
                 report=report,
                 fundamentals=args.with_fundamentals,
                 universe_top_n=args.universe_top_n,
+                model_kind=args.model_kind,
+                n_seeds=args.n_seeds,
             ),
         )
 

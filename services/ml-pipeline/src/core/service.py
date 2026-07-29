@@ -31,6 +31,7 @@ from src.core.evaluation import effective_sample_size
 from src.core.fundamentals_client import FundamentalsClient
 from src.core.inference_log import InferenceLog
 from src.core.market_data_client import MarketDataClient
+from src.core.model import TrainedModel
 from src.core.model_store import MlflowModelStore
 from src.core.monitoring.drift_detector import DriftDetector, DriftReport
 from src.core.outcomes import OutcomeResolver
@@ -388,8 +389,19 @@ class MLPipelineService:
         model, report = run_training(dataset, params_used)
 
         version: str | None = None
-        if self._store is not None:
+        # P4-1/P4-2: the registry persists an MLP state_dict and reconstructs
+        # MlpClassifier on load, so a GBDT or a seed ensemble cannot round-trip
+        # through it. Refuse to log rather than write an artifact `load()` will
+        # fail on later — a challenger is evaluated first and promoted never,
+        # until its numbers say the registry format should be widened.
+        registrable = isinstance(model, TrainedModel)
+        if self._store is not None and isinstance(model, TrainedModel):
             version = self._store.log_training(model, report)
+        elif not registrable:
+            logger.warning(
+                "Challenger run — evaluated but NOT registered",
+                model_kind=model.diagnostics.get("model_kind", "unknown"),
+            )
         else:
             logger.warning("Model store unavailable — training run not persisted")
 
@@ -412,6 +424,10 @@ class MLPipelineService:
         return {
             "model": self._store.model_name if self._store is not None else "global_v1",
             "version": version,
+            "model_kind": model.diagnostics.get("model_kind", "mlp"),
+            # A challenger produces a full gate report and no version. Saying so
+            # here stops "version: null" from being read as a registry failure.
+            "registrable": registrable,
             "model_id": model_id,
             "samples": dataset.n_samples,
             "features": dataset.feature_names,
