@@ -40,33 +40,104 @@ import urllib.parse
 import urllib.request
 from datetime import UTC, date, datetime, timedelta
 
-# ~34 liquid US large caps across GICS sectors (cross-sectional learning needs
-# sector breadth, not just tech). Equities only — no ETFs in the model universe.
+# S&P 500 constituents, grouped by GICS sector. Used two ways: as the backfill
+# list, and as the sector map for the neutralization study (P2-2).
 #
-# The sectors were a comment until P2-2 needed them as data. They are GICS names
-# and static: sector membership is point-in-time in principle, but for large caps
-# over six years it is stable, and a static map is honest as long as that is
-# stated. A survivorship-free point-in-time universe is P3-1's job, not this
-# script's.
-DEFAULT_UNIVERSE_BY_SECTOR: dict[str, list[str]] = {
-    "Information Technology": ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "CRM"],
-    "Communication Services": ["GOOGL", "META", "NFLX"],
-    "Consumer Discretionary": ["AMZN", "TSLA", "HD", "MCD", "NKE"],
-    "Financials": ["JPM", "BAC", "GS"],
-    "Health Care": ["UNH", "JNJ", "LLY", "PFE"],
-    "Consumer Staples": ["PG", "KO", "PEP", "WMT", "COST"],
-    "Energy": ["XOM", "CVX"],
-    "Industrials": ["CAT", "HON", "UPS"],
-    "Materials": ["LIN"],
-    "Utilities": ["NEE"],
-    "Real Estate": ["PLD"],
+# Three honest caveats, all of which the run reports rather than hides:
+#
+# 1. This list is written from knowledge, not pulled from an index provider. A
+#    wrong or renamed ticker simply fails its fetch and is listed in the summary
+#    — nothing downstream silently substitutes for it.
+# 2. Sector membership is itself point-in-time and this map is TODAY's. The 2023
+#    GICS reclassification moved the payment networks (V, MA, PYPL, FI, FIS, GPN)
+#    from Information Technology to Financials; using today's assignment for 2020
+#    sessions is an approximation, the same class as the static map it replaces.
+# 3. Everything here survived to be listed. That is what DELISTED_CANDIDATES
+#    below is for, and what `survivorship_report` measures.
+SP500_BY_SECTOR: dict[str, str] = {
+    "Information Technology": (
+        "AAPL MSFT NVDA AVGO ORCL CRM AMD ADBE ACN CSCO INTC TXN QCOM IBM "
+        "INTU NOW AMAT MU LRCX ADI KLAC PANW SNPS CDNS ANET MSI ROP FTNT "
+        "APH TEL HPQ DELL NXPI MCHP ON WDC STX GLW KEYS HPE CTSH IT GDDY "
+        "ZBRA TER SWKS MPWR TYL PTC ANSS JNPR AKAM NTAP FSLR ENPH SMCI CRWD "
+        "PLTR"
+    ),
+    "Communication Services": (
+        "GOOGL META NFLX DIS CMCSA T VZ TMUS CHTR EA TTWO WBD OMC IPG LYV "
+        "MTCH NWSA FOXA PARA"
+    ),
+    "Consumer Discretionary": (
+        "AMZN TSLA HD MCD NKE LOW SBUX BKNG TJX ORLY AZO CMG MAR HLT ROST "
+        "GM F YUM DHI LEN NVR PHM EBAY APTV LVS WYNN MGM RCL CCL NCLH DRI "
+        "EXPE ULTA BBY TSCO DPZ KMX POOL WSM DECK LULU GRMN HAS RL TPR WHR "
+        "BWA LKQ"
+    ),
+    "Consumer Staples": (
+        "PG KO PEP WMT COST PM MO MDLZ CL KMB GIS SYY KHC STZ KDP MNST HSY "
+        "K CHD CLX MKC TSN CAG CPB HRL SJM LW TAP EL KR DG DLTR ADM BG"
+    ),
+    "Health Care": (
+        "UNH JNJ LLY PFE ABBV MRK TMO ABT DHR BMY AMGN CVS MDT GILD ISRG "
+        "SYK ELV VRTX REGN ZTS CI BSX HCA BDX MCK HUM IQV A IDXX EW DXCM "
+        "BIIB RMD WST MTD ZBH BAX CAH MOH VTRS CRL TECH INCY ILMN PODD"
+    ),
+    "Financials": (
+        "JPM BAC GS WFC MS C BLK SPGI AXP SCHW CB MMC PGR CME ICE AON USB "
+        "PNC TFC COF BK TRV AIG MET PRU AFL ALL MCO MSCI AJG HIG DFS FITB "
+        "STT NTRS RF CFG KEY HBAN SYF WTW BRO CINF L PFG AMP TROW BEN IVZ "
+        "NDAQ CBOE V MA PYPL FIS GPN"
+    ),
+    "Industrials": (
+        "CAT HON UPS BA GE RTX LMT DE UNP ADP NOC GD MMM ETN ITW EMR CSX "
+        "NSC FDX WM PH CMI PCAR ROK CARR OTIS JCI TT IR AME FAST PAYX VRSK "
+        "EFX GWW URI LHX TDG HWM DOV XYL SWK PNR ALLE MAS CPRT ODFL JBHT "
+        "CHRW EXPD DAL UAL LUV AAL TXT HII LDOS"
+    ),
+    "Energy": (
+        "XOM CVX COP EOG SLB MPC PSX VLO OXY WMB KMI OKE HAL BKR DVN FANG "
+        "HES CTRA MRO APA EQT TRGP"
+    ),
+    "Materials": (
+        "LIN APD SHW ECL NEM FCX DOW DD PPG NUE VMC MLM IFF ALB CE EMN LYB "
+        "MOS CF STLD PKG IP AMCR BALL AVY SEE"
+    ),
+    "Utilities": (
+        "NEE DUK SO D AEP SRE EXC XEL ED PEG WEC ES AWK DTE PPL AEE CMS CNP "
+        "FE EIX ETR ATO NI LNT EVRG PNW AES NRG VST CEG"
+    ),
+    "Real Estate": (
+        "PLD AMT EQIX CCI PSA SPG O WELL DLR AVB EQR EXR VTR INVH MAA ESS "
+        "ARE SBAC UDR HST KIM REG FRT BXP CPT IRM WY CBRE VICI"
+    ),
 }
-DEFAULT_UNIVERSE = [s for names in DEFAULT_UNIVERSE_BY_SECTOR.values() for s in names]
-SECTOR_BY_SYMBOL: dict[str, str] = {
-    symbol: sector
-    for sector, names in DEFAULT_UNIVERSE_BY_SECTOR.items()
-    for symbol in names
+
+DELISTED_CANDIDATES_BY_SECTOR: dict[str, str] = {
+    "Financials": ("SIVB SBNY FRC PBCT ETFC"),
+    "Information Technology": ("XLNX CTXS MXIM SPLK VMW FISV"),
+    "Communication Services": ("TWTR ATVI ZNGA NLSN DISCA"),
+    "Health Care": ("ABMD ALXN CERN VAR MYL WCG AGN"),
+    "Energy": ("PXD NBL CXO XEC HFC"),
+    "Industrials": ("KSU FLIR"),
+    "Consumer Discretionary": ("TIF"),
 }
+
+
+def _flatten_sectors(by_sector: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    symbols = [s for names in by_sector.values() for s in names.split()]
+    sectors = {s: sector for sector, names in by_sector.items() for s in names.split()}
+    return symbols, sectors
+
+
+DEFAULT_UNIVERSE_BY_SECTOR: dict[str, str] = {
+    sector: " ".join(
+        (SP500_BY_SECTOR.get(sector, ""), DELISTED_CANDIDATES_BY_SECTOR.get(sector, ""))
+    ).strip()
+    for sector in {*SP500_BY_SECTOR, *DELISTED_CANDIDATES_BY_SECTOR}
+}
+DEFAULT_UNIVERSE, SECTOR_BY_SYMBOL = _flatten_sectors(DEFAULT_UNIVERSE_BY_SECTOR)
+DELISTED_CANDIDATES = [
+    s for names in DELISTED_CANDIDATES_BY_SECTOR.values() for s in names.split()
+]
 
 MIN_SESSIONS_FOR_TRAINING = 945  # holdout 126 + train 756 + test 63 (TrainingParams)
 SESSIONS_PER_YEAR = 252
@@ -959,6 +1030,33 @@ def main() -> int:
         span = f"{info.get('first', '—')} → {info.get('last', '—')}"
         note = f"  ({info['note']})" if info["note"] else ""
         print(f"  {flag} {symbol:<6} {info['sessions']:>5} sessions  {span}{note}")
+
+    # The survivorship question, answered by the run rather than assumed: which
+    # of the removed names a provider still serves. Every one that comes back is
+    # a company that failed or was bought and is therefore IN the cross-sections
+    # of the period it existed — the only part of survivorship bias that can be
+    # fixed without buying constituent data.
+    delisted_requested = [s for s in symbols if s in DELISTED_CANDIDATES]
+    if delisted_requested:
+        recovered = sorted(
+            s for s in delisted_requested if coverage.get(s, {}).get("sessions", 0) > 0
+        )
+        lost = sorted(set(delisted_requested) - set(recovered))
+        print(
+            f"\nDelisted/removed names: {len(recovered)} of {len(delisted_requested)} "
+            "recovered from the provider"
+        )
+        if recovered:
+            print(f"  usable history for: {', '.join(recovered)}")
+        if lost:
+            print(f"  no data for:        {', '.join(lost)}")
+        if not recovered:
+            print(
+                "  → the universe contains no exits at all. Every metric computed "
+                "on it is\n    optimistic by an amount that cannot be estimated "
+                "from inside the data."
+            )
+        report["delisted"] = {"requested": delisted_requested, "recovered": recovered}
 
     report["backfill"] = {
         "rows_by_symbol": rows,

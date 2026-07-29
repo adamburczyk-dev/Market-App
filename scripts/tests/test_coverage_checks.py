@@ -99,8 +99,7 @@ def test_full_adjusted_coverage_is_reported_positively():
 def test_default_universe_and_sector_map_stay_in_sync():
     """The sectors were a comment before P2-2 turned them into data. A comment
     can drift from the list beneath it silently; this cannot."""
-    assert len(boot.DEFAULT_UNIVERSE) == 34
-    assert len(set(boot.DEFAULT_UNIVERSE)) == 34  # no symbol listed twice
+    assert len(set(boot.DEFAULT_UNIVERSE)) == len(boot.DEFAULT_UNIVERSE)
     assert set(boot.SECTOR_BY_SYMBOL) == set(boot.DEFAULT_UNIVERSE)
     for sector in boot.DEFAULT_UNIVERSE_BY_SECTOR:
         assert normalize_sector(sector) == sector, f"{sector} is not a GICS name"
@@ -147,3 +146,41 @@ def test_the_warmup_is_included_not_forgotten():
     """The first FULL_HISTORY bars of a window produce no rows, so a limit of
     exactly years x 252 loses a year of trainable sessions at the start."""
     assert boot.default_train_limit(10.0) > 10 * 252
+
+
+# --- the universe list itself ---------------------------------------------
+
+
+def test_universe_is_large_enough_for_the_measurement_it_is_for():
+    """P3-1 needs 200-500 names: the IC detection threshold scales with the
+    number of cross-sectional observations, and 34 put the realistic effect
+    size below what could be distinguished from zero at all."""
+    assert 200 <= len(boot.DEFAULT_UNIVERSE) <= 600
+    assert len(set(boot.DEFAULT_UNIVERSE)) == len(boot.DEFAULT_UNIVERSE)
+
+
+def test_every_sector_key_is_a_gics_name():
+    for sector in boot.DEFAULT_UNIVERSE_BY_SECTOR:
+        assert normalize_sector(sector) == sector, f"{sector} is not a GICS name"
+    assert set(boot.SECTOR_BY_SYMBOL) == set(boot.DEFAULT_UNIVERSE)
+
+
+def test_delisted_candidates_are_in_the_universe_and_flagged():
+    """They must be fetched like any other symbol — that IS the check — while
+    staying identifiable, so the summary can report which ones came back."""
+    assert boot.DELISTED_CANDIDATES, "no removed names means no chance of an exit"
+    for symbol in boot.DELISTED_CANDIDATES:
+        assert symbol in boot.DEFAULT_UNIVERSE
+        assert symbol in boot.SECTOR_BY_SYMBOL
+    # the failures of 2023 are the whole point: nothing else here goes to zero
+    for failed_bank in ("SIVB", "SBNY", "FRC"):
+        assert failed_bank in boot.DELISTED_CANDIDATES
+
+
+def test_every_sector_has_enough_names_to_neutralize_against():
+    """P2-2 pools sectors below MIN_SECTOR_SIZE into a residual group. At 34
+    names that was every sector; the point of this list is that it no longer is."""
+    from trading_common.ranking import MIN_SECTOR_SIZE
+
+    for sector, names in boot.DEFAULT_UNIVERSE_BY_SECTOR.items():
+        assert len(names.split()) >= MIN_SECTOR_SIZE, f"{sector} too thin to neutralize"
