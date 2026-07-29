@@ -17,6 +17,10 @@ class TrainRequest(BaseModel):
     symbols: list[str] = Field(min_length=2)  # cross-sectional — needs a universe
     interval: str = "1d"
     limit: int = Field(default=1500, ge=300, le=10_000)
+    # P2-3: join the point-in-time fundamentals panel. OFF by default — a family
+    # enters the model only after the per-feature IC table says it earns a place,
+    # and `dataset.fundamental_coverage` says whether it was really there at all.
+    fundamentals: bool = False
 
 
 class SectorStudyRequest(TrainRequest):
@@ -60,7 +64,12 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
     gate report → MLflow version + drift baseline. Synchronous and potentially
     minutes-long — ops/scheduled use; promotion to production stays manual."""
     try:
-        return await service.train(req.symbols, Interval(req.interval), limit=req.limit)
+        return await service.train(
+            req.symbols,
+            Interval(req.interval),
+            limit=req.limit,
+            fundamentals=req.fundamentals,
+        )
     except TrainingDataContractError as exc:
         # T0-1: refuse to train on data that cannot produce an interpretable
         # model, and return the full report so the caller sees WHY.

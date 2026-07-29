@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import structlog
 from trading_common.events import ModelDriftDetectedEvent
-from trading_common.schemas import Interval
+from trading_common.schemas import FinancialStatements, Interval
 
 from src.core.capacity import run_capacity_probe
 from src.core.data_contract import TrainingDataContract
@@ -28,6 +28,7 @@ from src.core.dataset import (
     drop_zero_variance_features,
 )
 from src.core.evaluation import effective_sample_size
+from src.core.fundamentals_client import FundamentalsClient
 from src.core.inference_log import InferenceLog
 from src.core.market_data_client import MarketDataClient
 from src.core.model_store import MlflowModelStore
@@ -80,6 +81,7 @@ class MLPipelineService:
         registry: ModelRegistry,
         publisher: Publisher,
         market_client: MarketDataClient | None = None,
+        fundamentals_client: FundamentalsClient | None = None,
         model_store: MlflowModelStore | None = None,
         serving: ServingEngine | None = None,
         inference_log: InferenceLog | None = None,
@@ -93,6 +95,7 @@ class MLPipelineService:
         self._registry = registry
         self._publisher = publisher
         self._market = market_client
+        self._fundamentals = fundamentals_client
         self._store = model_store
         self._serving = serving
         self._log = inference_log
@@ -192,7 +195,7 @@ class MLPipelineService:
     # --- training (plan ML-1) ---
 
     async def build_training_dataset(
-        self, symbols: list[str], interval: Interval, limit: int
+        self, symbols: list[str], interval: Interval, limit: int, fundamentals: bool = False
     ) -> tuple[Dataset, int]:
         """Returns (dataset, sessions the bars received should have produced).
 
@@ -217,7 +220,16 @@ class MLPipelineService:
         # a symbol contributes only past min_history, and the last `horizon`
         # sessions cannot be labeled at all
         expected_sessions = max(0, longest - params.min_history - params.label.horizon)
-        return build_dataset(bars_by_symbol, params), expected_sessions
+
+        panel: dict[str, list[FinancialStatements]] | None = None
+        if fundamentals:
+            if self._fundamentals is None:
+                raise RuntimeError("fundamental-data client not configured")
+            panel = await self._fundamentals.panel(sorted(bars_by_symbol))
+        return (
+            build_dataset(bars_by_symbol, params, fundamentals_by_symbol=panel),
+            expected_sessions,
+        )
 
     async def target_study(
         self,
@@ -329,13 +341,20 @@ class MLPipelineService:
         interval: Interval,
         limit: int = 1500,
         params: TrainingParams | None = None,
+        fundamentals: bool = False,
     ) -> dict[str, Any]:
         """Full training pass: dataset → walk-forward gate → registry + baseline.
 
         The model version is logged to MLflow regardless of the gate outcome
         (a failed gate is a result worth keeping); promotion stays manual.
+
+        ``fundamentals`` joins the point-in-time panel (P2-3). OFF by default:
+        per the stage-2 rule a feature family enters only once measured, and the
+        per-feature IC table in the report is where that is read.
         """
-        dataset, requested_sessions = await self.build_training_dataset(symbols, interval, limit)
+        dataset, requested_sessions = await self.build_training_dataset(
+            symbols, interval, limit, fundamentals=fundamentals
+        )
         # T0-2: constant columns leave the feature contract before training, so
         # the model never learns a schema that serving cannot reproduce.
         dataset, dropped_features = drop_zero_variance_features(dataset)

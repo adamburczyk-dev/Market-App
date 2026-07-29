@@ -153,4 +153,9 @@ def build_report(dataset: Dataset, requested_sessions: int | None = None) -> dic
         # The headline number for T2-4: barriers that never bind mean the
         # triple-barrier method has degenerated into fixed-horizon labelling.
         "label_resolution_ratio": {k: round(v, 4) for k, v in ratio.items()},
+        # P2-3: share of ranked rows that had a filing published by their
+        # session. 0.0 means fundamentals were not requested; a low non-zero
+        # value means the columns are mostly neutral fill, which is not a
+        # feature — and looks exactly like a weak one without this number.
+        "fundamental_coverage": dataset.fundamental_coverage,
     }

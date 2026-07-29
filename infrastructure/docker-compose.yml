@@ -289,6 +289,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
       # training pulls the universe history over HTTP; models persist to the volume
       MARKET_DATA_URL: http://market-data:8000
+      FUNDAMENTAL_DATA_URL: http://fundamental-data:8000
       MLFLOW_TRACKING_URI: sqlite:////app/mlruns/mlflow.db
       # serving: features.ready → ranked vector + macro regime → ml.signal_generated
       FEATURE_ENGINE_URL: http://feature-engine:8000

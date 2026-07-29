@@ -11,6 +11,7 @@ from src.api import router as api_router
 from src.config import settings
 from src.core.aggregator_client import HttpAggregatorClient
 from src.core.feature_client import HttpFeatureClient
+from src.core.fundamentals_client import HttpFundamentalsClient
 from src.core.inference_log import InferenceLog
 from src.core.macro_client import HttpMacroClient
 from src.core.market_data_client import HttpMarketDataClient
@@ -83,11 +84,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         drop_after_days=settings.OUTCOME_DROP_AFTER_DAYS,
     )
 
+    fundamentals_client = HttpFundamentalsClient(settings.FUNDAMENTAL_DATA_URL)
+
     service = MLPipelineService(
         detector,
         registry,
         publisher,
         market_client=market_client,
+        fundamentals_client=fundamentals_client,
         model_store=model_store,
         serving=serving,
         inference_log=inference_log,
@@ -144,6 +148,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         with suppress(Exception):
             await nats_client.drain()
     await market_client.aclose()
+    await fundamentals_client.aclose()
     await feature_client.aclose()
     await macro_client.aclose()
     await aggregator_client.aclose()

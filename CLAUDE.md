@@ -1420,7 +1420,35 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   odpowiedź serializuje się do JSON-a (route zwraca ją dosłownie), a werdykt wyrenderował się jako
   „mixed — 8 silnych cech globalnie, 7 wewnątrz sektora".
 
-**Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
+- 2026-07-29 — **Etap E2 / P2-3: fundamenty point-in-time — najdroższe zadanie tego etapu.**
+  Fundamenty były liczone, serwowane i zapominane: serwis trzymał latest-per-symbol **w pamięci**,
+  co odpowiada na „co wiemy teraz" i na nic więcej. Trening potrzebuje „co było wiadomo 2022-03-14",
+  a doklejenie dzisiejszego F-score'u do sesji z 2022 uczy model faktów opublikowanych dwa lata
+  później — i ta awaria **nie zgłasza się jako błąd, tylko poprawia backtest**.
+  **`filed_at` z EDGAR**, dwie reguły dobrane tak, by błąd mógł iść wyłącznie w bezpieczną stronę:
+  dla pojedynczej wartości wygrywa **najwcześniejsze** zgłoszenie (ten sam okres wraca w korektach
+  i w kolumnie porównawczej następnego 10-K; liczy się, kiedy rynek dostał liczbę pierwszy raz),
+  a dla całego sprawozdania **najpóźniejsza** z dat jego pól (sprawozdanie jest użyteczne, gdy każde
+  jego pole jest publiczne — datowanie po najwcześniejszym twierdziłoby, że znamy liczby jeszcze
+  nieogłoszone; spóźnienie kosztuje trochę informacji, przyspieszenie ją **fabrykuje**). Brak daty
+  w którymkolwiek polu → sprawozdanie bez daty, a takie jest **niewidoczne** dla odczytu as-of.
+  **Niedatowane ≠ stare**: gdyby mogło wygrać złączenie, byłoby „znane" dla całej historii.
+  **Panel w Postgresie** (klucz naturalny, idempotentny upsert), `available_before()` jako odczyt
+  point-in-time, `GET /panel` do jednorazowego pobrania przez trening. Bez bazy serwis nadal liczy
+  i publikuje, ale nie ma historii — `/ready` mówi wtedy `panel=false`, zamiast twierdzić, że jest
+  gotowy, podczas gdy trening po cichu dostaje puste złączenie. **Reguła as-of i wyprowadzenie cech
+  przeniesione do `trading_common.fundamentals`** (wyprowadzenie należało do feature-engine; dwie
+  kopie tej arytmetyki po dwóch stronach granicy to ten sam rozjazd, który zamknęło P2-1). Odcięcie
+  dla sesji D to **północ UTC tego dnia**, więc zgłoszenie z tego samego dnia nie wchodzi — raporty
+  wychodzą po sesji. **Złączenie w treningu**: `build_dataset(fundamentals_by_symbol=...)` scala
+  cechy **przed** rangowaniem (dokładnie jak feature-engine scala atrybuty przed `/ranked`),
+  a `dataset.fundamental_coverage` mówi, na jakim udziale wierszy naprawdę istniało opublikowane
+  sprawozdanie — kolumna wypełniona w większości neutralną rangą **nie jest cechą**, a bez tej
+  liczby wygląda identycznie jak cecha słaba. Domyślnie **wyłączone** (`--with-fundamentals`):
+  zgodnie z bramką E2 rodzina wchodzi do modelu dopiero, gdy tabela IC per cecha to potwierdzi.
+  **Znalezione przy testach**: `filed_at` wraca z Postgresa jako **aware**, a ze sqlite jako
+  **naive**, i porównanie obu rzuca `TypeError` — reguła padałaby na jednym backendzie, a działała
+  na drugim. Normalizacja na granicy, przypięta testem.
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.
 

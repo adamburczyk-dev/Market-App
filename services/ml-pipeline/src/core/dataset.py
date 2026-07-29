@@ -19,9 +19,14 @@ from datetime import datetime
 import numpy as np
 import structlog
 from trading_common.features import FEATURE_LOOKBACK, FULL_HISTORY, compute_feature_vector
+from trading_common.fundamentals import (
+    fundamental_features,
+    latest_available_before,
+    session_cutoff,
+)
 from trading_common.prices import adjusted_ohlc
 from trading_common.ranking import cross_sectional_rank, sector_neutralize
-from trading_common.schemas import OHLCVBar
+from trading_common.schemas import FinancialStatements, OHLCVBar
 
 from src.core.labels import BarrierOutcome, LabelParams, triple_barrier_label
 from src.core.uniqueness import average_uniqueness
@@ -80,6 +85,10 @@ class Dataset:
     # mix PER FOLD — a window where 95% of labels time out and one where 55%
     # touch a barrier are different problems that look identical in aggregate.
     barriers: list[str] = field(default_factory=list)
+    # P2-3: share of rows that had a published filing at their session date.
+    # A fundamental column that is neutral-filled for most rows is not a
+    # feature, and without this number that looks identical to a weak one.
+    fundamental_coverage: float = 0.0
 
     @property
     def n_samples(self) -> int:
@@ -136,6 +145,7 @@ def build_dataset(
     regime_by_date: dict[datetime, str] | None = None,
     feature_names: list[str] | None = None,
     sector_by_symbol: dict[str, str | None] | None = None,
+    fundamentals_by_symbol: dict[str, list[FinancialStatements]] | None = None,
 ) -> Dataset:
     """Assemble the pooled cross-sectional dataset from per-symbol OHLCV history.
 
@@ -149,6 +159,14 @@ def build_dataset(
     stops being partly a ranking of sectors. It is OFF unless a map is passed —
     and if it is ever turned on for training it MUST be on for serving too, or
     the two compute different numbers under the same feature names.
+
+    ``fundamentals_by_symbol`` merges point-in-time fundamentals (P2-3): for
+    every session, each symbol gets the latest filing PUBLISHED before that
+    session, derived with the shared ``fundamental_features``. Merged before
+    ranking, exactly as feature-engine merges attributes before serving
+    ``/ranked``. A symbol with nothing published yet contributes no fundamental
+    keys and is neutral-filled — visible in ``fundamental_coverage`` rather
+    than pretending the company was average.
     """
     p = params or DatasetParams()
 
@@ -172,6 +190,8 @@ def build_dataset(
 
     resolution = {"upper": 0, "lower": 0, "vertical": 0, "unlabeled": 0}
     sessions_skipped_thin = 0
+    fundamental_rows = 0
+    ranked_rows = 0
 
     rows: list[dict[str, float]] = []
     row_dates: list[datetime] = []
@@ -200,6 +220,20 @@ def build_dataset(
             continue
 
         macro = _regime_one_hot(regime_by_date.get(session) if regime_by_date else None)
+        if fundamentals_by_symbol is not None:
+            cutoff = session_cutoff(session.date())
+            merged = []
+            for vector, (symbol, _) in zip(snapshot, members, strict=True):
+                known = latest_available_before(fundamentals_by_symbol.get(symbol, []), cutoff)
+                if known is None:
+                    merged.append(vector)
+                    continue
+                extra = fundamental_features(known)
+                if extra:
+                    fundamental_rows += 1
+                merged.append(vector.model_copy(update={"features": {**vector.features, **extra}}))
+            snapshot = merged
+        ranked_rows += len(snapshot)
         if sector_by_symbol is not None:
             snapshot = sector_neutralize(snapshot, sector_by_symbol)
         for ranked, (symbol, i) in zip(cross_sectional_rank(snapshot), members, strict=True):
@@ -247,9 +281,11 @@ def build_dataset(
     next_returns = np.array(row_next_returns, dtype=float)
     weights = average_uniqueness(row_spans)
 
+    coverage = round(fundamental_rows / ranked_rows, 4) if ranked_rows else 0.0
     logger.info(
         "Dataset built",
         samples=len(rows),
+        fundamental_coverage=coverage,
         features=len(feature_names),
         symbols=len(bars_by_symbol),
         sessions=len(all_dates),
@@ -266,4 +302,5 @@ def build_dataset(
         barriers=row_barriers,
         label_resolution=resolution,
         sessions_skipped_thin=sessions_skipped_thin,
+        fundamental_coverage=coverage,
     )

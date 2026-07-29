@@ -195,10 +195,33 @@ kroku, inaczej odtworzymy rozjazd trening/serwowanie. Przy 34 nazwach pomiar i t
 zmierzenia" (grupa resztowa pochłania większość) — realnie transformacja staje się testowalna
 dopiero przy uniwersum P3-1.
 
-**P2-3** **fundamenty point-in-time** — najdroższe i najbardziej wartościowe zadanie w tym etapie:
-wypełnić `filed_at` z EDGAR (`acceptanceDateTime`), zapisać **panel historyczny** w Postgresie
-(dziś jest tylko latest-per-symbol w pamięci), dołączać as-of daty sesji. Bez `filed_at` to jest
-look-ahead, nie cecha.
+**P2-3 ✅ zrobione 2026-07-28** — **fundamenty point-in-time**, najdroższe zadanie tego etapu.
+
+- **`filed_at` z EDGAR**, z dwiema regułami dobranymi tak, by błąd mógł iść tylko w bezpieczną
+  stronę: dla pojedynczej wartości wygrywa **najwcześniejsze** zgłoszenie (ten sam okres wraca w
+  korektach i w kolumnie porównawczej następnego 10-K — liczy się, kiedy rynek dostał liczbę
+  pierwszy raz), a dla całego sprawozdania **najpóźniejsza** z dat jego pól (sprawozdanie jest
+  użyteczne, gdy każde jego pole jest publiczne; datowanie po najwcześniejszym polu twierdziłoby,
+  że znamy liczby, których jeszcze nie ogłoszono). Brak daty w którymkolwiek polu → sprawozdanie
+  **bez daty**, a takie jest **niewidoczne** dla odczytu as-of. Niedatowane ≠ stare: gdyby mogło
+  wygrać złączenie, byłoby „znane" dla całej historii.
+- **Panel w Postgresie** (klucz naturalny, idempotentny upsert), `available_before()` jako odczyt
+  point-in-time i `GET /panel` do jednorazowego pobrania przez trening. Bez bazy serwis nadal
+  liczy i publikuje, ale nie ma historii — i `/ready` mówi `panel=false`, zamiast twierdzić, że
+  jest gotowy, podczas gdy trening po cichu dostaje puste złączenie.
+- **Reguła as-of i wyprowadzenie cech w `trading_common.fundamentals`** — wyprowadzenie należało do
+  feature-engine, a ml-pipeline liczy teraz te same cechy przez historię; dwie kopie tej arytmetyki
+  po dwóch stronach granicy serwisów to ten sam rozjazd, który zamknęło P2-1. Odcięcie dla sesji D
+  to **północ UTC tego dnia**, więc zgłoszenie z tego samego dnia **nie** wchodzi (raporty wychodzą
+  po sesji).
+- **Złączenie w treningu**: `build_dataset(fundamentals_by_symbol=...)` scala cechy **przed**
+  rangowaniem (dokładnie tak, jak feature-engine scala atrybuty przed `/ranked`), a
+  `dataset.fundamental_coverage` mówi, na jakim udziale wierszy naprawdę istniało opublikowane
+  sprawozdanie. Kolumna wypełniona w większości neutralną rangą **nie jest cechą** i bez tej liczby
+  wygląda identycznie jak cecha słaba.
+
+Domyślnie **wyłączone** (`--with-fundamentals` / `fundamentals: true`): zgodnie z bramką E2 rodzina
+wchodzi do modelu dopiero, gdy tabela IC per cecha pokaże, że na to zasługuje.
 
 **Bramka E2:** każda nowa rodzina cech oceniana **osobno** po t-stacie IC na foldach, zanim wejdzie
 do zbioru. Cecha, która nie podnosi t-statu, jest wymiarem do przeuczenia, nie informacją.

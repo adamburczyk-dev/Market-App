@@ -15,6 +15,8 @@ class Settings(BaseSettings):
 
     # Training (plan ML-1): history source + MLflow local-backend registry
     MARKET_DATA_URL: str = "http://market-data:8000"
+    # Point-in-time fundamentals panel (P2-3), joined into training on request
+    FUNDAMENTAL_DATA_URL: str = "http://fundamental-data:8000"
     MLFLOW_TRACKING_URI: str = "sqlite:///mlruns/mlflow.db"
     MODEL_NAME: str = "global_v1"
 

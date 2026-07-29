@@ -646,13 +646,20 @@ def run_training(
     limit: int,
     timeout_s: float,
     report: dict | None = None,
+    fundamentals: bool = False,
 ) -> int:
-    print(f"\nTraining on {len(symbols)} symbols (sync — can take minutes)...")
+    extra = " + point-in-time fundamentals" if fundamentals else ""
+    print(f"\nTraining on {len(symbols)} symbols{extra} (sync — can take minutes)...")
     try:
         status, body = _request(
             "POST",
             f"{ml_url}/api/v1/ml-pipeline/models/train",
-            {"symbols": symbols, "interval": "1d", "limit": limit},
+            {
+                "symbols": symbols,
+                "interval": "1d",
+                "limit": limit,
+                "fundamentals": fundamentals,
+            },
             timeout=timeout_s,
         )
     except OSError as exc:
@@ -696,6 +703,15 @@ def run_training(
     dropped = body.get("dropped_zero_variance") or []
     if dropped:
         print(f"  dropped constant features: {', '.join(dropped)}")
+    contract = body.get("data_contract", {})
+    coverage = contract.get("fundamental_coverage")
+    if isinstance(coverage, int | float) and coverage > 0:
+        # A column that is mostly the neutral rank is not a feature, and it looks
+        # exactly like a weak one in the IC table without this number.
+        print(
+            f"  fundamentals joined point-in-time on {coverage:.0%} of ranked rows"
+            + ("" if coverage >= 0.8 else "  <-- the rest is neutral fill, not data")
+        )
     print(f"Gate PASSED: {gate.get('passed')}")
     for condition in gate.get("conditions", []):
         mark = "PASS" if condition.get("passed") else "FAIL"
@@ -752,6 +768,16 @@ def main() -> int:
     )
     parser.add_argument(
         "--train", action="store_true", help="Run a training pass after backfill"
+    )
+    parser.add_argument(
+        "--with-fundamentals",
+        action="store_true",
+        help=(
+            "Join the point-in-time fundamentals panel into training. Requires "
+            "fundamental-data to have a populated panel (SEC_USER_AGENT + a "
+            "refresh); the report's dataset.fundamental_coverage says how much "
+            "of the history actually had a published filing."
+        ),
     )
     parser.add_argument(
         "--sector-study",
@@ -934,7 +960,12 @@ def main() -> int:
         exit_code = max(
             exit_code,
             run_training(
-                ml_url, trainable, args.train_limit, args.train_timeout, report=report
+                ml_url,
+                trainable,
+                args.train_limit,
+                args.train_timeout,
+                report=report,
+                fundamentals=args.with_fundamentals,
             ),
         )
 
