@@ -1449,6 +1449,20 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   **Znalezione przy testach**: `filed_at` wraca z Postgresa jako **aware**, a ze sqlite jako
   **naive**, i porównanie obu rzuca `TypeError` — reguła padałaby na jednym backendzie, a działała
   na drugim. Normalizacja na granicy, przypięta testem.
+  Liczniki: shared 222 (+9), fundamental-data 47 (+11), ml-pipeline 199 (+7) → **bateria 998**;
+  ruff + format + mypy (`--strict` na shared) czyste; `helm lint`/`template` i `docker compose
+  config` sprawdzone. **Zweryfikowane na żywo dwukrotnie**: (A) **12/12 na prawdziwym
+  PostgreSQL-u 16**, z tabelą wziętą z `init-db.sql` (nie z ORM-owego echa): TIMESTAMPTZ zachowuje
+  strefę, odczyt as-of zwraca f_score 7 tam, gdzie panel trzyma też 9, zgłoszenie nie jest użyteczne
+  w dniu własnego złożenia, wiersze bez daty pozostają niewidoczne, a SQL zgadza się ze wspólną
+  regułą czystą na każdej testowanej dacie. (B) **10/10 na pełnym łańcuchu** — realna
+  fundamental-data (panel w realnym Postgresie, realne route'y na uvicornie) + realna market-data
+  + realny klient HTTP i realny `build_dataset` ml-pipeline: ranga `f_score` jednego symbolu
+  **przeskakuje dokładnie na dacie jego drugiego zgłoszenia** (0.000 przed, 1.000 po), a kontrola
+  anty-szczęściowa pokazuje, że wersja bez point-in-time stawia go na szczycie od pierwszego dnia
+  — czyli dokładnie ten błąd, którego szukamy.
+
+**Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.
 
