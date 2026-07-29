@@ -271,3 +271,40 @@ def test_deflated_sharpe_needs_more_than_a_high_ratio():
     # too short to judge, and a flat series, both refuse rather than guess
     assert deflated_sharpe_ratio(series(3.0, n=5), n_trials=10) == 0.0
     assert deflated_sharpe_ratio((0.01,) * 30, n_trials=10) == 0.0
+
+
+# --- P3-4: the decision metric is the relative book ------------------------
+
+
+def test_g3_leads_with_the_active_sharpe_not_the_absolute_one():
+    """A book that makes money by being long in a rising market, and picks worse
+    than the universe it picks from, must fail on the HEADLINE number.
+
+    Breadth in a long-only book saturates at ~1/rho, so adding names does not
+    add bets — the absolute Sharpe is mostly the market's. Before P3-4 that
+    number led the condition and the relative one was a footnote; run #2 cleared
+    0.79 absolute while losing to its universe by 1.06.
+    """
+    holdout = fold("holdout", sharpe=2.5, ic=0.05, active=-0.3, benchmark=3.0)
+    outcome = evaluate_gate(holdout, [fold("f", sharpe=2.0)] * 3, THRESHOLDS)
+    assert "G3" in failed(outcome)
+    reason = next(r for r in outcome.reasons if r.startswith("G3"))
+    assert reason.index("active") < reason.index("absolute"), "active must be reported first"
+
+
+def test_g3_still_requires_the_absolute_floor():
+    """Beating the universe is necessary, not sufficient: the project rule
+    "no strategy live below OOS Sharpe 0.5" applies to what is actually traded,
+    and a book that loses money slightly less than the market still loses."""
+    holdout = fold("holdout", sharpe=-0.8, ic=0.05, active=0.6, benchmark=-1.5)
+    assert "G3" in failed(evaluate_gate(holdout, [fold("f", sharpe=2.0)] * 3, THRESHOLDS))
+
+
+def test_g3_recent_folds_are_judged_on_active_too():
+    """The stability check moves with the decision metric. Folds with a healthy
+    absolute Sharpe that all lose to their universe are not evidence of skill."""
+    holdout = fold("holdout", sharpe=2.5, ic=0.05, active=1.1, benchmark=0.9)
+    beta_folds = [fold(f"f{i}", sharpe=3.0, active=-0.5, benchmark=4.0, seed=i) for i in range(3)]
+    outcome = evaluate_gate(holdout, beta_folds, THRESHOLDS)
+    assert "G3" in failed(outcome)
+    assert any("0/3 recent folds active-positive" in r for r in outcome.reasons)

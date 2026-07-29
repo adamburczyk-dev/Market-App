@@ -36,10 +36,9 @@ from pathlib import Path
 _MARKET_DATA = Path(__file__).resolve().parent.parent / "services" / "market-data"
 sys.path.insert(0, str(_MARKET_DATA))
 
-import nats  # noqa: E402
-from trading_common.events import MarketDataUpdatedEvent  # noqa: E402
-
-from src.events.publisher import NatsPublisher, ensure_stream  # noqa: E402
+import nats
+from src.events.publisher import NatsPublisher, ensure_stream
+from trading_common.events import MarketDataUpdatedEvent
 
 STREAM = "MARKET_DATA"
 SUBJECTS = ["market_data.>"]
@@ -95,14 +94,18 @@ async def round_trip(url: str, *, strict: bool) -> None:
             assert len(msgs) == 2, f"consume FAILED: got {len(msgs)} (expected 2)"
             for m in msgs:
                 await m.ack()
-            print(f"  [consume] pulled {len(msgs)} messages {[m.subject for m in msgs]} ✓")
+            print(
+                f"  [consume] pulled {len(msgs)} messages {[m.subject for m in msgs]} ✓"
+            )
     finally:
         await nc.drain()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", help="connect to an already-running NATS instead of spawning one")
+    parser.add_argument(
+        "--url", help="connect to an already-running NATS instead of spawning one"
+    )
     args = parser.parse_args()
 
     os.environ.setdefault("DB_PASSWORD", "x")

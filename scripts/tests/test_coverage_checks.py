@@ -127,3 +127,23 @@ def test_surviving_evidence_recommends_adoption():
     assert "stock-specific" in text
     mixed = boot.sector_verdict(1.0, {"strong_plain": 6, "strong_neutral": 2})
     assert "mixed" in mixed
+
+
+# --- P3-2: the training window must follow the backfill depth --------------
+
+
+def test_train_limit_follows_the_requested_history():
+    """A fixed default silently caps a deep backfill. 20 years of data trained
+    on 8 is not an error anyone sees — the run just reports a smaller dataset."""
+    assert boot.default_train_limit(6.0) == 6 * 252 + 253
+    assert boot.default_train_limit(20.0) == 20 * 252 + 253
+    # ...and it never drops below what a holdout + folds need
+    assert boot.default_train_limit(0.5) == boot.MIN_SESSIONS_FOR_TRAINING
+    # ...nor above what the route accepts, which would just 422
+    assert boot.default_train_limit(100.0) == boot.MAX_TRAIN_LIMIT
+
+
+def test_the_warmup_is_included_not_forgotten():
+    """The first FULL_HISTORY bars of a window produce no rows, so a limit of
+    exactly years x 252 loses a year of trainable sessions at the start."""
+    assert boot.default_train_limit(10.0) > 10 * 252

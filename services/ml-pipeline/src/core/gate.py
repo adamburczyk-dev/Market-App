@@ -9,7 +9,7 @@ market. Each condition here closes one way a model with no edge can look good:
   G0  sanity        — did a model actually get trained and does it vary?
   G1  rank info     — is the ranking distinguishable from noise (IC t-stat)?
   G2  vs baseline   — does it beat the raw rank of a single feature?
-  G3  economics     — does the book make money AND beat its own universe?
+  G3  economics     — does it beat its own universe FIRST, and make money too?
   G4  calibration   — are the probabilities better than the base rate?
   G5  selection     — does the Sharpe survive deflation for how often we tried?
 
@@ -32,6 +32,12 @@ class GateThresholds:
     """Every bar the gate applies. Only three are free parameters."""
 
     sharpe: float = 0.5  # project rule: no strategy live below OOS Sharpe 0.5
+    # P3-4: the bar on the RELATIVE book, which is the decision metric. Zero,
+    # not 0.5: active Sharpe is a difference of two correlated series and is a
+    # much harder number to earn than an absolute one in a rising market — a
+    # long-only book that merely keeps up with its universe scores 0 here while
+    # scoring whatever the market paid on the absolute measure.
+    active_sharpe: float = 0.0
     ic_tstat: float = 2.0  # ~95% that the mean IC is not zero
     # Deflated Sharpe. 0.95 is the textbook bar and it is the right one before
     # live capital; at 0.90 this gate governs promotion to a PAPER-trading vote
@@ -155,24 +161,36 @@ def evaluate_gate(
     )
 
     # --- G3: does it make money, and is the money its own? ---
+    # P3-4: the DECISION metric is the ACTIVE Sharpe — the book against the
+    # equal-weight universe it picks from. The absolute Sharpe stays as a
+    # secondary condition (the project rule "no strategy live below OOS 0.5"
+    # still applies to what actually gets traded), but it can no longer carry
+    # the decision on its own: breadth in a long-only book saturates at ~1/rho,
+    # so a rising market pays an absolute Sharpe that has nothing to do with
+    # the model. Run #2 cleared 0.79 absolute while losing to its own universe
+    # by 1.06 — under this ordering that reads as a failure of the headline
+    # number, not of a footnote.
     recent = folds[-3:]
-    passing = sum(1 for f in recent if f.portfolio.sharpe > t.sharpe)
+    passing = sum(
+        1 for f in recent if f.relative is not None and f.relative.sharpe_active > t.active_sharpe
+    )
     active = rel.sharpe_active if rel is not None else 0.0
     benchmark = rel.sharpe_benchmark_ew if rel is not None else 0.0
     economics = (
-        holdout.portfolio.sharpe > t.sharpe
-        and active > 0.0
+        rel is not None
+        and active > t.active_sharpe
+        and holdout.portfolio.sharpe > t.sharpe
         and diag.lift > 0.0
         and passing >= t.min_recent_folds
     )
     conditions.append(
         GateCondition(
             "G3",
-            "economics",
+            "economics (active-first)",
             economics,
-            f"sharpe {holdout.portfolio.sharpe:.2f} (need > {t.sharpe}), "
-            f"active {active:+.2f} vs benchmark {benchmark:.2f}, "
-            f"lift {diag.lift:+.4f}, {passing}/{len(recent)} recent folds",
+            f"active {active:+.2f} (need > {t.active_sharpe}) vs benchmark {benchmark:.2f}, "
+            f"absolute {holdout.portfolio.sharpe:.2f} (need > {t.sharpe}), "
+            f"lift {diag.lift:+.4f}, {passing}/{len(recent)} recent folds active-positive",
         )
     )
 

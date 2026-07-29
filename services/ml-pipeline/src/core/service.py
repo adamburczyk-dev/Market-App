@@ -40,6 +40,7 @@ from src.core.serving import ServingEngine
 from src.core.target_study import calibrate_barriers, score_targets
 from src.core.training import TrainingParams, run_training
 from src.core.tuning import SweepReport, run_sweep
+from src.core.universe import UniverseParams, build_universe, survivorship_report
 from src.events.publisher import Publisher
 
 logger = structlog.get_logger()
@@ -195,8 +196,13 @@ class MLPipelineService:
     # --- training (plan ML-1) ---
 
     async def build_training_dataset(
-        self, symbols: list[str], interval: Interval, limit: int, fundamentals: bool = False
-    ) -> tuple[Dataset, int]:
+        self,
+        symbols: list[str],
+        interval: Interval,
+        limit: int,
+        fundamentals: bool = False,
+        universe_params: UniverseParams | None = None,
+    ) -> tuple[Dataset, int, dict[str, Any]]:
         """Returns (dataset, sessions the bars received should have produced).
 
         The second value is an INTERNAL consistency expectation, not the request
@@ -226,9 +232,20 @@ class MLPipelineService:
             if self._fundamentals is None:
                 raise RuntimeError("fundamental-data client not configured")
             panel = await self._fundamentals.panel(sorted(bars_by_symbol))
+
+        # P3-1/P3-3: membership is decided per rebalance from data available
+        # then; the survivorship report is emitted either way, because a ticker
+        # list where nobody ever leaves makes every metric below optimistic by
+        # an amount that cannot be estimated from inside the data.
+        universe = build_universe(bars_by_symbol, universe_params) if universe_params else None
+        selection = {
+            "survivorship": survivorship_report(bars_by_symbol),
+            "universe": universe.diagnostics if universe is not None else None,
+        }
         return (
-            build_dataset(bars_by_symbol, params, fundamentals_by_symbol=panel),
+            build_dataset(bars_by_symbol, params, fundamentals_by_symbol=panel, universe=universe),
             expected_sessions,
+            selection,
         )
 
     async def target_study(
@@ -303,11 +320,13 @@ class MLPipelineService:
         registered or logged — the fitted models are diagnostics, not
         candidates.
         """
-        dataset, _ = await self.build_training_dataset(symbols, interval, limit)
+        dataset, _, selection = await self.build_training_dataset(symbols, interval, limit)
         dataset, dropped = drop_zero_variance_features(dataset)
         probe = run_capacity_probe(dataset)
         return {
             "dataset": _dataset_diagnostics(dataset, symbols),
+            # P3-1/P3-3: who was eligible when, and whether anybody ever left.
+            "selection": selection,
             "dropped_zero_variance": dropped,
             "probe": probe.as_dict(),
         }
@@ -326,11 +345,13 @@ class MLPipelineService:
         the activation gate can deflate for the number of configurations tried.
         Nothing is registered — this chooses a setup, not a model.
         """
-        dataset, _ = await self.build_training_dataset(symbols, interval, limit)
+        dataset, _, selection = await self.build_training_dataset(symbols, interval, limit)
         dataset, dropped = drop_zero_variance_features(dataset)
         report: SweepReport = run_sweep(dataset, params, n_folds=n_folds)
         return {
             "dataset": _dataset_diagnostics(dataset, symbols),
+            # P3-1/P3-3: who was eligible when, and whether anybody ever left.
+            "selection": selection,
             "dropped_zero_variance": dropped,
             "sweep": report.as_dict(),
         }
@@ -342,6 +363,7 @@ class MLPipelineService:
         limit: int = 1500,
         params: TrainingParams | None = None,
         fundamentals: bool = False,
+        universe_params: UniverseParams | None = None,
     ) -> dict[str, Any]:
         """Full training pass: dataset → walk-forward gate → registry + baseline.
 
@@ -352,8 +374,8 @@ class MLPipelineService:
         per the stage-2 rule a feature family enters only once measured, and the
         per-feature IC table in the report is where that is read.
         """
-        dataset, requested_sessions = await self.build_training_dataset(
-            symbols, interval, limit, fundamentals=fundamentals
+        dataset, requested_sessions, selection = await self.build_training_dataset(
+            symbols, interval, limit, fundamentals=fundamentals, universe_params=universe_params
         )
         # T0-2: constant columns leave the feature contract before training, so
         # the model never learns a schema that serving cannot reproduce.
@@ -394,6 +416,8 @@ class MLPipelineService:
             "samples": dataset.n_samples,
             "features": dataset.feature_names,
             "dataset": _dataset_diagnostics(dataset, symbols),
+            # P3-1/P3-3: who was eligible when, and whether anybody ever left.
+            "selection": selection,
             "dropped_zero_variance": dropped_features,
             "data_contract": contract,
             "effective_sample_size": asdict(

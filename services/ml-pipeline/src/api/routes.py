@@ -8,6 +8,7 @@ from trading_common.schemas import Interval
 from src.api.deps import get_service
 from src.core.data_contract import TrainingDataContractError
 from src.core.service import MLPipelineService
+from src.core.universe import UniverseParams
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -21,6 +22,11 @@ class TrainRequest(BaseModel):
     # enters the model only after the per-feature IC table says it earns a place,
     # and `dataset.fundamental_coverage` says whether it was really there at all.
     fundamentals: bool = False
+    # P3-1: restrict each session's cross-section to the point-in-time universe
+    # (top-N by trailing dollar volume, rebalanced quarterly). None = every
+    # symbol with bars, which on a ticker list assembled today means ranking
+    # among companies chosen for having survived.
+    universe_top_n: int | None = Field(default=None, ge=20, le=2000)
 
 
 class SectorStudyRequest(TrainRequest):
@@ -69,6 +75,9 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
             Interval(req.interval),
             limit=req.limit,
             fundamentals=req.fundamentals,
+            universe_params=(
+                UniverseParams(top_n=req.universe_top_n) if req.universe_top_n is not None else None
+            ),
         )
     except TrainingDataContractError as exc:
         # T0-1: refuse to train on data that cannot produce an interpretable

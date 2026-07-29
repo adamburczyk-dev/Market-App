@@ -69,6 +69,20 @@ SECTOR_BY_SYMBOL: dict[str, str] = {
 }
 
 MIN_SESSIONS_FOR_TRAINING = 945  # holdout 126 + train 756 + test 63 (TrainingParams)
+SESSIONS_PER_YEAR = 252
+FEATURE_WARMUP_BARS = 253  # trading_common.features.FULL_HISTORY — the slowest feature
+MAX_TRAIN_LIMIT = 10_000  # the route's ceiling (TrainRequest.limit)
+
+
+def default_train_limit(years: float) -> int:
+    """Bars to request per symbol so the whole backfill is actually used.
+
+    The warm-up matters: the first FULL_HISTORY bars of any window produce no
+    rows, so asking for exactly years x 252 loses a year of trainable sessions
+    at the start.
+    """
+    wanted = int(years * SESSIONS_PER_YEAR) + FEATURE_WARMUP_BARS
+    return max(MIN_SESSIONS_FOR_TRAINING, min(wanted, MAX_TRAIN_LIMIT))
 
 
 def _request(
@@ -647,8 +661,11 @@ def run_training(
     timeout_s: float,
     report: dict | None = None,
     fundamentals: bool = False,
+    universe_top_n: int | None = None,
 ) -> int:
     extra = " + point-in-time fundamentals" if fundamentals else ""
+    if universe_top_n:
+        extra += f" + top-{universe_top_n} point-in-time universe"
     print(f"\nTraining on {len(symbols)} symbols{extra} (sync — can take minutes)...")
     try:
         status, body = _request(
@@ -659,6 +676,7 @@ def run_training(
                 "interval": "1d",
                 "limit": limit,
                 "fundamentals": fundamentals,
+                "universe_top_n": universe_top_n,
             },
             timeout=timeout_s,
         )
@@ -703,6 +721,27 @@ def run_training(
     dropped = body.get("dropped_zero_variance") or []
     if dropped:
         print(f"  dropped constant features: {', '.join(dropped)}")
+    selection = body.get("selection") or {}
+    survivorship = selection.get("survivorship") or {}
+    if survivorship:
+        # Printed before anything else about performance: on a ticker list where
+        # nobody ever leaves, every number below is optimistic by an amount that
+        # cannot be estimated from inside the data.
+        print(
+            f"  survivorship: {survivorship.get('names_ending_early', 0)} names end early, "
+            f"{survivorship.get('names_entering_late', 0)} list late, of "
+            f"{survivorship.get('candidates', 0)} candidates"
+        )
+        print(f"    {survivorship.get('verdict', '')}")
+    universe = selection.get("universe")
+    if universe:
+        print(
+            f"  point-in-time universe: top {universe.get('top_n')} of "
+            f"{universe.get('candidates')} candidates, rebalanced every "
+            f"{universe.get('rebalance_days')} sessions; median size "
+            f"{universe.get('universe_size_median')}, turnover "
+            f"{universe.get('turnover_mean')}"
+        )
     contract = body.get("data_contract", {})
     coverage = contract.get("fundamental_coverage")
     if isinstance(coverage, int | float) and coverage > 0:
@@ -770,6 +809,17 @@ def main() -> int:
         "--train", action="store_true", help="Run a training pass after backfill"
     )
     parser.add_argument(
+        "--universe-top-n",
+        type=int,
+        default=None,
+        help=(
+            "Restrict each session to the top-N most liquid eligible names, "
+            "decided per quarter from data available then (P3-1). Without it "
+            "every backfilled symbol participates, which on a ticker list "
+            "assembled today means ranking among companies that survived."
+        ),
+    )
+    parser.add_argument(
         "--with-fundamentals",
         action="store_true",
         help=(
@@ -827,8 +877,13 @@ def main() -> int:
     parser.add_argument(
         "--train-limit",
         type=int,
-        default=2000,
-        help="Bars per symbol for training fetch",
+        default=None,
+        help=(
+            "Bars per symbol for the training fetch. Default: derived from "
+            "--years, so a deeper backfill is actually trained on. A fixed "
+            "default silently caps a 20-year history at whatever it was set to "
+            "and the run reports a smaller dataset without saying it was cut."
+        ),
     )
     parser.add_argument(
         "--train-timeout", type=float, default=1800.0, help="Training HTTP timeout (s)"
@@ -912,6 +967,22 @@ def main() -> int:
     }
     report["coverage"] = coverage
 
+    # Resolve the training window AFTER coverage, so the stored history can be
+    # compared against what training will actually fetch. Silent truncation is
+    # the exact failure the market-data cache bug produced once already: the run
+    # succeeds, the dataset is smaller, and nothing says it was cut.
+    if args.train_limit is None:
+        args.train_limit = default_train_limit(args.years)
+    stored_max = max((info.get("sessions", 0) for info in coverage.values()), default=0)
+    if stored_max > args.train_limit:
+        print(
+            f"\n!! TRUNCATION: {stored_max} sessions stored, training will fetch "
+            f"{args.train_limit} bars per symbol.\n"
+            f"   Raise --train-limit (max {MAX_TRAIN_LIMIT}) or the extra history "
+            "is backfilled and never used."
+        )
+    report["train_limit"] = args.train_limit
+
     exit_code = 1 if failed else 0
     if args.target_study:
         trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
@@ -966,6 +1037,7 @@ def main() -> int:
                 args.train_timeout,
                 report=report,
                 fundamentals=args.with_fundamentals,
+                universe_top_n=args.universe_top_n,
             ),
         )
 

@@ -1462,6 +1462,39 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   anty-szczęściowa pokazuje, że wersja bez point-in-time stawia go na szczycie od pierwszego dnia
   — czyli dokładnie ten błąd, którego szukamy.
 
+- 2026-07-29 — **Etap E3: uniwersum point-in-time, metryka względna i pułapka z głębokością
+  historii.** **P3-1** `ml-pipeline/src/core/universe.py`: członkostwo ustalane na dacie rebalansu
+  (kwartalnie) z **mediany obrotu dolarowego** w oknie trailing, top-N, trzymane do następnego
+  rebalansu. Selekcja nie patrzy na zwroty, więc nie może przypadkiem stać się strategią; test
+  pokazuje, że spółka, której obrót ożywa dopiero pod koniec, **nie trafia** do uniwersum z
+  początku okresu. Przed pierwszym rebalansem uniwersum jest **puste, nie „wszyscy"** — domyślne
+  „wszyscy" po cichu przywracałoby listę ocalałych dokładnie na tych sesjach, o których selekcja
+  się nie wypowiedziała. `build_dataset(universe=...)` przycina przekrój do członków tej sesji.
+  **Połowa tego zadania nie jest kodem i moduł tego nie ukrywa**: jeśli podane tickery to te, które
+  przetrwały, żadna reguła selekcji nie odzyska tych, których nie ma. `survivorship_report` mierzy,
+  ile nazw faktycznie wchodzi i wychodzi, i **nazywa listę ocalałych listą ocalałych** — z
+  informacją, że metryki na niej są optymistyczne o wielkość, której nie da się oszacować od
+  środka danych. Ta sama dyscyplina co `share_neutralized_against_peers` w P2-2.
+  **P3-4 — metryka decyzyjna to teraz Sharpe ACTIVE**: G3 prowadzi wynikiem względem
+  equal-weight uniwersum, z którego model wybiera; Sharpe absolutny zostaje jako warunek wtórny
+  (reguła „nic poniżej OOS 0.5 na żywo" dotyczy tego, czym się realnie handluje). Próg na active to
+  **0.0, nie 0.5** — to różnica dwóch skorelowanych serii i jest znacznie trudniejsza do zdobycia
+  niż liczba absolutna w rosnącym rynku. Kontrola „2 z 3 ostatnich foldów" też przeszła na active.
+  Bieg #2 miał absolutny 0.79 przy active −1.06: w nowym porządku to porażka **liczby prowadzącej**,
+  nie przypisu. **P3-2 — znaleziona pułapka**: `--train-limit` miał stałą domyślną 2000 świec (~8
+  lat), więc backfill 20 lat zostałby **po cichu ucięty**, a bieg zaraportowałby po prostu mniejszy
+  zbiór — dokładnie ta klasa awarii, którą dał już raz błąd cache'a w market-data. Limit wynika
+  teraz z `--years` (plus rozgrzewka `FULL_HISTORY`, bo pierwsze 253 świec okna nie produkują
+  wierszy), a skrypt **głośno ostrzega**, gdy w bazie leży więcej sesji, niż trening pobierze.
+  Nowe flagi: `--universe-top-n`, wcześniejsze `--with-fundamentals`. Liczniki: ml-pipeline 214
+  (+15), `scripts/` 11 (+2) → **bateria 1015**; ruff + format + mypy czyste.
+  **Zweryfikowane na żywo (7/7)** przez realny `MLPipelineService.build_training_dataset` nad
+  realną market-datą po HTTP (28 symboli × 700 świec): bez uniwersum w przekroju jest 28 nazw,
+  z uniwersum 11; spółka, której obrót się załamuje, **wypada** po najbliższym rebalansie (ostatnia
+  sesja 2021-05-19 przy załamaniu 2021-03-27) i **była** w uniwersum wcześniej; werdykt
+  survivorship poprawnie brzmi „SURVIVOR LIST", a cały blok `selection` serializuje się do JSON-a
+  (route zwraca go dosłownie).
+
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.

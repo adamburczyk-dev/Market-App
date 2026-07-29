@@ -30,6 +30,7 @@ from trading_common.schemas import FinancialStatements, OHLCVBar
 
 from src.core.labels import BarrierOutcome, LabelParams, triple_barrier_label
 from src.core.uniqueness import average_uniqueness
+from src.core.universe import Universe
 
 logger = structlog.get_logger()
 
@@ -146,6 +147,7 @@ def build_dataset(
     feature_names: list[str] | None = None,
     sector_by_symbol: dict[str, str | None] | None = None,
     fundamentals_by_symbol: dict[str, list[FinancialStatements]] | None = None,
+    universe: Universe | None = None,
 ) -> Dataset:
     """Assemble the pooled cross-sectional dataset from per-symbol OHLCV history.
 
@@ -159,6 +161,11 @@ def build_dataset(
     stops being partly a ranking of sectors. It is OFF unless a map is passed —
     and if it is ever turned on for training it MUST be on for serving too, or
     the two compute different numbers under the same feature names.
+
+    ``universe`` restricts each session's cross-section to the names that were
+    in the point-in-time universe THEN (P3-1). Without it every symbol with bars
+    participates, which on a ticker list assembled today means the model ranks
+    among companies chosen for having survived.
 
     ``fundamentals_by_symbol`` merges point-in-time fundamentals (P2-3): for
     every session, each symbol gets the latest filing PUBLISHED before that
@@ -206,7 +213,10 @@ def build_dataset(
         # ranks over); rows that cannot be labeled are dropped only afterwards.
         snapshot = []
         members: list[tuple[str, int]] = []
+        eligible = universe.members_on(session.date()) if universe is not None else None
         for symbol, ordered in bars_sorted.items():
+            if eligible is not None and symbol not in eligible:
+                continue
             i = index_by_date[symbol].get(session)
             if i is None or i + 1 < p.min_history:
                 continue

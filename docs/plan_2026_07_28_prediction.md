@@ -237,10 +237,41 @@ i −0.02 to ta sama obserwacja widziana dwa razy, dopóki liczba przekrojów ic
 
 | ID | Zadanie | Efekt liczbowy |
 |---|---|---|
-| **P3-1** | Uniwersum **200–500 nazw point-in-time** (członkostwo w indeksie na datę — survivorship bias!) | Próg wykrywalności IC 0.022 → ~0.007; BR 92 → ~360 |
-| **P3-2** | Historia **od 2005** | Obejmuje 2008, 2011, 2015–16, 2018, 2020, 2022 — dziś mamy sześć lat jednego reżimu (hossa mega-capów) |
-| **P3-3** | Kontrola jakości: braki, halty, spółki z krótką historią, granice sesji | Rzadkie brzegi to miejsce, gdzie `min_universe=20` zacznie realnie pracować |
-| **P3-4** | **Metryka decyzyjna = książka względna** (long-short lub active), long-only jako kontekst | Wynika wprost z nasycenia szerokości przy ρ=0.253: w long-only dokładanie nazw nie dodaje zakładów, a Sharpe mierzy betę. Bez tego rozszerzenie uniwersum poprawi tylko pomiar, nie wynik |
+| **P3-1 ✅ kod 2026-07-29** | Uniwersum **200–500 nazw point-in-time** (członkostwo w indeksie na datę — survivorship bias!) | Próg wykrywalności IC 0.022 → ~0.007; BR 92 → ~360 |
+| **P3-2 ✅ kod 2026-07-29** | Historia **od 2005** | Obejmuje 2008, 2011, 2015–16, 2018, 2020, 2022 — dziś mamy sześć lat jednego reżimu (hossa mega-capów) |
+| **P3-3 ✅ częściowo** | Kontrola jakości: braki, halty, spółki z krótką historią, granice sesji | Rzadkie brzegi to miejsce, gdzie `min_universe=20` zacznie realnie pracować |
+| **P3-4 ✅ zrobione 2026-07-29** | **Metryka decyzyjna = książka względna** (long-short lub active), long-only jako kontekst | Wynika wprost z nasycenia szerokości przy ρ=0.253: w long-only dokładanie nazw nie dodaje zakładów, a Sharpe mierzy betę. Bez tego rozszerzenie uniwersum poprawi tylko pomiar, nie wynik |
+
+**P3-1 — mechanizm gotowy, lista kandydatów zostaje po stronie danych.** `core/universe.py`:
+członkostwo ustalane na dacie rebalansu (kwartalnie) z **mediany obrotu dolarowego w oknie
+trailing**, top-N, trzymane do następnego rebalansu. Nazwa, która kwalifikowała się w 2012,
+jest w przekrojach z 2012 niezależnie od tego, czy istnieje dziś — sama selekcja nie wnosi
+hindsightu (test: spółka, która ożywa obrotem dopiero pod koniec, **nie może** być w uniwersum
+z początku okresu). Przed pierwszym rebalansem uniwersum jest **puste, nie „wszyscy"** —
+domyślne „wszyscy" po cichu przywracałoby listę ocalałych dokładnie na sesjach, o których
+selekcja się nie wypowiedziała.
+
+**Ale połowa zadania nie jest kodem.** Jeśli podane tickery to te, które przetrwały, żadna reguła
+selekcji nie odzyska tych, których nie ma. Dlatego `survivorship_report` **mierzy**, ile nazw
+faktycznie wchodzi i wychodzi, i mówi wprost, gdy odpowiedź brzmi „żadna": wtedy uniwersum jest
+listą ocalałych, a wszystkie metryki na nim są optymistyczne o wielkość, której **nie da się
+oszacować od środka danych**. To ta sama dyscyplina co `share_neutralized_against_peers` w P2-2 —
+raportujemy warunek wstępny, bo liczba policzona na danych, które jej nie uniosą, wygląda
+identycznie jak liczba policzona poprawnie.
+
+**P3-2 — znaleziona pułapka po drodze.** `--train-limit` miał stałą wartość domyślną 2000 świec,
+czyli ~8 lat. Backfill 20 lat zostałby **po cichu ucięty**, a bieg zaraportowałby po prostu mniejszy
+zbiór — dokładnie ta klasa awarii, którą już raz dał błąd cache'a w market-data. Teraz limit
+**wynika z `--years`** (plus rozgrzewka `FULL_HISTORY`, bo pierwsze 253 świec okna nie produkują
+wierszy), a skrypt **głośno ostrzega**, gdy w bazie leży więcej sesji, niż trening pobierze.
+
+**P3-4 — metryka decyzyjna to teraz Sharpe ACTIVE.** G3 prowadzi wynikiem względem
+equal-weight uniwersum, z którego model wybiera; Sharpe absolutny zostaje jako warunek wtórny
+(reguła „nic poniżej OOS 0.5 nie idzie na żywo" dotyczy tego, czym się realnie handluje).
+Próg na active to **0.0, nie 0.5**: to różnica dwóch skorelowanych serii i jest znacznie trudniejsza
+do zdobycia niż liczba absolutna w rosnącym rynku. Kontrola stabilności („2 z 3 ostatnich foldów")
+też przeszła na active. Bieg #2 miał absolutny 0.79 przy active −1.06 — w nowym porządku to jest
+porażka **liczby prowadzącej**, a nie przypisu.
 
 **Uwaga o survivorship:** dzisiejsze 34 nazwy to lista zwycięzców wybrana *ex post*. Model uczony
 na takim uniwersum uczy się, że „duże spółki technologiczne rosną" — i to jest jedyna rzecz, którą
