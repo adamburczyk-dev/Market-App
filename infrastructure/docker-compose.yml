@@ -453,6 +453,13 @@ services:
     container_name: ts-fundamental-data
     environment:
       SERVICE_NAME: fundamental-data
+      # Postgres holds the point-in-time PANEL (P2-3): without it the service
+      # still scores and publishes, but training has no as-of history to join.
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-trading_db}
+      DB_USER: ${DB_USER:-trader}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
       NATS_URL: nats://nats:4222
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
@@ -461,6 +468,8 @@ services:
     ports:
       - "8009:8000"
     depends_on:
+      postgres:
+        condition: service_healthy
       nats:
         condition: service_healthy
     healthcheck:

@@ -64,6 +64,38 @@ SELECT add_compression_policy(
 );
 
 -- ============================================================
+-- Panel fundamentów (point-in-time, P2-3)
+-- ============================================================
+-- `filed_at` to data, od której liczba była PUBLICZNIE znana. Odczyt as-of bierze
+-- najnowszy wiersz z filed_at ŚCIŚLE wcześniejszym niż początek sesji — wiersz
+-- bez filed_at jest niewidoczny dla tego odczytu (nie da się go umieścić w czasie,
+-- więc nie wolno go użyć), a nie „stary".
+CREATE TABLE IF NOT EXISTS market_data.fundamentals (
+    symbol              TEXT NOT NULL,
+    period_end          DATE NOT NULL,
+    fiscal_period       TEXT NOT NULL,
+    filed_at            TIMESTAMPTZ,
+    revenue             DOUBLE PRECISION,
+    net_income          DOUBLE PRECISION,
+    total_assets        DOUBLE PRECISION,
+    total_liabilities   DOUBLE PRECISION,
+    current_assets      DOUBLE PRECISION,
+    current_liabilities DOUBLE PRECISION,
+    shares_outstanding  DOUBLE PRECISION,
+    operating_cash_flow DOUBLE PRECISION,
+    eps                 DOUBLE PRECISION,
+    piotroski_f_score   INTEGER,
+    source              TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Klucz naturalny → idempotentny upsert przy ponownym pobraniu z EDGAR.
+    PRIMARY KEY (symbol, period_end, fiscal_period)
+);
+
+-- Odczyt as-of chodzi po (symbol, filed_at DESC) — to jest ten indeks.
+CREATE INDEX IF NOT EXISTS idx_fundamentals_symbol_filed
+    ON market_data.fundamentals (symbol, filed_at DESC);
+
+-- ============================================================
 -- Tabela sygnałów tradingowych
 -- ============================================================
 CREATE TABLE IF NOT EXISTS strategy.signals (

@@ -7,7 +7,8 @@ Resolves ticker → CIK via SEC's company_tickers.json, then reads the XBRL
 nothing (the service then relies on manually-posted statements).
 """
 
-from datetime import date
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time
 from typing import Any, Protocol
 
 import httpx
@@ -40,6 +41,60 @@ TAG_MAP: dict[str, tuple[tuple[str, str], ...]] = {
     "operating_cash_flow": (("NetCashProvidedByUsedInOperatingActivities", "USD"),),
     "eps": (("EarningsPerShareBasic", "USD/shares"),),
 }
+
+
+@dataclass(frozen=True)
+class Observation:
+    """One reported value together with when it was first filed."""
+
+    value: float
+    filed: date | None
+
+
+def _parse_date(raw: object) -> date | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _earlier(candidate: date | None, current: date | None) -> bool:
+    """True when `candidate` is a strictly earlier known filing date.
+
+    An observation without a filing date never displaces one that has it: a
+    value we cannot date is worse than useless for point-in-time work.
+    """
+    if candidate is None:
+        return False
+    return current is None or candidate < current
+
+
+def _statement_filed_at(
+    by_field: dict[str, dict[date, "Observation"]], period_end: date
+) -> datetime | None:
+    """When the WHOLE statement became knowable — the latest of its fields' dates.
+
+    Deliberately the max, not the min. A statement is usable once every field it
+    carries has been published; dating it by the earliest field would claim
+    knowledge of numbers that were not out yet, which is look-ahead. Being a few
+    days late costs a little information, being early fabricates it — and only
+    one of those two errors can be found later in a backtest. If ANY populated
+    field has no filing date at all, the statement gets none, and the as-of join
+    must then skip it rather than guess.
+    """
+    dates: list[date] = []
+    for values in by_field.values():
+        obs = values.get(period_end)
+        if obs is None:
+            continue
+        if obs.filed is None:
+            return None
+        dates.append(obs.filed)
+    if not dates:
+        return None
+    return datetime.combine(max(dates), time.min, tzinfo=UTC)
 
 
 class FundamentalsFetcher(Protocol):
@@ -92,13 +147,19 @@ class EdgarClient:
                 self._cik_cache[row["ticker"].upper()] = f"{int(row['cik_str']):010d}"
         return self._cik_cache.get(symbol.upper())
 
-    async def _annual_by_period(self, cik: str, tag: str, unit: str) -> dict[date, float]:
-        """period-end → value from annual (10-K / FY) observations for a concept."""
+    async def _annual_by_period(self, cik: str, tag: str, unit: str) -> dict[date, Observation]:
+        """period-end → (value, first filing date) from annual (10-K/FY) observations.
+
+        The same period is reported many times — the original 10-K, any
+        amendment, and as the comparative column of later filings. The one that
+        matters for point-in-time work is the EARLIEST: that is when the market
+        first had the number (P2-3).
+        """
         url = f"{self._base}/api/xbrl/companyconcept/CIK{cik}/us-gaap/{tag}.json"
         data = await self._get_json(url)
         if data is None:
             return {}
-        out: dict[date, float] = {}
+        out: dict[date, Observation] = {}
         for obs in data.get("units", {}).get(unit, []):
             if obs.get("form") not in ("10-K", "10-K/A") or obs.get("fp") != "FY":
                 continue
@@ -106,22 +167,30 @@ class EdgarClient:
             val = obs.get("val")
             if end is None or val is None:
                 continue
-            out[date.fromisoformat(end)] = float(val)
+            period = date.fromisoformat(end)
+            filed = _parse_date(obs.get("filed"))
+            existing = out.get(period)
+            if existing is None:
+                out[period] = Observation(float(val), filed)
+            elif _earlier(filed, existing.filed):
+                # keep the first-known value AND its date together — a later
+                # restatement is not what was knowable at the time
+                out[period] = Observation(float(val), filed)
         return out
 
     async def _field_values(
         self, cik: str, candidates: tuple[tuple[str, str], ...]
-    ) -> dict[date, float]:
+    ) -> dict[date, Observation]:
         """Merge candidate concepts per period; earlier candidates win on conflict.
 
         A filer may report different periods under different tags (e.g. pre- vs
         post-ASC-606 revenue), so every candidate is fetched and unioned rather
         than stopping at the first non-empty one.
         """
-        merged: dict[date, float] = {}
+        merged: dict[date, Observation] = {}
         for tag, unit in candidates:
-            for period, value in (await self._annual_by_period(cik, tag, unit)).items():
-                merged.setdefault(period, value)
+            for period, obs in (await self._annual_by_period(cik, tag, unit)).items():
+                merged.setdefault(period, obs)
         return merged
 
     async def latest_statements(self, symbol: str, count: int = 2) -> list[FinancialStatements]:
@@ -132,7 +201,7 @@ class EdgarClient:
             logger.warning("Unknown ticker for EDGAR", symbol=symbol)
             return []
 
-        by_field: dict[str, dict[date, float]] = {}
+        by_field: dict[str, dict[date, Observation]] = {}
         for fieldname, candidates in TAG_MAP.items():
             by_field[fieldname] = await self._field_values(cik, candidates)
 
@@ -140,20 +209,26 @@ class EdgarClient:
         periods = sorted({p for values in by_field.values() for p in values}, reverse=True)
         statements: list[FinancialStatements] = []
         for period_end in periods[:count]:
+
+            def value(field: str, period: date = period_end) -> float | None:
+                obs = by_field[field].get(period)
+                return obs.value if obs is not None else None
+
             statements.append(
                 FinancialStatements(
                     symbol=symbol.upper(),
                     period_end=period_end,
                     fiscal_period="FY",
-                    revenue=by_field["revenue"].get(period_end),
-                    net_income=by_field["net_income"].get(period_end),
-                    total_assets=by_field["total_assets"].get(period_end),
-                    total_liabilities=by_field["total_liabilities"].get(period_end),
-                    current_assets=by_field["current_assets"].get(period_end),
-                    current_liabilities=by_field["current_liabilities"].get(period_end),
-                    shares_outstanding=by_field["shares_outstanding"].get(period_end),
-                    operating_cash_flow=by_field["operating_cash_flow"].get(period_end),
-                    eps=by_field["eps"].get(period_end),
+                    revenue=value("revenue"),
+                    net_income=value("net_income"),
+                    total_assets=value("total_assets"),
+                    total_liabilities=value("total_liabilities"),
+                    current_assets=value("current_assets"),
+                    current_liabilities=value("current_liabilities"),
+                    shares_outstanding=value("shares_outstanding"),
+                    operating_cash_flow=value("operating_cash_flow"),
+                    eps=value("eps"),
+                    filed_at=_statement_filed_at(by_field, period_end),
                     source="sec-edgar",
                 )
             )

@@ -2,24 +2,35 @@
 
 import asyncio
 from collections.abc import Sequence
+from datetime import date, datetime
 
 import structlog
 from trading_common.events import FundamentalsUpdatedEvent
+from trading_common.fundamentals import session_cutoff
 from trading_common.schemas import FinancialStatements
 
 from src.core.edgar_client import FundamentalsFetcher
 from src.core.piotroski import FScoreBreakdown, compute_f_score
+from src.core.repository import FundamentalsStore, NullFundamentalsStore
 from src.events.publisher import Publisher
 
 logger = structlog.get_logger()
 
 
 class FundamentalDataService:
-    def __init__(self, fetcher: FundamentalsFetcher, publisher: Publisher) -> None:
+    def __init__(
+        self,
+        fetcher: FundamentalsFetcher,
+        publisher: Publisher,
+        store: FundamentalsStore | None = None,
+    ) -> None:
         self._fetcher = fetcher
         self._publisher = publisher
-        # latest scored statement + its F-score breakdown, per symbol
+        # latest scored statement + its F-score breakdown, per symbol. This is a
+        # cache of "what do we know now"; the PANEL (store) is what answers
+        # "what was known on date D", which is the only form training can use.
         self._latest: dict[str, tuple[FinancialStatements, FScoreBreakdown]] = {}
+        self._store = store or NullFundamentalsStore()
 
     def get(self, symbol: str) -> tuple[FinancialStatements, FScoreBreakdown] | None:
         return self._latest.get(symbol.upper())
@@ -33,6 +44,10 @@ class FundamentalDataService:
         breakdown = compute_f_score(current, prior)
         scored = current.model_copy(update={"piotroski_f_score": breakdown.score})
         self._latest[scored.symbol.upper()] = (scored, breakdown)
+        # Persist BOTH periods: the prior year is a panel row in its own right,
+        # and a panel that only ever holds the newest filing cannot answer an
+        # as-of question about last year.
+        await self._store.save([s for s in (scored, prior) if s is not None])
         await self._publisher.publish(
             FundamentalsUpdatedEvent(
                 symbol=scored.symbol,
@@ -63,6 +78,21 @@ class FundamentalDataService:
     ) -> tuple[FinancialStatements, FScoreBreakdown]:
         """Score and publish manually-provided statements (no SEC access required)."""
         return await self._process(current, prior)
+
+    async def available_before(self, symbol: str, cutoff: datetime) -> FinancialStatements | None:
+        """Point-in-time read: the latest filing published strictly before `cutoff`."""
+        return await self._store.available_before(symbol, cutoff)
+
+    async def as_of_session(self, symbol: str, day: date) -> FinancialStatements | None:
+        """What was knowable about `symbol` when session `day` opened."""
+        return await self._store.available_before(symbol, session_cutoff(day))
+
+    async def panel(self, symbols: Sequence[str]) -> list[FinancialStatements]:
+        """The whole stored history for these symbols — training's single fetch."""
+        return await self._store.panel([s.upper() for s in symbols])
+
+    async def store_ready(self) -> bool:
+        return await self._store.ping()
 
     async def refresh_universe(self, symbols: Sequence[str], pause_s: float = 1.0) -> int:
         """Refresh each symbol from EDGAR (scheduled path); returns the refreshed count.

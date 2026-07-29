@@ -25,6 +25,11 @@ def payload(f_score=6, revenue=1000.0, net_income=100.0, assets=2000.0, liabilit
     return {
         "f_score": f_score,
         "statement": {
+            # A real view carries the identifying fields; the derivation now runs
+            # on the shared FinancialStatements model, so the fixture matches it.
+            "symbol": "AAPL",
+            "period_end": "2024-12-31",
+            "fiscal_period": "FY",
             "revenue": revenue,
             "net_income": net_income,
             "total_assets": assets,

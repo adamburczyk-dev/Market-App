@@ -203,6 +203,8 @@ services:
       name: fundamental-data
       tag: latest
     port: 8000
+    # Postgres holds the point-in-time fundamentals panel (P2-3).
+    needsDb: true
     resources:
       requests:
         memory: "256Mi"
@@ -212,6 +214,10 @@ services:
         cpu: "500m"
     env:
       LOG_LEVEL: INFO
+      # Point-in-time panel (P2-3) — same database as market-data.
+      DB_HOST: postgres
+      DB_NAME: trading_db
+      DB_USER: trader
       # SEC_USER_AGENT required for live EDGAR fetch; without it the service
       # degrades gracefully to manually-ingested statements.
 

@@ -4,6 +4,15 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     SERVICE_NAME: str = "fundamental-data"
     LOG_LEVEL: str = "INFO"
+
+    # Postgres — the fundamentals PANEL (point-in-time history). Without it the
+    # service still scores and publishes, but keeps no history, and /ready says so.
+    DB_HOST: str = "localhost"
+    DB_PORT: int = 5432
+    DB_NAME: str = "trading"
+    DB_USER: str = "trader"
+    DB_PASSWORD: str = ""
+    DB_ENABLED: bool = True
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: str | None = None
@@ -26,6 +35,13 @@ class Settings(BaseSettings):
     REFRESH_INTERVAL_S: float = 604_800.0  # weekly — annual filings move slowly
     REFRESH_INITIAL_DELAY_S: float = 60.0  # first run shortly after boot
     REFRESH_SYMBOL_PAUSE_S: float = 1.0  # politeness gap between symbols
+
+    @property
+    def database_url(self) -> str:
+        return (
+            f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}"
+            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        )
 
     @property
     def refresh_symbols(self) -> list[str]:

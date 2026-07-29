@@ -10,8 +10,14 @@ from src.api import router as api_router
 from src.config import settings
 from src.core.edgar_client import EdgarClient
 from src.core.observability import setup_observability
+from src.core.repository import (
+    FundamentalsStore,
+    NullFundamentalsStore,
+    SqlFundamentalsStore,
+)
 from src.core.service import FundamentalDataService
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
+from src.models.db import Base, make_engine, make_sessionmaker
 
 logger = structlog.get_logger()
 
@@ -42,7 +48,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         publisher = NullPublisher()
         nats_client = None
 
-    service = FundamentalDataService(fetcher, publisher)
+    store: FundamentalsStore = NullFundamentalsStore()
+    engine = None
+    if settings.DB_ENABLED:
+        try:
+            engine = make_engine(settings.database_url)
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            store = SqlFundamentalsStore(make_sessionmaker(engine))
+        except Exception as exc:  # noqa: BLE001 - keep the app up for health probes
+            logger.error("Fundamentals panel unavailable — history disabled", error=str(exc))
+            store = NullFundamentalsStore()
+            engine = None
+
+    service = FundamentalDataService(fetcher, publisher, store=store)
     app.state.service = service
 
     scheduler: PeriodicTask | None = None
@@ -66,8 +85,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     async def _readiness() -> tuple[bool, dict[str, bool]]:
         # fundamental-data publishes fundamentals events → NATS is required.
+        # The panel is reported but does NOT gate readiness: without it the
+        # service is still useful for live enrichment, and a silent "ready" that
+        # hides a missing history is how training ends up with an empty join.
         nats_ok = nats_client is not None and nats_client.is_connected
-        return nats_ok, {"nats": nats_ok}
+        panel_ok = await service.store_ready()
+        return nats_ok, {"nats": nats_ok, "panel": panel_ok}
 
     app.state.readiness_check = _readiness
 
@@ -80,6 +103,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         with suppress(Exception):
             await nats_client.drain()
     await fetcher.aclose()
+    if engine is not None:
+        await engine.dispose()
 
 
 app = FastAPI(

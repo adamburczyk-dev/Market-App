@@ -191,3 +191,95 @@ async def test_tag_switch_across_periods_unions_both():
     await ec.aclose()
     assert statements[0].revenue == 391035  # 2024 from the fallback tag
     assert statements[1].revenue == 383285  # 2023 from the classic tag
+
+
+# --- P2-3: filed_at, the date that makes the panel point-in-time -----------
+
+
+FILED = {
+    # same period reported three times: the original 10-K, an amendment, and
+    # again as the comparative column of the next year's filing
+    "Revenues": [
+        ("2023-09-30", 383285, "10-K", "FY", "2023-11-03"),
+        ("2023-09-30", 383285, "10-K/A", "FY", "2024-01-15"),
+        ("2023-09-30", 383285, "10-K", "FY", "2024-11-01"),
+    ],
+    "NetIncomeLoss": [("2023-09-30", 96995, "10-K", "FY", "2023-11-03")],
+    "Assets": [("2023-09-30", 352583, "10-K", "FY", "2023-11-20")],
+}
+
+
+def filed_handler(request: httpx.Request) -> httpx.Response:
+    path = request.url.path
+    if path.endswith("company_tickers.json"):
+        return httpx.Response(200, json=TICKERS)
+    if "/companyconcept/" in path:
+        tag = path.rsplit("/", 1)[-1].removesuffix(".json")
+        obs = [
+            {"end": e, "val": v, "form": f, "fp": fp, "filed": filed}
+            for (e, v, f, fp, filed) in FILED.get(tag, [])
+        ]
+        return httpx.Response(200, json={"units": {"USD": obs}})
+    return httpx.Response(404)
+
+
+@pytest.mark.asyncio
+async def test_filed_at_is_the_last_field_to_become_public():
+    """A statement is knowable once every field it carries has been published.
+
+    Revenue first appeared 2023-11-03 and Assets 2023-11-20, so the statement
+    was complete on the 20th. Dating it by the earliest field would claim
+    knowledge of a number that was not out yet — being late costs a little
+    information, being early fabricates it.
+    """
+    ec = client_with(filed_handler)
+    statements = await ec.latest_statements("AAPL", count=1)
+    await ec.aclose()
+    assert statements[0].filed_at is not None
+    assert statements[0].filed_at.date() == date(2023, 11, 20)
+
+
+@pytest.mark.asyncio
+async def test_the_earliest_filing_of_a_value_wins_not_the_latest():
+    """The same period is re-reported by amendments and by next year's
+    comparatives. What matters is when the market FIRST had it."""
+    ec = client_with(filed_handler)
+    statements = await ec.latest_statements("AAPL", count=1)
+    await ec.aclose()
+    # 2024-11-01 and 2024-01-15 also report revenue for this period; neither
+    # may push the statement's date forward past the Assets filing.
+    assert statements[0].filed_at.date() == date(2023, 11, 20)
+
+
+@pytest.mark.asyncio
+async def test_a_field_without_a_filing_date_leaves_the_statement_undated():
+    """Fail closed: one undated field means the statement cannot be placed in
+    time, and the as-of read then skips it entirely rather than guessing."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("company_tickers.json"):
+            return httpx.Response(200, json=TICKERS)
+        tag = request.url.path.rsplit("/", 1)[-1].removesuffix(".json")
+        rows = FILED.get(tag, [])
+        obs = [
+            {"end": e, "val": v, "form": f, "fp": fp}  # no "filed"
+            if tag == "Assets"
+            else {"end": e, "val": v, "form": f, "fp": fp, "filed": filed}
+            for (e, v, f, fp, filed) in rows
+        ]
+        return httpx.Response(200, json={"units": {"USD": obs}})
+
+    ec = client_with(handler)
+    statements = await ec.latest_statements("AAPL", count=1)
+    await ec.aclose()
+    assert statements[0].total_assets == 352583  # the value is still there
+    assert statements[0].filed_at is None  # ...but it is not dateable
+
+
+@pytest.mark.asyncio
+async def test_statements_without_any_filing_dates_stay_undated():
+    # the original fixture has no "filed" fields at all
+    ec = client_with(sec_handler)
+    statements = await ec.latest_statements("AAPL", count=1)
+    await ec.aclose()
+    assert statements[0].filed_at is None
