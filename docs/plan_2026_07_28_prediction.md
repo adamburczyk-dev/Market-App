@@ -486,6 +486,31 @@ Flaga jest **opcjonalna**: krzywa pojemności i tak zawsze obejmuje 250 tys. –
 (`DEFAULT_AUMS`). `--cost-aum` ustawia jedynie **wielkość odniesienia**, przy której drukowana jest
 szczegółowa tabela per nazwa i werdykt. Bez niej dostajesz tabelę przy 1 mln i pełną krzywę obok.
 
+### 12.2b Windows (PowerShell)
+
+Tabela wyżej używa `make`, którego Windows nie ma. Repo zawiera [`make.ps1`](../make.ps1) z tymi
+samymi celami — **argumenty przekazuje się wprost, bez opakowania `ARGS="…"`**:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # tylko ta sesja
+Copy-Item .env.example .env                                   # raz, potem uzupełnij hasła
+
+.\make.ps1 down
+if (docker volume ls -q --filter "name=^trading-system_ml_mlruns$") {
+    docker volume rm trading-system_ml_mlruns                 # pułapka `version: null`
+}
+
+.\make.ps1 build                                              # pierwszy raz: długo (torch)
+.\make.ps1 up
+python scripts\diagnose.py                                    # po ~2.5 min na ml-pipeline
+
+.\make.ps1 bootstrap-universe --years 20 --report-out reports/backfill.json
+.\make.ps1 bootstrap-universe --skip-backfill --target-study
+```
+
+Czego **nie** wolno przenieść z powłok uniksowych: `||`, `&&` (w Windows PowerShell 5.1 to błąd
+składni — działają dopiero od PowerShella 7) oraz `2>/dev/null` (odpowiednik to `2>$null`).
+
 ### 12.2a Przerwanie backfillu
 
 Krok 1 trwa godziny, więc zakłada się, że zostanie kiedyś przerwany.
@@ -511,8 +536,10 @@ ponownie.
 
 ### 12.3 Pułapki operacyjne (wszystkie już raz nas trafiły)
 
-- **Wolumen `ml_mlruns`.** Jeśli powstał przed poprawką Dockerfile'a z 2026-07-26, MLflow nadal nie
-  zapisze biegu (`version: null`) — Docker inicjalizuje wolumen tylko raz. Skasować przed startem.
+- **Wolumen MLflow.** Jeśli powstał przed poprawką Dockerfile'a z 2026-07-26, MLflow nadal nie
+  zapisze biegu (`version: null`) — Docker inicjalizuje wolumen tylko raz. Skasować **przy
+  zatrzymanym stacku**. Compose ma `name: trading-system`, więc wolumen nazywa się
+  **`trading-system_ml_mlruns`** (nie `market-app_…` — nazwa projektu nie pochodzi od katalogu).
 - **Hasło do Postgresa.** `POSTGRES_PASSWORD` działa tylko przy tworzeniu wolumenu; zmiana
   `DB_PASSWORD` w `.env` po pierwszym starcie zostawia stare hasło w bazie (README opisuje naprawę
   przez `ALTER USER`). Objaw: puste 500 z `POST /fetch`.
