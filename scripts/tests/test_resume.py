@@ -151,3 +151,25 @@ def test_progress_survives_a_crash_during_the_write(tmp_path):
     boot.save_progress(str(path), 20.0, {"A": 100, "B": 200})
     assert boot.load_progress(str(path), 20.0) == {"A": 100, "B": 200}
     assert not (tmp_path / "nested" / "progress.json.tmp").exists()
+
+
+# --- symbol parsing (a Windows PowerShell trap) ----------------------------
+
+
+def test_symbols_split_on_spaces_as_well_as_commas():
+    """Windows PowerShell parses a bare `A,B,C` as an ARRAY, and make.ps1 binds
+    it to a [string[]] parameter, which stringifies back space-joined. So
+    `--symbols SEE,K,HES` arrived as one token "SEE K HES": the run asked
+    market-data for a ticker with spaces in its name and died on InvalidURL,
+    after cheerfully announcing "Backfilling 1 symbols".
+    """
+    expected = ["SEE", "K", "HES", "CTRA"]
+    assert boot.split_symbols("SEE,K,HES,CTRA") == expected
+    assert boot.split_symbols("SEE K HES CTRA") == expected  # what PowerShell sends
+    assert boot.split_symbols("SEE, K  HES ,CTRA") == expected
+
+
+def test_symbol_parsing_normalises_case_and_drops_empties():
+    assert boot.split_symbols(" see,,k ,  ") == ["SEE", "K"]
+    assert boot.split_symbols("") == []
+    assert boot.split_symbols("   ") == []

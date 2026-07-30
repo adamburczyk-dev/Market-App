@@ -33,6 +33,7 @@ import argparse
 import itertools
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -143,6 +144,21 @@ MIN_SESSIONS_FOR_TRAINING = 945  # holdout 126 + train 756 + test 63 (TrainingPa
 SESSIONS_PER_YEAR = 252
 FEATURE_WARMUP_BARS = 253  # trading_common.features.FULL_HISTORY — the slowest feature
 MAX_TRAIN_LIMIT = 10_000  # the route's ceiling (TrainRequest.limit)
+
+
+def split_symbols(raw: str) -> list[str]:
+    """Tickers from a user-supplied string — commas OR whitespace.
+
+    Windows PowerShell parses a bare `A,B,C` as an ARRAY, and make.ps1 binds it
+    to a [string[]] parameter, which stringifies back space-joined. So
+    `--symbols SEE,K,HES` arrives as the single token "SEE K HES" and the run
+    asked market-data for one ticker with spaces in its name — an InvalidURL
+    traceback, and before that a cheerful "Backfilling 1 symbols".
+
+    Quoting the value avoids it, but a separator that depends on remembering to
+    quote is a trap rather than an interface. Both separators are accepted.
+    """
+    return [token.upper() for token in re.split(r"[,\s]+", raw.strip()) if token]
 
 
 def default_train_limit(years: float) -> int:
@@ -1181,7 +1197,10 @@ def main() -> int:
     parser.add_argument(
         "--symbols",
         default=None,
-        help="Comma-separated tickers, or @file with one per line (default: built-in universe)",
+        help=(
+            "Tickers separated by commas or spaces, or @file with one per line "
+            "(default: built-in universe)"
+        ),
     )
     parser.add_argument(
         "--years", type=float, default=6.0, help="History depth (default 6)"
@@ -1381,7 +1400,7 @@ def main() -> int:
         with open(args.symbols[1:], encoding="utf-8") as fh:
             symbols = [line.strip().upper() for line in fh if line.strip()]
     else:
-        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        symbols = split_symbols(args.symbols)
     if not symbols:
         sys.exit("empty universe")
 
