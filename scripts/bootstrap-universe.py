@@ -1239,7 +1239,12 @@ def main() -> int:
         "--cost-aum",
         type=float,
         default=1_000_000.0,
-        help="Reference book size for --cost-study (default $1M).",
+        help=(
+            "Capital under management in USD, the size the per-name cost table "
+            "is priced at (default $1M). Enters as order = AUM x 5%% position "
+            "cap, hence participation = order / a name's daily dollar volume. "
+            "Optional: the capacity curve spans $250k-$100M regardless."
+        ),
     )
     parser.add_argument(
         "--cost-turnover",

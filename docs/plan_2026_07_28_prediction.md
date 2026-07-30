@@ -467,7 +467,7 @@ zgadywalibyśmy przed treningiem.
 | **2. Cel** | `--skip-backfill --target-study` | P1-2: horyzont 10/21/63 + szerokość barier | minuty |
 | **3. Sektory** | `--skip-backfill --sector-study` | P2-2: czy neutralizacja sektorowa podnosi dowody (mierzalne dopiero przy 455 nazwach) | minuty |
 | **4. Zanik** | `--skip-backfill --alpha-decay` | P5-4: okres trzymania + czy latencja wejścia boli | minuty |
-| **5. Koszty** | `--skip-backfill --cost-study --cost-aum <realny rozmiar>` | P5-2: przy jakiej wielkości księgi to jeszcze działa | minuty |
+| **5. Koszty** | `--skip-backfill --cost-study --cost-aum <kapitał w USD>` | P5-2: przy jakiej wielkości kapitału to jeszcze działa | minuty |
 | **6. Sonda** | `--skip-backfill --capacity-probe` | czy w danych JEST struktura do nauczenia | ~1–2 min |
 | **7. Trening** | `--skip-backfill --train --universe-top-n 200 --report-out reports/train.json` | bramka G0–G5 | minuty |
 | **8. Challenger** | `--skip-backfill --train --model-kind gbdt --universe-top-n 200` | czy inna klasa modelu widzi więcej | minuty |
@@ -475,6 +475,16 @@ zgadywalibyśmy przed treningiem.
 
 Kroki 2–6 są tanie i **niezależne od siebie** — można je puścić jednym ciągiem. Krok 9 ma sens
 dopiero, jeśli krok 7 lub 8 pokaże cokolwiek.
+
+**`--cost-aum` to kapitał (AUM) w dolarach, nie rozmiar pliku ani liczba spółek.** Wchodzi do modelu
+kosztów w jednym miejscu: `order_usd = AUM × 5%` (limit na pozycję), a stąd
+`udział w wolumenie = order_usd / mediana dziennego obrotu nazwy`, i dalej impact ~ √(udział).
+Czyli: **ta sama strategia w tych samych spółkach kosztuje inaczej przy 1 mln i przy 50 mln** — i to
+jest dokładnie to, czego płaskie 5 bps nie umiało powiedzieć.
+
+Flaga jest **opcjonalna**: krzywa pojemności i tak zawsze obejmuje 250 tys. – 100 mln USD
+(`DEFAULT_AUMS`). `--cost-aum` ustawia jedynie **wielkość odniesienia**, przy której drukowana jest
+szczegółowa tabela per nazwa i werdykt. Bez niej dostajesz tabelę przy 1 mln i pełną krzywę obok.
 
 ### 12.2a Przerwanie backfillu
 
