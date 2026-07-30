@@ -16,6 +16,20 @@ SERVICE_PORTS = {
 # Domyślne symbole
 DEFAULT_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SPY", "QQQ"]
 
+# Largest window a single OHLCV read may ask for.
+#
+# The ceiling is SHARED because it is a contract between whoever asks for bars
+# and whoever serves them. Declared twice at two values, it surfaces only as a
+# 422 on the longest run — that is, on the one run that mattered. Which is how
+# the measurement campaign died: ml-pipeline accepted `limit <= 10_000`,
+# market-data served at most 5_000, and a 20-year request (5040 sessions + 253
+# warm-up bars = 5293) fell exactly in between.
+#
+# The value is ~40 years of daily sessions, so any realistic backfill fits
+# whole. A ceiling still exists: an unbounded read is one request away from
+# exhausting the service's memory.
+MAX_OHLCV_LIMIT = 10_000
+
 # NATS subjects
 NATS_SUBJECTS = {
     "market_data": "market_data.updated",

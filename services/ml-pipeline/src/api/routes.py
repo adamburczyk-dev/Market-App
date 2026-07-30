@@ -1,8 +1,13 @@
 """ml-pipeline HTTP API — training, model registry, baselines and drift checks."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from trading_common.constants import MAX_OHLCV_LIMIT
 from trading_common.schemas import Interval
 
 from src.api.deps import get_service
@@ -15,10 +20,59 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+@contextmanager
+def _mapped_errors(operation: str) -> Iterator[None]:
+    """Turn a failed study/training run into an answer the CALLER can act on.
+
+    Every route here spends minutes pulling a universe over HTTP and then
+    computing, so the ways it fails are worth naming. Previously only
+    RuntimeError and ValueError were mapped and everything else escaped, which
+    Starlette answers as a plain-text 500 with an EMPTY body: a whole campaign
+    of five studies plus training reported `HTTP 500: {}` six times, and the
+    actual cause — market-data refusing a 5293-bar request — was only legible
+    in the container log. The report is the artifact; it has to carry the
+    reason. Same fix market-data's POST /fetch already got, for the same
+    reason.
+    """
+    try:
+        yield
+    except HTTPException:
+        raise  # already a deliberate answer — do not re-wrap as a 500
+    except TrainingDataContractError as exc:
+        # T0-1: refuse to train on data that cannot produce an interpretable
+        # model, and return the full report so the caller sees WHY.
+        # (A RuntimeError subclass — must be matched before it.)
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "training data contract violated", **exc.report},
+        ) from exc
+    except httpx.HTTPStatusError as exc:
+        # An upstream service answered, and said no. Report WHICH service, WHAT
+        # it answered and for WHAT url — 502 also says plainly that the caller's
+        # request was not itself the problem.
+        detail = f"upstream {exc.response.status_code} from {exc.request.url}"
+        logger.error("Upstream rejected request", operation=operation, detail=detail)
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except httpx.HTTPError as exc:  # timeout, connection refused, DNS...
+        detail = f"upstream unreachable: {type(exc).__name__}: {exc}"
+        logger.error("Upstream call failed", operation=operation, detail=detail)
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except RuntimeError as exc:  # market-data client not configured
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:  # dataset too small for the requested design
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Operation failed", operation=operation)
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
 class TrainRequest(BaseModel):
     symbols: list[str] = Field(min_length=2)  # cross-sectional — needs a universe
     interval: str = "1d"
-    limit: int = Field(default=1500, ge=300, le=10_000)
+    # Bars per symbol to pull from market-data. The ceiling is the SHARED one:
+    # accepting a limit market-data will not serve turns a legitimate 20-year
+    # request into an upstream 422 halfway through the run.
+    limit: int = Field(default=1500, ge=300, le=MAX_OHLCV_LIMIT)
     # P2-3: join the point-in-time fundamentals panel. OFF by default — a family
     # enters the model only after the per-feature IC table says it earns a place,
     # and `dataset.fundamental_coverage` says whether it was really there at all.
@@ -101,7 +155,7 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
     """Run the full training pass (plan §6–§7): dataset → purged walk-forward →
     gate report → MLflow version + drift baseline. Synchronous and potentially
     minutes-long — ops/scheduled use; promotion to production stays manual."""
-    try:
+    with _mapped_errors("train"):
         return await service.train(
             req.symbols,
             Interval(req.interval),
@@ -112,17 +166,6 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
                 UniverseParams(top_n=req.universe_top_n) if req.universe_top_n is not None else None
             ),
         )
-    except TrainingDataContractError as exc:
-        # T0-1: refuse to train on data that cannot produce an interpretable
-        # model, and return the full report so the caller sees WHY.
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "training data contract violated", **exc.report},
-        ) from exc
-    except RuntimeError as exc:  # market-data client not configured
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:  # dataset too small for holdout + folds
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/models/target-study")
@@ -132,12 +175,8 @@ async def target_study(
     """Calibrate the barrier width and rank candidate targets (horizon,
     absolute vs excess) by how well RAW features already predict them. No model
     is fitted, so this costs nothing against the gate's n_trials."""
-    try:
+    with _mapped_errors("target-study"):
         return await service.target_study(req.symbols, Interval(req.interval), limit=req.limit)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/models/sector-study")
@@ -148,14 +187,10 @@ async def sector_study(
     neutralization. Model-free — no model is fitted, so no trials are consumed.
     Read `composition.share_neutralized_against_peers` first: with too few names
     per sector the transform barely applies and the comparison means nothing."""
-    try:
+    with _mapped_errors("sector-study"):
         return await service.sector_study(
             req.symbols, Interval(req.interval), req.sectors, limit=req.limit
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/models/alpha-decay")
@@ -166,7 +201,7 @@ async def alpha_decay(
     The holding period and the tranche count currently follow the label horizon
     by assumption; this measures whether that is right. Model-free — no fit, no
     trials consumed. Read the t-statistics, not the IC levels."""
-    try:
+    with _mapped_errors("alpha-decay"):
         return await service.alpha_decay(
             req.symbols,
             Interval(req.interval),
@@ -174,10 +209,6 @@ async def alpha_decay(
             horizons=tuple(req.horizons),
             delays=tuple(req.delays),
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/models/cost-study")
@@ -188,7 +219,7 @@ async def cost_study(
     5 bps. Read `capacity_curve`: impact grows with the square root of size
     while the edge does not grow at all, so a result that survives at $1M need
     not survive at $50M. Model-free — no fit, no trials consumed."""
-    try:
+    with _mapped_errors("cost-study"):
         return await service.cost_study(
             req.symbols,
             Interval(req.interval),
@@ -196,10 +227,6 @@ async def cost_study(
             aum_usd=req.aum_usd,
             turnover_daily=req.turnover_daily,
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/models/cpcv")
@@ -207,7 +234,7 @@ async def cpcv(req: CpcvRequest, service: MLPipelineService = Depends(get_servic
     """Combinatorial purged CV: several out-of-sample paths from the same data,
     reported as a dispersion rather than a single number. Expensive (C(N,k)
     fits) and diagnostic only — nothing is registered or promotable from it."""
-    try:
+    with _mapped_errors("cpcv"):
         return await service.cpcv(
             req.symbols,
             Interval(req.interval),
@@ -216,10 +243,6 @@ async def cpcv(req: CpcvRequest, service: MLPipelineService = Depends(get_servic
             test_groups=req.test_groups,
             params=TrainingParams(model_kind=req.model_kind, n_seeds=req.n_seeds),
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:  # too few sessions for the requested design
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/models/capacity-probe")
@@ -230,12 +253,8 @@ async def capacity_probe(
     labels and compare the train AUCs. Answers the question a flat train AUC
     cannot: optimization problem, or nothing in the data to learn? Diagnostic
     only — nothing is registered, nothing can be promoted from it."""
-    try:
+    with _mapped_errors("capacity-probe"):
         return await service.capacity_probe(req.symbols, Interval(req.interval), limit=req.limit)
-    except RuntimeError as exc:  # market-data client not configured
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:  # dataset too small / single class
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/models/tune")
@@ -243,14 +262,10 @@ async def tune(req: TuneRequest, service: MLPipelineService = Depends(get_servic
     """Compare training configurations on the walk-forward folds (never the
     holdout) and report the winner plus the number of configurations tried —
     that count is what the gate's deflated Sharpe must be told."""
-    try:
+    with _mapped_errors("tune"):
         return await service.tune(
             req.symbols, Interval(req.interval), limit=req.limit, n_folds=req.n_folds
         )
-    except RuntimeError as exc:  # market-data client not configured
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:  # dataset too short to split
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/serving")
@@ -281,7 +296,8 @@ async def resume_serving(service: MLPipelineService = Depends(get_service)) -> d
 @router.post("/monitor/run")
 async def run_monitor(service: MLPipelineService = Depends(get_service)) -> dict:
     """Run the daily monitor now (ops; the scheduler runs it daily anyway)."""
-    return await service.run_daily_monitor()
+    with _mapped_errors("monitor"):
+        return await service.run_daily_monitor()
 
 
 @router.post("/models/versions/{version}/promote")
@@ -319,14 +335,15 @@ async def check_drift(
     service: MLPipelineService = Depends(get_service),
 ) -> dict:
     """Run the drift check; publishes ModelDriftDetectedEvent when actionable."""
-    report = await service.check_drift(
-        model_id,
-        req.current_features,
-        req.rolling_sharpe_30d,
-        req.rolling_sharpe_90d,
-        req.rolling_accuracy_30d,
-        prediction_current=req.prediction_current,
-    )
+    with _mapped_errors("drift"):
+        report = await service.check_drift(
+            model_id,
+            req.current_features,
+            req.rolling_sharpe_30d,
+            req.rolling_sharpe_90d,
+            req.rolling_accuracy_30d,
+            prediction_current=req.prediction_current,
+        )
     if report is None:
         raise HTTPException(status_code=404, detail=f"no baseline registered for {model_id}")
     return {

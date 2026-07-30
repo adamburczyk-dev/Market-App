@@ -15,7 +15,7 @@ import asyncio
 import time
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 
 from src.core.service import MLPipelineService
 
@@ -71,9 +71,7 @@ async def test_every_heavy_service_method_dispatches_off_the_loop():
     ]
     for name in heavy:
         calls = [
-            line.strip()
-            for line in source.splitlines()
-            if f"{name}," in line or f"{name}(" in line
+            line.strip() for line in source.splitlines() if f"{name}," in line or f"{name}(" in line
         ]
         # the import line and the to_thread dispatch are fine; a bare call is not
         offenders = [

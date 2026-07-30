@@ -3,6 +3,7 @@
 import structlog
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from trading_common.constants import MAX_OHLCV_LIMIT
 from trading_common.schemas import Interval
 
 from src.api.deps import get_service
@@ -16,7 +17,9 @@ class BacktestRequest(BaseModel):
     strategy_name: str
     symbol: str
     interval: Interval = Interval.D1
-    limit: int = Field(default=500, ge=10, le=5000)
+    # Shared ceiling: this limit is forwarded verbatim to market-data, so a
+    # value this service accepts and that one refuses is a guaranteed 502.
+    limit: int = Field(default=500, ge=10, le=MAX_OHLCV_LIMIT)
     params: dict[str, float] | None = None
 
 
@@ -25,7 +28,7 @@ class RevalidateRequest(BaseModel):
     symbol: str
     original_oos_sharpe: float
     interval: Interval = Interval.D1
-    limit: int = Field(default=500, ge=10, le=5000)
+    limit: int = Field(default=500, ge=10, le=MAX_OHLCV_LIMIT)
     params: dict[str, float] | None = None
 
 

@@ -2,6 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
+from trading_common.constants import MAX_OHLCV_LIMIT
 
 from src.core.service import MarketDataService
 
@@ -46,6 +47,34 @@ async def test_ohlcv_limit_validation(wired: tuple[AsyncClient, MarketDataServic
     client, _ = wired
     resp = await client.get("/api/v1/market-data/ohlcv/AAPL", params={"limit": 0})
     assert resp.status_code == 422  # limit musi być >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_twenty_year_window_is_servable(wired: tuple[AsyncClient, MarketDataService]):
+    """The read ceiling must cover the longest window anyone actually asks for.
+
+    It did not. ml-pipeline accepted limits up to 10_000 while this route
+    stopped at 5_000, so a 20-year training request (5040 sessions + 253
+    warm-up bars = 5293) was rejected here with a 422 — and only after the
+    campaign had backfilled 455 symbols. The number below is that request.
+    """
+    client, _ = wired
+    resp = await client.get("/api/v1/market-data/ohlcv/AAPL", params={"limit": 20 * 252 + 253})
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_the_read_ceiling_is_the_shared_one(wired: tuple[AsyncClient, MarketDataService]):
+    """Both sides of the ceiling, pinned to the shared constant.
+
+    A local literal here is exactly how the mismatch happened: this route is
+    the SERVER side of a limit that callers declare for themselves.
+    """
+    client, _ = wired
+    resp = await client.get("/api/v1/market-data/ohlcv/AAPL", params={"limit": MAX_OHLCV_LIMIT})
+    assert resp.status_code == 200
+    resp = await client.get("/api/v1/market-data/ohlcv/AAPL", params={"limit": MAX_OHLCV_LIMIT + 1})
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

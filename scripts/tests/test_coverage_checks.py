@@ -12,6 +12,7 @@ import pathlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from trading_common.constants import MAX_OHLCV_LIMIT
 from trading_common.sectors import normalize_sector
 
 SPEC = importlib.util.spec_from_file_location(
@@ -140,6 +141,21 @@ def test_train_limit_follows_the_requested_history():
     assert boot.default_train_limit(0.5) == boot.MIN_SESSIONS_FOR_TRAINING
     # ...nor above what the route accepts, which would just 422
     assert boot.default_train_limit(100.0) == boot.MAX_TRAIN_LIMIT
+
+
+def test_the_train_limit_ceiling_is_the_one_market_data_actually_serves():
+    """This clamp is only protective if it clamps to the RIGHT number.
+
+    It clamped to ml-pipeline's ceiling (10_000) while market-data's read route
+    stopped at 5_000, so a 20-year request — 5293, comfortably "under the
+    limit" — was accepted by the script, accepted by ml-pipeline, and refused
+    upstream after 455 symbols had been backfilled. The script is stdlib-only
+    and cannot import the constant at runtime; this test is where the two are
+    held together.
+    """
+    assert boot.MAX_TRAIN_LIMIT == MAX_OHLCV_LIMIT
+    # and the request the campaign actually sends has to fit under it
+    assert boot.default_train_limit(20.0) <= MAX_OHLCV_LIMIT
 
 
 def test_the_warmup_is_included_not_forgotten():

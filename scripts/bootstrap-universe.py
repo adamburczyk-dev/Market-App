@@ -143,7 +143,11 @@ DELISTED_CANDIDATES = [
 MIN_SESSIONS_FOR_TRAINING = 945  # holdout 126 + train 756 + test 63 (TrainingParams)
 SESSIONS_PER_YEAR = 252
 FEATURE_WARMUP_BARS = 253  # trading_common.features.FULL_HISTORY — the slowest feature
-MAX_TRAIN_LIMIT = 10_000  # the route's ceiling (TrainRequest.limit)
+# trading_common.constants.MAX_OHLCV_LIMIT — the SHARED ceiling honoured by
+# market-data's read route and by ml-pipeline's TrainRequest. This script is
+# stdlib-only (it runs on the operator's machine, outside the containers), so
+# it cannot import the constant; scripts/tests pins the two values equal.
+MAX_TRAIN_LIMIT = 10_000
 
 
 def split_symbols(raw: str) -> list[str]:
@@ -183,10 +187,20 @@ def _request(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
+        # Keep whatever the service said, in whatever form it said it. An
+        # unhandled exception comes back as Starlette's PLAIN-TEXT body, and
+        # discarding it turned six different failures into six identical
+        # "HTTP 500: {}" lines in the report — the one place that was supposed
+        # to explain the run.
+        raw = exc.read() or b""
         try:
-            body = json.loads(exc.read() or b"{}")
+            body = json.loads(raw or b"{}")
         except json.JSONDecodeError:
-            body = {}
+            body = {"detail": raw.decode("utf-8", "replace").strip()}
+        if not isinstance(body, dict):
+            body = {"detail": body}
+        if not body:
+            body = {"detail": "<empty body — unhandled exception, see service logs>"}
         return exc.code, body
 
 

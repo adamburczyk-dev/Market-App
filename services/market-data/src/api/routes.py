@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime, time
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from trading_common.constants import DEFAULT_SYMBOLS
+from trading_common.constants import DEFAULT_SYMBOLS, MAX_OHLCV_LIMIT
 from trading_common.schemas import Interval, OHLCVBar
 
 from src.api.deps import get_service
@@ -28,10 +28,15 @@ async def get_ohlcv(
     interval: Interval = Interval.D1,
     start_date: date | None = None,
     end_date: date | None = None,
-    limit: int = Query(default=500, ge=1, le=5000),
+    limit: int = Query(default=500, ge=1, le=MAX_OHLCV_LIMIT),
     service: MarketDataService = Depends(get_service),
 ) -> list[OHLCVBar]:
-    """Return stored OHLCV bars for a symbol (chronological order)."""
+    """Return stored OHLCV bars for a symbol (chronological order).
+
+    The ceiling comes from trading-common, not from a local literal: this route
+    is the SERVER side of a limit that callers declare independently, and the
+    two drifting apart is invisible until someone asks for the longest window.
+    """
     start = _start_of_day(start_date) if start_date else None
     end = _end_of_day(end_date) if end_date else None
     return await service.get_ohlcv(symbol.upper(), interval, start, end, limit)

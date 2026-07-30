@@ -362,8 +362,10 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
     sector-neutral ranks planned in the prediction plan (P2-2).
   - **FLOW-9** no written criterion for moving from paper to real capital beyond "30 days positive
     Sharpe" — needs the full checklist (max drawdown observed, fill realism, breaker rehearsal).
-  - **Circuit breaker does not latch**: BLACK auto-clears when the metric recovers. A real system
-    requires a manual reset out of BLACK.
+  - [✅ done 2026-07-30] ~~**Circuit breaker does not latch**~~: BLACK now latches until a human
+    clears it (`POST /circuit-breaker/reset`, refused while the breach still stands) and RED holds
+    for the rest of the session instead of lifting on an intraday bounce; the latch is persisted,
+    so a container restart is no longer a way to satisfy "require human restart".
   - **D7** the backtest engine still rebalances daily while ML evaluation uses `1/h` overlapping
     tranches — the two are not comparable until the engine gets tranches too.
 - [P1 ✅ done 2026-07-07] **R1 resolved as (a)** — the signal-aggregator is the **decision node**:
@@ -1666,6 +1668,43 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   wraca świadomy strefy, wznowienie pyta o 6 dni zamiast o całą historię, split wymusza naprawę
   sięgającą do 2012-11-20 (czyli do początku danych) i **zero barów zostaje na starej skali**,
   a jeden zepsuty symbol nie przerywa uniwersum.
+
+- 2026-07-30 — **Kampania pomiarowa u użytkownika: cztery usterki wyszły dopiero na realnym biegu.**
+  Kolejno, tak jak wychodziły. **(1) Kontrakt danych odrzucał zdrowy zbiór** (1450 sesji + 63
+  purge = 1513 wobec 1512 pobranych świec) — porównanie było o jeden zbyt ostre, a strażnik
+  ucięcia sam się unieważniał; przy okazji `--symbols A,B,C` z PowerShella dociera jako JEDEN token
+  „A B C", więc `split_symbols` przyjmuje teraz przecinki **albo** białe znaki (separator zależny od
+  pamiętania o cudzysłowach to pułapka, nie interfejs). **(2) ml-pipeline stawał się `unhealthy`
+  podczas `capacity-probe`**: trasy liczące minutami trzymały pętlę zdarzeń, więc `/health` nie
+  odpowiadał w budżecie 10 s × 3 — ciężka praca poszła do `asyncio.to_thread`, a healthcheck dostał
+  realistyczny budżet. **(3) Zatrzask wyłącznika** (patrz „Known issues" wyżej): BLACK trzyma do
+  ręcznego resetu, RED do końca sesji, jedno i drugie utrwalone — restart kontenera przestał być
+  najprostszym obejściem reguły „require human restart". **(4) Dzisiejsza, najkosztowniejsza:
+  wszystkie badania i trening zwróciły `HTTP 500: {}`.** Przyczyna: pułap `limit` zadeklarowany
+  **dwa razy w dwóch wartościach** — ml-pipeline przyjmował `le=10_000`, market-data wydawał
+  `le=5000`, a żądanie 20 lat (5040 sesji + 253 rozgrzewki = **5293**) leżało dokładnie pomiędzy,
+  więc padło dopiero po zbackfillowaniu 455 symboli. Teraz jedna wspólna stała
+  **`trading_common.constants.MAX_OHLCV_LIMIT`**, czytana przez route market-daty, `TrainRequest`
+  ml-pipeline i oba modele żądań backtestu; skrypt bootstrapu jest świadomie stdlib-only (biegnie
+  poza kontenerami), więc równość `MAX_TRAIN_LIMIT == MAX_OHLCV_LIMIT` pinuje test w
+  `scripts/tests`. **Drugi defekt tego samego zdarzenia kosztował więcej niż pierwszy**: trasy
+  ml-pipeline mapowały tylko `RuntimeError`/`ValueError`, więc `httpx.HTTPStatusError` uciekał jako
+  **pusty** 500 (Starlette odpowiada zwykłym tekstem) i sześć różnych awarii wyglądało w raporcie
+  identycznie; wspólny `_mapped_errors` daje teraz **502 z nazwą upstreamu, jego statusu i URL-a**,
+  500 z nazwą typu dla nieprzewidzianych, i zachowuje 422 kontraktu danych / 503 / 400. Do tego
+  `_request` w skrypcie **wyrzucał** ciało odpowiedzi, gdy nie było JSON-em — stąd dosłowne `{}`;
+  teraz zachowuje tekst, a puste ciało nazywa wprost. **Znalezione przy okazji**: job `test-scripts`
+  w CI instalował wyłącznie `pytest`, podczas gdy testy skryptów importują `trading_common` —
+  wywracał się na **zbieraniu** testów, niewidocznie, bo CI nie biegnie na gałęziach `claude/*`.
+  Liczniki: market-data 67 (+2), ml-pipeline 305 (+8), scripts 26 (+1), reszta bez zmian →
+  **bateria 1200**; ruff + format + mypy (`--strict` na shared) czyste. Kontrola anty-szczęściowa:
+  po cofnięciu stałej do 5000 nowe testy padają po obu stronach dokładnie tym 422.
+  **Zweryfikowane na żywo (10/10)**: realna market-data (własny lifespan, silnik sqlite; route'y,
+  repozytorium, cache produkcyjne) na uvicornie + **realny `HttpMarketDataClient` ml-pipeline**
+  wyciąga 5293 świece z URL-a z tracebacku użytkownika, a `MAX_OHLCV_LIMIT + 1` nadal dostaje 422;
+  realny ml-pipeline (na realnym `nats-server`) nad upstreamem odpowiadającym 422 zwraca
+  `502: upstream 422 from http://…/ohlcv/AMZN?interval=1d&limit=5293` — czyli to, co powinno było
+  stać w raporcie zamiast `HTTP 500: {}`.
 
 **Next (2026-07-30): kod toru predykcji jest skończony — projekt jest zablokowany na POMIARZE.**
 Etapy E0–E5 zaimplementowane; nie ma sensownego następnego zadania programistycznego, bo każda
