@@ -1921,3 +1921,20 @@ When modifying or creating code, verify:
 - [ ] New strategy: has `StrategyDecayMonitor` integration and OOS walk-forward validation
 - [ ] ML model: has `DriftDetector` integration with daily PSI check
 - [ ] Trade signals: filtered through `CostAwareFilter` before execution
+
+### Instrukcje dla człowieka podlegają tej samej weryfikacji co kod
+
+Komenda albo nazwa podana użytkownikowi jest **twierdzeniem o repozytorium**, nie prozą. Kod bywał
+przetestowany, a instrukcja obok niego pisana z pamięci — i to ona zawodziła. Zanim wyślesz:
+
+- [ ] Każdy literał sprawdzony w źródle, nie z pamięci: nazwy wolumenów i projektu Compose
+      (`name:` w `infrastructure/docker-compose.yml` — projekt to **`trading-system`**, NIE nazwa
+      katalogu), serwisów, ścieżek, zmiennych środowiskowych
+- [ ] Każda flaga potwierdzona przez `--help`, nie z pamięci
+- [ ] Runbook przejrzany krok po kroku względem `Makefile` / `make.ps1` — czy nic nie wypadło
+      (np. `build` przed `up`)
+- [ ] Składnia powłoki dobrana do platformy użytkownika. Windows PowerShell 5.1 **nie zna** `||`
+      ani `&&`, a `2>/dev/null` to `2>$null`; `make.ps1` przyjmuje flagi wprost, bez `ARGS="…"`
+- [ ] Najgroźniejsza klasa błędu: instrukcja, która **nie wywala się głośno, tylko po cichu nic nie
+      robi** (zły `docker volume rm` → „no such volume" → pułapka wygląda na rozbrojoną). Przy
+      komendach czyszczących pokaż, jak sprawdzić, że zadziałały
