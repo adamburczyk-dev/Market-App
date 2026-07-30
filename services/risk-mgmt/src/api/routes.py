@@ -1,5 +1,5 @@
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from trading_common.events import SignalGeneratedEvent
 
@@ -30,7 +30,17 @@ class SignalInput(BaseModel):
 
 def _breaker_view(service: RiskMgmtService) -> dict:
     level = service.breaker.level
-    return {"level": level.value if level else None, "tripped": service.breaker.is_tripped}
+    halted = service.breaker.halted_session
+    return {
+        "level": level.value if level else None,
+        "tripped": service.breaker.is_tripped,
+        # A latched BLACK is held open pending a human reset; a halted session
+        # is held for the rest of that day. Both are invisible in `level` alone,
+        # and an operator staring at a halt needs to know WHICH rule holds it
+        # and what clears it.
+        "latched": service.breaker.latched,
+        "halted_session": halted.isoformat() if halted else None,
+    }
 
 
 @router.get("/portfolio")
@@ -61,6 +71,22 @@ async def update_portfolio(
 @router.get("/circuit-breaker")
 async def circuit_breaker(service: RiskMgmtService = Depends(get_service)) -> dict:
     return _breaker_view(service)
+
+
+@router.post("/circuit-breaker/reset")
+async def reset_circuit_breaker(service: RiskMgmtService = Depends(get_service)) -> dict:
+    """The human restart the >15% drawdown rule requires.
+
+    Refused while the drawdown is still at or past the flatten threshold: the
+    reset acknowledges a recovery, it does not perform one, and clearing the
+    latch mid-breach would let new orders through at the worst possible moment.
+    Returns 409 in that case — the operator has to reduce exposure first.
+    """
+    result = await service.reset_breaker()
+    if not result.cleared:
+        raise HTTPException(status_code=409, detail=result.reason)
+    logger.warning("Circuit breaker reset by operator", level_after=result.level)
+    return {"cleared": True, "circuit_breaker": _breaker_view(service), "reason": result.reason}
 
 
 @router.post("/signal")

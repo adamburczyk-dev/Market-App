@@ -16,7 +16,7 @@ from trading_common.events import (
     SignalGeneratedEvent,
 )
 
-from src.core.circuit_breaker import CircuitBreaker
+from src.core.circuit_breaker import CircuitBreaker, ResetResult
 from src.core.order_ledger import OrderLedger, session_of
 from src.core.portfolio import PortfolioState
 from src.core.repository import NullStateRepository, StateRepository
@@ -204,6 +204,18 @@ class RiskMgmtService:
         await self._publisher.publish(order)
         logger.info("Order requested", symbol=symbol, side=side, quantity=shares)
         return order
+
+    async def reset_breaker(self) -> ResetResult:
+        """Human clears a latched BLACK, and the cleared latch is persisted.
+
+        Persisting matters as much as the clearing: the latch survives restarts
+        by design, so a reset that lived only in memory would be undone by the
+        next container restart and the operator would find the halt back.
+        """
+        result = self._breaker.reset(self._portfolio.drawdown_pct, self._portfolio.daily_loss_pct)
+        if result.cleared:
+            await self._repository.save(self._snapshot())
+        return result
 
     async def update_portfolio(
         self,

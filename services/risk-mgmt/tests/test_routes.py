@@ -61,3 +61,32 @@ async def test_process_signal_hold_returns_no_order(wired: tuple[AsyncClient, Ri
     )
     assert resp.status_code == 200
     assert resp.json()["order"] is None
+
+
+@pytest.mark.asyncio
+async def test_reset_route_clears_a_latched_breaker(wired):
+    client, service = wired
+    await service.update_portfolio(drawdown_pct=0.16)
+    assert (await client.get("/api/v1/risk-mgmt/circuit-breaker")).json()["latched"] is True
+
+    # refused while the breach still stands — 409, not a silent no-op
+    refused = await client.post("/api/v1/risk-mgmt/circuit-breaker/reset")
+    assert refused.status_code == 409
+    assert "reduce exposure" in refused.json()["detail"]
+
+    await service.update_portfolio(drawdown_pct=0.04)
+    ok = await client.post("/api/v1/risk-mgmt/circuit-breaker/reset")
+    assert ok.status_code == 200
+    assert ok.json()["circuit_breaker"]["latched"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_breaker_view_names_what_is_holding_the_halt(wired):
+    """`level` alone does not tell an operator whether a halt needs a human or
+    just needs tomorrow."""
+    client, service = wired
+    await service.update_portfolio(daily_loss_pct=0.06)
+    view = (await client.get("/api/v1/risk-mgmt/circuit-breaker")).json()
+    assert view["level"] == "red"
+    assert view["latched"] is False
+    assert view["halted_session"] is not None
