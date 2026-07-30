@@ -8,6 +8,7 @@ import pytest
 from trading_common.scheduler import (
     SECONDS_PER_WEEK,
     PeriodicTask,
+    seconds_until_hour,
     seconds_until_weekday_hour,
 )
 
@@ -116,3 +117,24 @@ async def test_start_twice_keeps_one_loop():
     await asyncio.sleep(0.03)
     await task.stop()
     assert fired == 1
+
+
+# --- seconds_until_hour (daily alignment) ---
+
+
+def test_daily_alignment_targets_the_next_occurrence_of_the_hour():
+    """A market-data pull has to land after the exchange closes. Firing "24h
+    after the container started" would drift into the middle of a session."""
+    now = datetime(2026, 7, 30, 14, 30, tzinfo=UTC)
+    assert seconds_until_hour(now, 23) == pytest.approx(8.5 * 3600)
+
+
+def test_daily_alignment_rolls_over_midnight():
+    now = datetime(2026, 7, 30, 23, 30, tzinfo=UTC)
+    assert seconds_until_hour(now, 6) == pytest.approx(6.5 * 3600)
+
+
+def test_exactly_on_the_hour_waits_for_tomorrow():
+    """A job started at its own fire time must not double-fire."""
+    now = datetime(2026, 7, 30, 23, 0, tzinfo=UTC)
+    assert seconds_until_hour(now, 23) == pytest.approx(24 * 3600)

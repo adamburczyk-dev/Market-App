@@ -68,3 +68,48 @@ async def test_unexpected_failure_names_its_cause(wired: tuple[AsyncClient, Mark
     detail = resp.json()["detail"]
     assert "RuntimeError" in detail
     assert 'relation "ohlcv" does not exist' in detail
+
+
+@pytest.mark.asyncio
+async def test_sync_endpoint_runs_the_incremental_pull(
+    wired: tuple[AsyncClient, MarketDataService],
+):
+    client, _ = wired
+    resp = await client.post("/api/v1/market-data/sync?symbols=AAPL,MSFT")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["symbols"] == 2
+    assert body["synced"] == 2
+    assert body["rows"] > 0
+
+
+@pytest.mark.asyncio
+async def test_sync_without_symbols_refuses_rather_than_inventing_a_universe(
+    wired: tuple[AsyncClient, MarketDataService],
+):
+    """FETCH_SYMBOLS is empty in tests. Falling back to a default list here
+    would have the scheduler quietly pulling names nobody asked for."""
+    client, _ = wired
+    resp = await client.post("/api/v1/market-data/sync")
+    assert resp.status_code == 400
+    assert "FETCH_SYMBOLS" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_sync_status_reports_staleness_per_symbol(
+    wired: tuple[AsyncClient, MarketDataService],
+):
+    """A scheduler that silently stopped looks exactly like one that ran and
+    found nothing — until a feature window comes up short weeks later."""
+    client, _ = wired
+    await client.post("/api/v1/market-data/sync?symbols=AAPL")
+
+    resp = await client.get("/api/v1/market-data/sync/status?symbols=AAPL,NEVERFETCHED")
+    assert resp.status_code == 200
+    body = resp.json()
+    by_symbol = {e["symbol"]: e for e in body["symbols"]}
+    assert by_symbol["AAPL"]["latest"] is not None
+    assert by_symbol["NEVERFETCHED"]["latest"] is None
+    # the 2024 fixture bars are years old, and a symbol we hold nothing for is
+    # stale by definition — both must be named
+    assert set(body["stale"]) == {"AAPL", "NEVERFETCHED"}

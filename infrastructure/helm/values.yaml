@@ -32,6 +32,16 @@ services:
       DB_HOST: postgres
       DB_NAME: trading_db
       DB_USER: trader
+      # Scheduled incremental pull — the root of the event chain: every other
+      # service reacts to market_data.updated. An empty FETCH_SYMBOLS leaves the
+      # job down and nothing downstream is ever driven. Each run resumes from
+      # the newest stored bar, so a missed day is repaired, not lost.
+      # Keep replicaCount at 1 — PeriodicTask runs per replica.
+      SCHEDULE_FETCH_ENABLED: "true"
+      FETCH_SYMBOLS: ""
+      FETCH_AT_HOUR_UTC: "23"
+      FETCH_OVERLAP_DAYS: "5"
+      FETCH_INITIAL_HISTORY_DAYS: "2190"
 
   feature-engine:
     enabled: true

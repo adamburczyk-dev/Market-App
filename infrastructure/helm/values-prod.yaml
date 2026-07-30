@@ -11,7 +11,12 @@ global:
 
 services:
   market-data:
-    replicaCount: 2   # producer + HTTP API, no event subscription
+    # Was 2 ("producer + HTTP API, no event subscription"). It now runs the
+    # scheduled incremental pull, and PeriodicTask has single-replica semantics
+    # — every replica would keep its own schedule and hammer the provider N
+    # times for the same bars. Same constraint the push-consumer services are
+    # under; raising this needs leader election first.
+    replicaCount: 1
     env:
       LOG_LEVEL: WARNING
   feature-engine:

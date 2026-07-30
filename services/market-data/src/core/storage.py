@@ -1,15 +1,48 @@
 """Async persistence layer for OHLCV bars."""
 
+from collections.abc import Iterator
 from datetime import datetime
+from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from trading_common.schemas import Interval, OHLCVBar
+from trading_common.timeutil import as_utc
 
 from src.models.db import OHLCVRow
 
 logger = structlog.get_logger()
+
+# Everything except the primary key and the DB-owned created_at. A re-fetch
+# must be able to correct a bar (providers restate them, and adj_close changes
+# retroactively on every split and dividend).
+_MUTABLE_COLUMNS = ("open", "high", "low", "close", "volume", "adj_close", "source")
+# Postgres caps a statement at 65535 bind parameters; 10 columns per row leaves
+# plenty of headroom at this size while keeping the round-trip count low.
+_UPSERT_CHUNK = 2_000
+
+
+def _chunks(bars: list[OHLCVBar], size: int) -> Iterator[list[OHLCVBar]]:
+    for start in range(0, len(bars), size):
+        yield bars[start : start + size]
+
+
+def _to_values(bar: OHLCVBar) -> dict[str, Any]:
+    return {
+        "symbol": bar.symbol,
+        "interval": bar.interval.value,
+        "ts": bar.timestamp,
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "volume": bar.volume,
+        "adj_close": bar.adj_close,
+        "source": bar.source,
+    }
 
 
 def _to_row(bar: OHLCVBar) -> OHLCVRow:
@@ -30,7 +63,12 @@ def _to_row(bar: OHLCVBar) -> OHLCVRow:
 def _to_bar(row: OHLCVRow) -> OHLCVBar:
     return OHLCVBar(
         symbol=row.symbol,
-        timestamp=row.ts,
+        # Aware on the way out, whatever the backend. sqlite hands back naive
+        # timestamps, and a naive/aware mismatch here does not raise — it makes
+        # dict lookups by timestamp silently miss, which is how the corporate-
+        # action check first reported "no drift" on a history that had been
+        # restated.
+        timestamp=as_utc(row.ts),
         interval=Interval(row.interval),
         open=row.open,
         high=row.high,
@@ -51,18 +89,71 @@ class OHLCVRepository:
     async def save_bars(self, bars: list[OHLCVBar]) -> int:
         """Idempotently persist bars. Returns number of bars written.
 
-        Uses ``session.merge`` (upsert by primary key) so re-fetching the same
-        window does not create duplicates. For very large batches a bulk
-        ``ON CONFLICT`` insert would be faster — left as a future optimization.
+        Bulk ``ON CONFLICT DO UPDATE`` on the natural key (symbol, interval, ts),
+        chunked. The previous implementation called ``session.merge`` once per
+        bar, and merge issues a SELECT before deciding to INSERT or UPDATE — so
+        a 486-symbol, 20-year backfill meant roughly 2.4 million round trips.
+
+        ``created_at`` is deliberately absent from both the insert and the
+        update: the database owns it (server default), and re-fetching a window
+        must not rewrite when a bar was first seen.
         """
         if not bars:
             return 0
         async with self._sessionmaker() as session:
-            for bar in bars:
-                await session.merge(_to_row(bar))
+            dialect = session.bind.dialect.name if session.bind is not None else ""
+            insert = pg_insert if dialect == "postgresql" else sqlite_insert
+            for chunk in _chunks(bars, _UPSERT_CHUNK):
+                statement = insert(OHLCVRow).values([_to_values(bar) for bar in chunk])
+                await session.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=["symbol", "interval", "ts"],
+                        set_={
+                            column: getattr(statement.excluded, column)
+                            for column in _MUTABLE_COLUMNS
+                        },
+                    )
+                )
             await session.commit()
         logger.info("Saved OHLCV bars", count=len(bars), symbol=bars[0].symbol)
         return len(bars)
+
+    async def earliest_timestamp(self, symbol: str, interval: Interval) -> datetime | None:
+        """Oldest stored bar — how far back a repair has to reach.
+
+        A corporate action restates the WHOLE history, so re-fetching a default
+        window would leave everything older than it on the pre-event scale. With
+        a 20-year backfill and a 6-year default that is 14 silent years.
+        """
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(func.min(OHLCVRow.ts)).where(
+                    OHLCVRow.symbol == symbol,
+                    OHLCVRow.interval == interval.value,
+                )
+            )
+            earliest = result.scalar_one_or_none()
+        return as_utc(earliest) if earliest is not None else None
+
+    async def latest_timestamp(self, symbol: str, interval: Interval) -> datetime | None:
+        """Newest stored bar for a symbol, or None when we hold nothing.
+
+        This is what makes the scheduled pull resume from where it stopped
+        rather than assuming it ran yesterday — after a week of downtime the
+        gap is a week, and the service has to be able to see that.
+        """
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(func.max(OHLCVRow.ts)).where(
+                    OHLCVRow.symbol == symbol,
+                    OHLCVRow.interval == interval.value,
+                )
+            )
+            latest = result.scalar_one_or_none()
+        # Postgres TIMESTAMPTZ returns aware, sqlite returns naive — comparing
+        # the two raises TypeError, so the caller would work on one backend and
+        # crash on the other. Normalize where the difference originates.
+        return as_utc(latest) if latest is not None else None
 
     async def get_bars(
         self,

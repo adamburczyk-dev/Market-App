@@ -150,6 +150,16 @@ services:
       NATS_URL: nats://nats:4222
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
+      # Scheduled incremental pull. market-data is the root of the event chain,
+      # so with FETCH_SYMBOLS empty nothing downstream ever wakes up on its own.
+      # Each run resumes from the newest stored bar, so a missed day is repaired
+      # rather than lost.
+      SCHEDULE_FETCH_ENABLED: ${SCHEDULE_FETCH_ENABLED:-true}
+      FETCH_SYMBOLS: ${FETCH_SYMBOLS:-}
+      FETCH_AT_HOUR_UTC: ${FETCH_AT_HOUR_UTC:-23}
+      FETCH_OVERLAP_DAYS: ${FETCH_OVERLAP_DAYS:-5}
+      FETCH_INITIAL_HISTORY_DAYS: ${FETCH_INITIAL_HISTORY_DAYS:-2190}
+      FETCH_SYMBOL_PAUSE_S: ${FETCH_SYMBOL_PAUSE_S:-1.0}
     ports:
       - "8001:8000"
     depends_on:

@@ -40,6 +40,34 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_FETCHES: int = 5
     CACHE_TTL_SECONDS: int = 3600
 
+    # --- Scheduled incremental pull -------------------------------------
+    # market-data is the root of the event chain: every downstream service
+    # reacts to market_data.updated. Without this the system cannot run a
+    # single day unattended, which is what the "30 days of paper trading"
+    # rule requires before any real capital.
+    SCHEDULE_FETCH_ENABLED: bool = True
+    # Comma-separated. Empty = nothing to pull, and the job stays down rather
+    # than inventing a universe.
+    FETCH_SYMBOLS: str = ""
+    # Hour (UTC) to run at. 23:00 is after the US close, so the session that
+    # just ended is available. Firing "24h after the container started" would
+    # drift into the middle of a session.
+    FETCH_AT_HOUR_UTC: int = 23
+    FETCH_INTERVAL_S: float = 86_400.0
+    # Re-request this many days before the newest stored bar. Cheap (the upsert
+    # is idempotent) and it is what makes a restated adj_close detectable.
+    FETCH_OVERLAP_DAYS: int = 5
+    # Used only for a symbol we hold nothing for.
+    FETCH_INITIAL_HISTORY_DAYS: int = 365 * 6
+    FETCH_SYMBOL_PAUSE_S: float = 1.0
+    # Weekends are skipped: a gap-based pull on a closed day just returns
+    # nothing. Exchange holidays are not modelled — same harmless outcome.
+    FETCH_SKIP_WEEKENDS: bool = True
+
+    @property
+    def fetch_symbols(self) -> list[str]:
+        return [s.strip().upper() for s in self.FETCH_SYMBOLS.split(",") if s.strip()]
+
     model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}
 
 

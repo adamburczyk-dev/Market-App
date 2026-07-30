@@ -1,16 +1,20 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 
 import nats
 import redis.asyncio as aredis
 import structlog
 from fastapi import FastAPI
 from sqlalchemy import text
+from trading_common.scheduler import PeriodicTask, seconds_until_hour
+from trading_common.schemas import Interval
 
 from src.api import router as api_router
 from src.config import settings
 from src.core.cache import Cache, InMemoryCache, RedisCache
 from src.core.fetchers import build_default_fetcher
+from src.core.incremental import is_weekend
 from src.core.observability import setup_observability
 from src.core.service import MarketDataService
 from src.core.storage import OHLCVRepository
@@ -67,7 +71,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         nats_client = None
 
     fetcher = build_default_fetcher(settings)
-    app.state.service = MarketDataService(fetcher, repository, cache, publisher)
+    service = MarketDataService(fetcher, repository, cache, publisher)
+    app.state.service = service
+
+    scheduler: PeriodicTask | None = None
+    fetch_symbols = settings.fetch_symbols
+    if settings.SCHEDULE_FETCH_ENABLED and fetch_symbols:
+
+        async def _sync_job() -> None:
+            now = datetime.now(UTC)
+            if settings.FETCH_SKIP_WEEKENDS and is_weekend(now):
+                logger.info("Scheduled pull skipped — weekend", at=now.isoformat())
+                return
+            await service.sync_universe(
+                fetch_symbols,
+                Interval(settings.DEFAULT_FETCH_INTERVAL),
+                pause_s=settings.FETCH_SYMBOL_PAUSE_S,
+                now=now,
+                overlap_days=settings.FETCH_OVERLAP_DAYS,
+                initial_history_days=settings.FETCH_INITIAL_HISTORY_DAYS,
+            )
+
+        scheduler = PeriodicTask(
+            "market-data-sync",
+            interval_s=settings.FETCH_INTERVAL_S,
+            job=_sync_job,
+            # Align to the configured hour so the first run lands after a close,
+            # not wherever the container happened to start.
+            initial_delay_s=seconds_until_hour(datetime.now(UTC), settings.FETCH_AT_HOUR_UTC),
+        )
+        scheduler.start()
+    elif settings.SCHEDULE_FETCH_ENABLED:
+        logger.info("Scheduled pull idle — set FETCH_SYMBOLS to enable it")
 
     async def _readiness() -> tuple[bool, dict[str, bool]]:
         checks: dict[str, bool] = {}
@@ -94,6 +129,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
+    if scheduler is not None:
+        await scheduler.stop()
     if nats_client is not None:
         with suppress(Exception):
             await nats_client.drain()

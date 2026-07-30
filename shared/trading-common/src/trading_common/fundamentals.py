@@ -21,6 +21,10 @@ from datetime import UTC, date, datetime, time
 
 from trading_common.schemas import FinancialStatements
 
+# Re-exported: `as_utc` started here, but it is a plain storage-boundary helper
+# and market-data needs the same rule. One definition, two importers.
+from trading_common.timeutil import as_utc
+
 
 def fundamental_features(statement: FinancialStatements) -> dict[str, float]:
     """Scale-free ratios (plus the F-score) from one filing.
@@ -57,19 +61,6 @@ def session_cutoff(day: date) -> datetime:
     of hindsight is the classic way a fundamentals backtest lies.
     """
     return datetime.combine(day, time.min, tzinfo=UTC)
-
-
-def as_utc(moment: datetime) -> datetime:
-    """Treat a naive timestamp as UTC.
-
-    Not cosmetic: `filed_at` reaches this rule from a Postgres TIMESTAMPTZ
-    (aware), from sqlite (naive — the driver drops the zone), and from a
-    hand-posted statement (either). Comparing a naive to an aware datetime
-    raises TypeError, so without this the point-in-time join would crash on one
-    backend and work on another. UTC is the right assumption: every producer in
-    this system writes UTC.
-    """
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 def _filing_order(statement: FinancialStatements) -> tuple[datetime, date]:

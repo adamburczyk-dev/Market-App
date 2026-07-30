@@ -6,6 +6,7 @@ from trading_common.constants import DEFAULT_SYMBOLS
 from trading_common.schemas import Interval, OHLCVBar
 
 from src.api.deps import get_service
+from src.config import settings
 from src.core.fetchers.base import FetchError
 from src.core.service import MarketDataService
 
@@ -60,6 +61,76 @@ async def trigger_fetch(
         logger.exception("Fetch-and-store failed", symbol=symbol, interval=interval.value)
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     return {"status": "ok", "symbol": symbol.upper(), "interval": interval.value, "rows": rows}
+
+
+@router.post("/sync")
+async def trigger_sync(
+    symbols: str | None = Query(default=None, description="CSV; defaults to FETCH_SYMBOLS"),
+    interval: Interval = Interval.D1,
+    service: MarketDataService = Depends(get_service),
+) -> dict:
+    """Run the incremental pull now — the same job the scheduler runs.
+
+    Each symbol resumes from its newest stored bar, so this is also the repair
+    button after downtime: the gap is whatever it is, and one call closes it.
+    """
+    wanted = (
+        [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        if symbols
+        else settings.fetch_symbols
+    )
+    if not wanted:
+        raise HTTPException(
+            status_code=400,
+            detail="no symbols: pass ?symbols=AAPL,MSFT or configure FETCH_SYMBOLS",
+        )
+    try:
+        return await service.sync_universe(
+            wanted,
+            interval,
+            pause_s=settings.FETCH_SYMBOL_PAUSE_S,
+            overlap_days=settings.FETCH_OVERLAP_DAYS,
+            initial_history_days=settings.FETCH_INITIAL_HISTORY_DAYS,
+        )
+    except Exception as exc:
+        logger.exception("Sync failed", symbols=len(wanted))
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@router.get("/sync/status")
+async def sync_status(
+    symbols: str | None = Query(default=None, description="CSV; defaults to FETCH_SYMBOLS"),
+    interval: Interval = Interval.D1,
+    service: MarketDataService = Depends(get_service),
+) -> dict:
+    """How stale each symbol is — the answer to "did the schedule actually run".
+
+    A scheduler that silently stopped looks exactly like one that ran and found
+    nothing, until a feature window comes up short weeks later.
+    """
+    wanted = (
+        [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        if symbols
+        else settings.fetch_symbols
+    )
+    now = datetime.now(UTC)
+    entries = []
+    for symbol in wanted:
+        latest = await service.latest_timestamp(symbol, interval)
+        entries.append(
+            {
+                "symbol": symbol,
+                "latest": latest.isoformat() if latest else None,
+                "age_days": round((now - latest).total_seconds() / 86_400, 2) if latest else None,
+            }
+        )
+    stale = [e for e in entries if e["latest"] is None or float(e["age_days"] or 0) > 5]
+    return {
+        "as_of": now.isoformat(),
+        "scheduled": settings.SCHEDULE_FETCH_ENABLED and bool(settings.fetch_symbols),
+        "symbols": entries,
+        "stale": [e["symbol"] for e in stale],
+    }
 
 
 @router.get("/symbols")

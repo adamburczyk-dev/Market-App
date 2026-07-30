@@ -1625,6 +1625,48 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   wynik **identycznie**. Badanie zaniku na tych danych (błądzenia losowe) poprawnie **odmawia**
   wskazania okresu trzymania: permutowany null daje |t| = 5.63, realne cechy maksymalnie 4.3.
 
+- 2026-07-30 — **market-data: harmonogram przyrostowy — silnik, którego system nie miał.**
+  Przegląd wszystkich 13 serwisów pokazał jedną lukę strukturalną: harmonogram miały backtest,
+  macro-data, fundamental-data i ml-pipeline — czyli wszystkie **oprócz źródła**. Cały łańcuch
+  zdarzeń jest zakotwiczony w `market_data.updated`, więc bez zadania cyklicznego w market-dacie
+  **system nie przepracowałby samodzielnie ani jednego dnia**, a reguła „30 dni papieru z dodatnim
+  Sharpe'em przed realnym kapitałem" nie ma jak zacząć się naliczać.
+  **Pobieranie wznawia się od ostatniej zapisanej świecy, nie od wczoraj** (wymaganie użytkownika):
+  `core/incremental.py` — `plan_fetch` liczy okno od najnowszego posiadanego baru minus zakładka,
+  więc tydzień przestoju naprawia się sam zamiast zostawić trwałą dziurę; nic innego w systemie
+  nigdy nie wraca do przeszłej sesji. **Najważniejsza część to jednak wykrywanie restatementu**:
+  `adj_close` nie jest własnością świecy, tylko świecy **plus wszystkich późniejszych zdarzeń
+  korporacyjnych**, więc po splicie dostawca przepisuje całą historię. Czysto przyrostowe
+  pobieranie zostawiłoby stare bary na przedsplitowej skali — seria wyglądałaby wiarygodnie i była
+  błędna dokładnie na złączeniu, a ponieważ cechy i etykiety liczą się na cenach skorygowanych
+  (P0-1), szkoda trafiłaby do modelu, nie do logu. Zakładka służy właśnie temu: `adjustment_drifted`
+  porównuje **współczynnik** `adj_close/close` dla dat obecnych po obu stronach i przy zmianie
+  wymusza pełne odświeżenie. **Defekt złapany na żywym Postgresie**: naprawa pobierała
+  `initial_history_days` (6 lat), a przy backfillu 20-letnim zostawiłoby to **14 lat na starej
+  skali** — okno naprawy sięga teraz po `earliest_timestamp`, czyli po wszystko, co trzymamy.
+  **Masowy upsert** zamiast `session.merge` per świeca (merge robi SELECT przed decyzją, więc
+  backfill 486 symboli × 20 lat to było ~2.4 mln round-tripów): zmierzone **5000 świec w 1.12 s**.
+  Do tego `POST /sync` (ten sam job ręcznie — przycisk naprawy po przestoju) i `GET /sync/status`
+  (staleness per symbol, bo harmonogram, który po cichu stanął, wygląda identycznie jak taki, który
+  zadziałał i nic nie znalazł). Wspólne: `seconds_until_hour` w `trading_common.scheduler` (dzienny
+  odpowiednik istniejącego tygodniowego — praca ma lądować po zamknięciu sesji, a nie 24 h po
+  starcie kontenera) oraz **`as_utc` przeniesione do `trading_common.timeutil`** i re-eksportowane
+  z `fundamentals` — drugi serwis potrzebował tej samej reguły granicy. Ta reguła wyłapała
+  **dwa błędy**: jawny `TypeError` przy porównaniu naiwnej daty z sqlite ze świadomą, i — groźniejszy
+  — **cichy**: dopasowanie świec po znaczniku czasu nigdy nie trafiało, więc wykrywanie splitu
+  zwracało „brak zmian" zamiast błędu. **Prod: `replicaCount` market-daty 2 → 1**, bo `PeriodicTask`
+  ma semantykę jednoreplikową i każda replika pobierałaby to samo osobno.
+  **Przy okazji, w Helmie: duplikat klucza `env:`** — market-data miał już taki blok niżej, więc
+  YAML zachował ostatni i po cichu wyrzucił całą nową konfigurację; `helm lint` przechodził, render
+  był „poprawny", efekt zerowy. Wykryte sprawdzeniem renderu, nie założeniem.
+  Liczniki: shared 236 (+3), market-data 65 (+33), fundamental-data 47 → **bateria 1141**;
+  ruff + format + mypy (`--strict` na shared) czyste; compose i `helm lint`/`template` (dev + prod)
+  zweryfikowane. **13/13 na prawdziwym PostgreSQL-u 16** ze schematem z `init-db.sql` (nie z echa
+  ORM-a): masowy upsert idempotentny, `created_at` nietknięte przez ponowny zapis, TIMESTAMPTZ
+  wraca świadomy strefy, wznowienie pyta o 6 dni zamiast o całą historię, split wymusza naprawę
+  sięgającą do 2012-11-20 (czyli do początku danych) i **zero barów zostaje na starej skali**,
+  a jeden zepsuty symbol nie przerywa uniwersum.
+
 **Next (2026-07-30): kod toru predykcji jest skończony — projekt jest zablokowany na POMIARZE.**
 Etapy E0–E5 zaimplementowane; nie ma sensownego następnego zadania programistycznego, bo każda
 pozostała decyzja jest bramkowana liczbami, których nie mamy (E3: próg wykrywalności IC; E4 i wejście

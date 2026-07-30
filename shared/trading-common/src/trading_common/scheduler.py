@@ -42,6 +42,22 @@ def seconds_until_weekday_hour(now: datetime, weekday: int, hour: int) -> float:
     return (candidate - now).total_seconds()
 
 
+def seconds_until_hour(now: datetime, hour: int) -> float:
+    """Seconds from ``now`` to the next ``hour``:00 in ``now``'s timezone.
+
+    The daily counterpart of ``seconds_until_weekday_hour``, for jobs that must
+    land at a particular time of day rather than on a weekday — a market-data
+    pull has to run after the exchange closes, and firing "24h after the
+    container happened to start" would drift into the middle of a session.
+    Exactly on the boundary yields tomorrow's occurrence, so a job started at
+    its own fire time does not double-fire.
+    """
+    candidate = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return (candidate - now).total_seconds()
+
+
 class PeriodicTask:
     """Run an async job every ``interval_s`` seconds.
 
