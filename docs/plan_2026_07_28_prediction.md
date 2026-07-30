@@ -424,30 +424,74 @@ koperty ryzyka: włączenie może pozycję tylko zmniejszyć, nigdy zwiększyć.
 
 ## 12. Kolejność wykonania i gdzie co biegnie
 
-| # | Zadania | Nakład | Gdzie |
+| # | Zadania | Nakład | Gdzie | Stan |
+|---|---|---|---|---|
+| 1 | P0-1 ceny skorygowane, P0-2 kontrola splitów | ~0.5 dnia | kod u mnie; ponowny backfill u Ciebie | ✅ zrobione (backfill 2026-07-28) |
+| 2 | P0-3 wagi unikalności, P0-4 raport per fold | ~0.5 dnia | u mnie | ✅ |
+| 3 | P1-1 kalibracja barier, P1-3 etykieta nadwyżkowa | ~0.5 dnia | u mnie | ✅ |
+| 4 | P1-2 eksperyment horyzontu (10/21/63) | 1 bieg | **u Ciebie** | ⏳ **czeka** |
+| 5 | P2-1 rodzina cech cenowych + `lookback`, P2-2 neutralizacja sektorowa | ~1 dzień | u mnie | ✅ |
+| 6 | Pomiar: czy nowe cechy podnoszą t-stat IC | 1 bieg | **u Ciebie** | ⏳ **czeka** |
+| 7 | P3-1/P3-2 uniwersum point-in-time + historia, P3-4 metryka względna | ~1–2 dni + długi backfill | kod u mnie, **backfill i trening u Ciebie** | kod ✅, ⏳ **backfill czeka** |
+| 8 | P4-1 GBDT, P4-2 ensembling, P4-4 CPCV | ~1–2 dni | u mnie | ✅ |
+| 9 | P2-3 fundamenty point-in-time (EDGAR `filed_at` + panel) | ~2 dni | u mnie; pobranie EDGAR **u Ciebie** | kod ✅, ⏳ **pobranie czeka** |
+| 10 | Etap 5 — meta-labeling, koszty, sizing, zanik alfy | ~2 dni | u mnie | ✅ (P5-1/P5-3 za bramką G1) |
+
+**Decyzje D1/D2/D3 podjęte 2026-07-28** (uniwersum rekonstruowane po obrocie, horyzont wybiera
+pomiar, metryka względna przy handlu long-only). Nic nie czeka na decyzję.
+
+### 12.1 Stan po E5: kod skończony, projekt zablokowany na POMIARZE
+
+Wszystkie etapy E0–E5 są zaimplementowane. **Nie ma sensownego następnego zadania programistycznego
+w torze predykcji**, bo każda pozostała decyzja jest bramkowana liczbami, których nie mamy:
+
+- bramka **E3** pyta, czy próg wykrywalności IC spadł poniżej 0.01 — to zależy od uniwersum, które
+  trzeba dopiero pobrać;
+- bramka **E4** pyta, czy najlepszy kandydat ma t-stat IC ≥ 2 — to wymaga realnego treningu;
+- warunek wejścia w **E5** (G1) jest tym samym warunkiem, i dlatego P5-1/P5-3 leżą wyłączone.
+
+Kluczowe: §10 tego planu mówi wprost, że na **34 mega-capach** spodziewane IC (0.00–0.02) leży
+**pod progiem wykrywalności (0.022)**. Trening na obecnych danych nie może odpowiedzieć na pytanie
+— odpowie „nie wiadomo", niezależnie od tego, czy przewaga istnieje. **Rozszerzenie uniwersum nie
+jest opcją, tylko warunkiem możliwości pomiaru.**
+
+### 12.2 Kampania pomiarowa — kolejność i uzasadnienie
+
+Kolejność nie jest dowolna: pomiary **model-free** idą pierwsze, bo nie dopasowują modelu, nie
+zużywają `n_trials` w deflated Sharpe (G5) i rozstrzygają wybory projektowe, które inaczej
+zgadywalibyśmy przed treningiem.
+
+| Krok | Komenda (`make bootstrap-universe ARGS="…"`) | Co rozstrzyga | Koszt |
 |---|---|---|---|
-| 1 | P0-1 ceny skorygowane, P0-2 kontrola splitów | ~0.5 dnia | kod u mnie; **ponowny backfill u Ciebie** (ceny w bazie są dziś niepełne) |
-| 2 | P0-3 wagi unikalności, P0-4 raport per fold | ~0.5 dnia | u mnie, weryfikacja na syntetyku |
-| 3 | P1-1 kalibracja barier, P1-3 etykieta nadwyżkowa | ~0.5 dnia | u mnie |
-| 4 | P1-2 eksperyment horyzontu (10/21/63) | 1 bieg | **u Ciebie** — to pomiar na realnych danych |
-| 5 | P2-1 rodzina cech cenowych + `lookback` po obu stronach, P2-2 neutralizacja sektorowa | ~1 dzień | u mnie |
-| 6 | Pomiar: czy nowe cechy podnoszą t-stat IC | 1 bieg | **u Ciebie** |
-| 7 | P3-1/P3-2 uniwersum point-in-time + historia od 2005, P3-4 metryka względna | ~1–2 dni + długi backfill | kod u mnie, **backfill i trening u Ciebie** (300 symboli × 20 lat to godziny pobierania) |
-| 8 | P4-1 GBDT, P4-2 ensembling, P4-4 CPCV | ~1–2 dni | u mnie |
-| 9 | P2-3 fundamenty point-in-time (EDGAR `filed_at` + panel historyczny) | ~2 dni | u mnie; pobranie EDGAR **u Ciebie** (sandbox nie ma egressu do SEC) |
-| 10 | Etap 5 — meta-labeling, koszty, sizing | ~2 dni | u mnie, po przejściu bramki E4 |
+| **1. Backfill** | `--years 20 --report-out reports/backfill.json` | 486 symboli × 20 lat. Wszystko dalej od tego zależy | **godziny** |
+| **2. Cel** | `--skip-backfill --target-study` | P1-2: horyzont 10/21/63 + szerokość barier | minuty |
+| **3. Sektory** | `--skip-backfill --sector-study` | P2-2: czy neutralizacja sektorowa podnosi dowody (mierzalne dopiero przy 455 nazwach) | minuty |
+| **4. Zanik** | `--skip-backfill --alpha-decay` | P5-4: okres trzymania + czy latencja wejścia boli | minuty |
+| **5. Koszty** | `--skip-backfill --cost-study --cost-aum <realny rozmiar>` | P5-2: przy jakiej wielkości księgi to jeszcze działa | minuty |
+| **6. Sonda** | `--skip-backfill --capacity-probe` | czy w danych JEST struktura do nauczenia | ~1–2 min |
+| **7. Trening** | `--skip-backfill --train --universe-top-n 200 --report-out reports/train.json` | bramka G0–G5 | minuty |
+| **8. Challenger** | `--skip-backfill --train --model-kind gbdt --universe-top-n 200` | czy inna klasa modelu widzi więcej | minuty |
+| **9. Rozrzut** | `--skip-backfill --cpcv` | ile z wyniku to sposób pocięcia danych | **długo** (C(6,2)=15 dopasowań) |
 
-**Decyzje, które muszę usłyszeć od Ciebie przed startem:**
+Kroki 2–6 są tanie i **niezależne od siebie** — można je puścić jednym ciągiem. Krok 9 ma sens
+dopiero, jeśli krok 7 lub 8 pokaże cokolwiek.
 
-1. **Źródło uniwersum point-in-time** — historyczne składy S&P 500 nie są darmowe w czystej formie.
-   Warianty: (a) zrekonstruować przybliżenie z dostępnych list + dat wejścia/wyjścia z Wikipedii,
-   (b) użyć uniwersum „wszystko, co miało ≥ X mln USD obrotu dziennego w danym roku" liczonego
-   z naszych danych, (c) kupić dane. Rekomendacja: **(b)** — jest odtwarzalne, nie ma survivorship
-   z definicji i nie wymaga zewnętrznego źródła.
-2. **Horyzont** — czy zgadzasz się, żeby wybrał go pomiar (P1-2), nawet jeśli wyjdzie 63 sesje
-   i tym samym rebalans stanie się miesięczny.
-3. **Książka względna** (P3-4) — czy docelowo chcemy handlować long-short/względem benchmarku,
-   czy zostajemy przy long-only. To zmienia i metrykę, i to, czy szerokość w ogóle rośnie.
+### 12.3 Pułapki operacyjne (wszystkie już raz nas trafiły)
+
+- **Wolumen `ml_mlruns`.** Jeśli powstał przed poprawką Dockerfile'a z 2026-07-26, MLflow nadal nie
+  zapisze biegu (`version: null`) — Docker inicjalizuje wolumen tylko raz. Skasować przed startem.
+- **Hasło do Postgresa.** `POSTGRES_PASSWORD` działa tylko przy tworzeniu wolumenu; zmiana
+  `DB_PASSWORD` w `.env` po pierwszym starcie zostawia stare hasło w bazie (README opisuje naprawę
+  przez `ALTER USER`). Objaw: puste 500 z `POST /fetch`.
+- **Egress Dockera.** Pod polityką *Trusted* `docker pull` pada na CDN blobów — środowisko musi mieć
+  **Full** (albo `production.cloudfront.docker.com` na liście).
+- **Zimny start ml-pipeline ~2.5 min** (import torch + mlflow). Healthcheck ma `start_period: 300s`,
+  ale przy ręcznym `curl` trzeba po prostu poczekać.
+- **31 spółek wycofanych z indeksu** jest w uniwersum celowo. Raport powie, ile z nich dostawca
+  jeszcze serwuje. Jeśli **zero** — wszystkie metryki są optymistyczne o wielkość niemierzalną od
+  wewnątrz i `survivorship_report` napisze to wprost.
+- **`SEC_USER_AGENT`** jest potrzebny wyłącznie do kroku fundamentów (P2-3, `--with-fundamentals`);
+  bez niego reszta kampanii działa normalnie.
 
 ---
 

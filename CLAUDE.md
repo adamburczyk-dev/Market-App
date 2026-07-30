@@ -1625,6 +1625,15 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   wynik **identycznie**. Badanie zaniku na tych danych (błądzenia losowe) poprawnie **odmawia**
   wskazania okresu trzymania: permutowany null daje |t| = 5.63, realne cechy maksymalnie 4.3.
 
+**Next (2026-07-30): kod toru predykcji jest skończony — projekt jest zablokowany na POMIARZE.**
+Etapy E0–E5 zaimplementowane; nie ma sensownego następnego zadania programistycznego, bo każda
+pozostała decyzja jest bramkowana liczbami, których nie mamy (E3: próg wykrywalności IC; E4 i wejście
+w E5: t-stat IC ≥ 2). §10 planu mówi wprost, że na 34 mega-capach spodziewane IC leży **pod** progiem
+wykrywalności — trening na obecnych danych odpowie „nie wiadomo" niezależnie od tego, czy przewaga
+istnieje. **Kampania pomiarowa u użytkownika: `docs/plan_2026_07_28_prediction.md` §12.2** (backfill
+486 symboli × 20 lat → 5 pomiarów model-free → sonda → trening → CPCV); pułapki operacyjne w §12.3
+(m.in. wolumen `ml_mlruns` sprzed poprawki Dockerfile'a nadal daje `version: null`).
+
 **Next:** **`docs/plan_2026_07_28_prediction.md` jest teraz listą roboczą** (backlog po audycie
 zarchiwizowany — `docs/archive/`, mapowanie ID w §13 planu). Mapa całej dokumentacji i zasada
 „który plik wygrywa": `docs/README.md`.
