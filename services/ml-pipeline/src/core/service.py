@@ -10,6 +10,7 @@ compare current feature/prediction distributions against a model's registered
 baseline and publish ModelDriftDetectedEvent when the verdict is actionable.
 """
 
+import asyncio
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
@@ -282,9 +283,14 @@ class MLPipelineService:
                 "pt_mult": current.pt_mult,
                 "excess": current.excess,
             },
-            "calibration": calibrate_barriers(bars_by_symbol, horizon=current.horizon),
-            "targets": score_targets(
-                bars_by_symbol, horizons=horizons, lookback=self._dataset_params.lookback
+            "calibration": await asyncio.to_thread(
+                calibrate_barriers, bars_by_symbol, horizon=current.horizon
+            ),
+            "targets": await asyncio.to_thread(
+                score_targets,
+                bars_by_symbol,
+                horizons=horizons,
+                lookback=self._dataset_params.lookback,
             ),
         }
 
@@ -312,7 +318,9 @@ class MLPipelineService:
                 bars_by_symbol[symbol] = bars
         if not bars_by_symbol:
             raise ValueError("no history for any requested symbol")
-        return run_sector_study(bars_by_symbol, sector_by_symbol, self._dataset_params)
+        return await asyncio.to_thread(
+            run_sector_study, bars_by_symbol, sector_by_symbol, self._dataset_params
+        )
 
     async def alpha_decay(
         self,
@@ -337,8 +345,12 @@ class MLPipelineService:
                 bars_by_symbol[symbol] = bars
         if not bars_by_symbol:
             raise ValueError("no history for any requested symbol")
-        return run_alpha_decay(
-            bars_by_symbol, self._dataset_params, horizons=horizons, delays=delays
+        return await asyncio.to_thread(
+            run_alpha_decay,
+            bars_by_symbol,
+            self._dataset_params,
+            horizons=horizons,
+            delays=delays,
         )
 
     async def cost_study(
@@ -364,7 +376,8 @@ class MLPipelineService:
                 bars_by_symbol[symbol] = bars
         if not bars_by_symbol:
             raise ValueError("no history for any requested symbol")
-        return run_cost_study(
+        return await asyncio.to_thread(
+            run_cost_study,
             bars_by_symbol,
             base_params=CostParams(aum_usd=aum_usd),
             turnover_daily=turnover_daily,
@@ -388,7 +401,9 @@ class MLPipelineService:
         """
         dataset, _, selection = await self.build_training_dataset(symbols, interval, limit)
         dataset, dropped = drop_zero_variance_features(dataset)
-        report = run_cpcv(dataset, params, n_groups=n_groups, test_groups=test_groups)
+        report = await asyncio.to_thread(
+            run_cpcv, dataset, params, n_groups=n_groups, test_groups=test_groups
+        )
         return {
             "symbols": len(symbols),
             "dataset": _dataset_diagnostics(dataset, symbols),
@@ -412,7 +427,7 @@ class MLPipelineService:
         """
         dataset, _, selection = await self.build_training_dataset(symbols, interval, limit)
         dataset, dropped = drop_zero_variance_features(dataset)
-        probe = run_capacity_probe(dataset)
+        probe = await asyncio.to_thread(run_capacity_probe, dataset)
         return {
             "dataset": _dataset_diagnostics(dataset, symbols),
             # P3-1/P3-3: who was eligible when, and whether anybody ever left.
@@ -437,7 +452,7 @@ class MLPipelineService:
         """
         dataset, _, selection = await self.build_training_dataset(symbols, interval, limit)
         dataset, dropped = drop_zero_variance_features(dataset)
-        report: SweepReport = run_sweep(dataset, params, n_folds=n_folds)
+        report: SweepReport = await asyncio.to_thread(run_sweep, dataset, params, n_folds=n_folds)
         return {
             "dataset": _dataset_diagnostics(dataset, symbols),
             # P3-1/P3-3: who was eligible when, and whether anybody ever left.
@@ -475,7 +490,7 @@ class MLPipelineService:
         # looks trained and means nothing; refuse instead of reporting success.
         contract = self._contract.validate(dataset, requested_sessions=requested_sessions)
         params_used = params or TrainingParams()
-        model, report = run_training(dataset, params_used)
+        model, report = await asyncio.to_thread(run_training, dataset, params_used)
 
         version: str | None = None
         # P4-1/P4-2: the registry persists an MLP state_dict and reconstructs
