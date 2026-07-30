@@ -48,7 +48,7 @@ def series(moves: dict[int, tuple[float, float]], n: int = 1000) -> list[dict]:
 
 def check(bars: list[dict]) -> dict:
     boot._request = lambda *a, **k: (200, bars)  # type: ignore[assignment]
-    return boot.validate_coverage("http://x", ["SYM"], START.date())["SYM"]
+    return boot.validate_coverage("http://x", ["SYM"])["SYM"]
 
 
 def test_real_earnings_crash_is_not_a_defect():
@@ -184,3 +184,33 @@ def test_every_sector_has_enough_names_to_neutralize_against():
 
     for sector, names in boot.DEFAULT_UNIVERSE_BY_SECTOR.items():
         assert len(names.split()) >= MIN_SECTOR_SIZE, f"{sector} too thin to neutralize"
+
+
+def test_coverage_is_read_over_the_whole_stored_history_not_the_requested_window():
+    """The guard that could not fire.
+
+    The truncation warning compares stored sessions against what training will
+    fetch. Both used to be derived from --years, so they always agreed. On the
+    first real 20-year run that hid the entire problem: 20 years were
+    backfilled, the read-back asked for 6, training asked for 6, nothing
+    complained, and the model saw a third of the history.
+
+    Pinned at the request level — the coverage query must not carry a
+    start_date, or the comparison is against itself.
+    """
+    seen: list[str] = []
+
+    def spy(method, url, payload=None, timeout=0):
+        seen.append(url)
+        return 200, []
+
+    original = boot._request
+    boot._request = spy
+    try:
+        boot.validate_coverage("http://x", ["SYM"])
+    finally:
+        boot._request = original
+
+    assert seen, "no request was made"
+    assert "start_date" not in seen[0], f"coverage query is window-bounded: {seen[0]}"
+    assert "limit=5000" in seen[0]

@@ -44,7 +44,14 @@ class RiskMgmtService:
         self._ledger = ledger or OrderLedger()
 
     async def restore(self) -> None:
-        """Load persisted portfolio state and re-derive the circuit-breaker level."""
+        """Load persisted portfolio state, the order ledger AND the breaker latch.
+
+        The latch has to be restored before re-evaluating, not derived from the
+        metrics: a BLACK is held open until a human clears it, so if a restart
+        re-derived the level from a recovered drawdown, restarting the container
+        would silently BE the human reset — the easiest way to bypass the rule
+        and one nobody would notice.
+        """
         snapshot = await self._repository.load()
         if snapshot is None:
             return
@@ -56,13 +63,27 @@ class RiskMgmtService:
             regime=snapshot.get("regime"),
         )
         self._ledger.restore(snapshot.get("orders"))
+        self._breaker.restore(snapshot.get("breaker"))
         self._breaker.evaluate(self._portfolio.drawdown_pct, self._portfolio.daily_loss_pct)
-        logger.info("Restored portfolio", level=self._breaker.level, **self._portfolio.as_dict())
+        logger.info(
+            "Restored portfolio",
+            level=self._breaker.level,
+            latched=self._breaker.latched,
+            **self._portfolio.as_dict(),
+        )
 
     def _snapshot(self) -> dict:
-        """Persisted state = portfolio + the order ledger (idempotency must survive
-        a restart; otherwise a redelivered aggregate re-opens the same position)."""
-        return {**self._portfolio.as_dict(), "orders": self._ledger.snapshot()}
+        """Persisted state = portfolio + order ledger + breaker latch.
+
+        The ledger keeps idempotency across a restart (otherwise a redelivered
+        aggregate re-opens the same position); the latch keeps a human-restart
+        requirement from being satisfied by a container restart.
+        """
+        return {
+            **self._portfolio.as_dict(),
+            "orders": self._ledger.snapshot(),
+            "breaker": self._breaker.snapshot(),
+        }
 
     @property
     def portfolio(self) -> PortfolioState:

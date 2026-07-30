@@ -45,6 +45,12 @@ class TrainingDataContract:
     # truncated it — the cache-truncation incident in one number.
     expected_session_tolerance: float = 0.02
     min_samples: int = 1000
+    # Sessions dropped for a too-thin cross-section are legitimate — early in a
+    # window only the long-lived names have enough history. But if a fifth of
+    # the window goes that way the universe is too sparse to rank, which is a
+    # real defect and a DIFFERENT one from an upstream truncation. Accounting
+    # for skipped sessions must not become a blanket excuse for losing them.
+    max_thin_session_rate: float = 0.20
 
     def validate(
         self,
@@ -82,11 +88,27 @@ class TrainingDataContract:
             violations.append(f"features filled with the neutral rank too often: {worst}")
 
         if requested_sessions:
-            shortfall = 1.0 - sessions / requested_sessions
+            # Sessions the BUILDER dropped for having too thin a cross-section
+            # are accounted for, not counted as evidence of upstream truncation.
+            # They are a known, reported, legitimate reason for the difference —
+            # blaming them on the data source refuses a healthy dataset and
+            # points the operator at the wrong system. (Seen on the real run:
+            # 1450 delivered + 63 skipped-thin = 1513 against 1512 requested,
+            # reported as "3.5% short — was the history truncated upstream?".)
+            accounted = sessions + dataset.sessions_skipped_thin
+            shortfall = 1.0 - accounted / requested_sessions
             if shortfall > self.expected_session_tolerance:
                 violations.append(
-                    f"got {sessions} sessions, requested ~{requested_sessions} "
+                    f"got {sessions} sessions (+{dataset.sessions_skipped_thin} skipped as thin), "
+                    f"requested ~{requested_sessions} "
                     f"({shortfall:.1%} short — was the history truncated upstream?)"
+                )
+            thin_rate = dataset.sessions_skipped_thin / requested_sessions
+            if thin_rate > self.max_thin_session_rate:
+                violations.append(
+                    f"{dataset.sessions_skipped_thin} of ~{requested_sessions} sessions "
+                    f"({thin_rate:.0%}) had fewer than {self.min_symbols_per_session} symbols — "
+                    "the universe is too sparse to rank over this window"
                 )
 
         report["passed"] = not violations

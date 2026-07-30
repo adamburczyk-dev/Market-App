@@ -111,3 +111,45 @@ def test_report_is_computed_for_a_failing_dataset():
     assert report["sessions"] == 10
     assert report["symbols_per_session_median"] == 2
     assert report["n_features"] == 6
+
+
+# --- sessions the builder itself dropped (found on the first real 20y run) ---
+
+
+def thin_dataset(sessions: int, skipped_thin: int) -> Dataset:
+    from dataclasses import replace as dc_replace
+
+    return dc_replace(make_dataset(sessions=sessions), sessions_skipped_thin=skipped_thin)
+
+
+def test_sessions_skipped_as_thin_are_accounted_for_not_blamed_upstream():
+    """The real run's numbers. 1450 sessions were delivered, the builder had
+    itself dropped 63 for having under 20 symbols, and 1512 were requested:
+    1450 + 63 = 1513, so nothing was truncated at all. The contract refused the
+    run anyway with "3.5% short — was the history truncated upstream?", which
+    both blocked a healthy dataset and pointed at the wrong system.
+    """
+    report = TrainingDataContract().validate(
+        thin_dataset(sessions=1450, skipped_thin=63), requested_sessions=1512
+    )
+    assert report["passed"] is True, report["violations"]
+
+
+def test_a_genuinely_truncated_history_is_still_caught():
+    """The check must keep doing its job — this is the cache-truncation
+    incident, where 1505 stored bars turned into 183 sessions."""
+    with pytest.raises(TrainingDataContractError):
+        TrainingDataContract().validate(
+            thin_dataset(sessions=1100, skipped_thin=0), requested_sessions=1512
+        )
+
+
+def test_accounting_for_thin_sessions_is_not_a_blanket_excuse():
+    """If a fifth of the window is being dropped, the universe is too sparse to
+    rank over it. That is a real defect — just a different one from upstream
+    truncation, and it must not hide behind the accounting."""
+    with pytest.raises(TrainingDataContractError) as excinfo:
+        TrainingDataContract().validate(
+            thin_dataset(sessions=1100, skipped_thin=412), requested_sessions=1512
+        )
+    assert "too sparse to rank" in str(excinfo.value)

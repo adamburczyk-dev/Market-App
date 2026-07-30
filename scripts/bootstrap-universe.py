@@ -281,15 +281,18 @@ def backfill(
     return rows_by_symbol
 
 
-def validate_coverage(
-    market_url: str, symbols: list[str], start: date
-) -> dict[str, dict]:
-    """Read back stored bars and sanity-check span + gaps (>5 business days)."""
+def validate_coverage(market_url: str, symbols: list[str]) -> dict[str, dict]:
+    """Read back ALL stored bars and sanity-check span + gaps (>5 business days)."""
     report: dict[str, dict] = {}
     for symbol in symbols:
-        query = urllib.parse.urlencode(
-            {"interval": "1d", "start_date": start.isoformat(), "limit": 5000}
-        )
+        # Deliberately NOT bounded by `start`. The truncation guard below
+        # compares what is stored against what training will fetch, and both
+        # used to be derived from --years — so the guard could not fire by
+        # construction. On the first real run that hid the whole problem: 20
+        # years were backfilled, the coverage read-back asked for 6, training
+        # asked for 6, everything agreed, and the model silently saw a third of
+        # the history. Reading the full span is what makes the comparison real.
+        query = urllib.parse.urlencode({"interval": "1d", "limit": 5000})
         try:
             status, bars = _request(
                 "GET",
@@ -1426,7 +1429,7 @@ def main() -> int:
         to_check = list(rows)
 
     print("\nCoverage check (stored bars):")
-    coverage = validate_coverage(market_url, to_check, start)
+    coverage = validate_coverage(market_url, to_check)
     # A symbol with no usable stored history is a failure either way: it cannot
     # be fetched (backfill) or it is not there to train on (--skip-backfill).
     failed = [s for s in symbols if coverage.get(s, {}).get("sessions", 0) == 0]
