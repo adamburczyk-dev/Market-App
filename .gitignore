@@ -44,3 +44,6 @@ data/
 *.parquet
 *.pkl
 *.joblib
+
+# transient backfill bookkeeping — reports/*.json ARE artifacts, this is not
+reports/.backfill-progress.json*

@@ -185,12 +185,75 @@ def _check_service(base_url: str, name: str) -> None:
         )
 
 
+def load_progress(path: str | None, years: float) -> dict[str, int]:
+    """Symbols already fetched in an earlier run of THIS backfill, if any.
+
+    A 486-symbol, 20-year backfill runs for hours, and the storage layer is an
+    idempotent upsert on (symbol, interval, ts) — so an interruption never
+    corrupts anything, but without this it costs the whole download again.
+
+    Keyed on ``years`` rather than on the exact date range: `end` is "today", so
+    a run resumed the following morning would otherwise invalidate its own
+    progress over a one-day drift that means nothing across twenty years.
+    Asking for a DIFFERENT depth is a different backfill and starts clean.
+    """
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            saved = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}  # unreadable progress is no progress, never an error
+    if abs(float(saved.get("years", -1)) - years) > 1e-9:
+        print(
+            f"  ignoring progress file: it records --years {saved.get('years')}, "
+            f"this run asks for {years}"
+        )
+        return {}
+    return {str(k): int(v) for k, v in (saved.get("rows_by_symbol") or {}).items()}
+
+
+def save_progress(
+    path: str | None, years: float, rows_by_symbol: dict[str, int]
+) -> None:
+    """Persist after EVERY symbol — a kill -9 must not lose the last hour."""
+    if not path:
+        return
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    payload = {"years": years, "rows_by_symbol": rows_by_symbol}
+    temporary = f"{path}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    os.replace(temporary, path)  # atomic: a crash mid-write cannot truncate it
+
+
 def backfill(
-    market_url: str, symbols: list[str], start: date, end: date, pause_s: float
+    market_url: str,
+    symbols: list[str],
+    start: date,
+    end: date,
+    pause_s: float,
+    already_done: dict[str, int] | None = None,
+    progress_path: str | None = None,
+    years: float = 0.0,
 ) -> dict[str, int]:
-    """POST /fetch per symbol; returns rows stored per successful symbol."""
-    rows_by_symbol: dict[str, int] = {}
-    for i, symbol in enumerate(symbols):
+    """POST /fetch per symbol; returns rows stored per successful symbol.
+
+    Symbols present in ``already_done`` are skipped, so an interrupted run
+    resumes instead of re-downloading what it has. Re-fetching would be
+    harmless — market-data upserts idempotently — but it would not be free.
+    """
+    rows_by_symbol: dict[str, int] = dict(already_done or {})
+    resumed = [s for s in symbols if s in rows_by_symbol]
+    if resumed:
+        print(
+            f"  resuming: {len(resumed)}/{len(symbols)} symbols already fetched, skipping them"
+        )
+    pending = [s for s in symbols if s not in rows_by_symbol]
+
+    for i, symbol in enumerate(pending):
         query = urllib.parse.urlencode(
             {
                 "interval": "1d",
@@ -202,17 +265,18 @@ def backfill(
         try:
             status, body = _request("POST", url, timeout=300)
         except OSError as exc:
-            print(f"  [{i + 1:>2}/{len(symbols)}] {symbol:<6} FETCH ERROR: {exc}")
+            print(f"  [{i + 1:>3}/{len(pending)}] {symbol:<6} FETCH ERROR: {exc}")
             continue
         if status == 200:
             rows_by_symbol[symbol] = int(body.get("rows", 0))
             print(
-                f"  [{i + 1:>2}/{len(symbols)}] {symbol:<6} {rows_by_symbol[symbol]:>5} rows"
+                f"  [{i + 1:>3}/{len(pending)}] {symbol:<6} {rows_by_symbol[symbol]:>5} rows"
             )
+            save_progress(progress_path, years, rows_by_symbol)
         else:
             detail = body.get("detail", "")
-            print(f"  [{i + 1:>2}/{len(symbols)}] {symbol:<6} HTTP {status}: {detail}")
-        if pause_s and i + 1 < len(symbols):
+            print(f"  [{i + 1:>3}/{len(pending)}] {symbol:<6} HTTP {status}: {detail}")
+        if pause_s and i + 1 < len(pending):
             time.sleep(pause_s)  # politeness toward the upstream data source
     return rows_by_symbol
 
@@ -1135,6 +1199,24 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--progress-file",
+        default="reports/.backfill-progress.json",
+        help=(
+            "Where to record which symbols are already fetched, so an "
+            "interrupted backfill resumes instead of starting over (a 486-symbol "
+            "x 20-year run takes hours). Written after every symbol."
+        ),
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help=(
+            "Ignore and overwrite the progress file — re-fetch every symbol. "
+            "Safe at any time: storage upserts idempotently, it just costs the "
+            "download again."
+        ),
+    )
+    parser.add_argument(
         "--alpha-decay",
         action="store_true",
         help=(
@@ -1318,7 +1400,17 @@ def main() -> int:
         print(
             f"Backfilling {len(symbols)} symbols, {start} → {end} (daily) via {market_url}"
         )
-        rows = backfill(market_url, symbols, start, end, args.pause)
+        progress_path = None if args.no_resume else args.progress_file
+        rows = backfill(
+            market_url,
+            symbols,
+            start,
+            end,
+            args.pause,
+            already_done=load_progress(progress_path, args.years),
+            progress_path=progress_path,
+            years=args.years,
+        )
         print(
             f"\nBackfilled {len(rows)}/{len(symbols)} symbols, "
             f"{sum(rows.values())} rows total."

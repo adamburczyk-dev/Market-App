@@ -463,7 +463,7 @@ zgadywalibyśmy przed treningiem.
 
 | Krok | Komenda (`make bootstrap-universe ARGS="…"`) | Co rozstrzyga | Koszt |
 |---|---|---|---|
-| **1. Backfill** | `--years 20 --report-out reports/backfill.json` | 486 symboli × 20 lat. Wszystko dalej od tego zależy | **godziny** |
+| **1. Backfill** | `--years 20 --report-out reports/backfill.json` | 486 symboli × 20 lat. Wszystko dalej od tego zależy | **godziny**, wznawialny |
 | **2. Cel** | `--skip-backfill --target-study` | P1-2: horyzont 10/21/63 + szerokość barier | minuty |
 | **3. Sektory** | `--skip-backfill --sector-study` | P2-2: czy neutralizacja sektorowa podnosi dowody (mierzalne dopiero przy 455 nazwach) | minuty |
 | **4. Zanik** | `--skip-backfill --alpha-decay` | P5-4: okres trzymania + czy latencja wejścia boli | minuty |
@@ -475,6 +475,29 @@ zgadywalibyśmy przed treningiem.
 
 Kroki 2–6 są tanie i **niezależne od siebie** — można je puścić jednym ciągiem. Krok 9 ma sens
 dopiero, jeśli krok 7 lub 8 pokaże cokolwiek.
+
+### 12.2a Przerwanie backfillu
+
+Krok 1 trwa godziny, więc zakłada się, że zostanie kiedyś przerwany.
+
+- **Dane są bezpieczne bez względu na wszystko.** market-data zapisuje przez idempotentny upsert na
+  kluczu `(symbol, interval, ts)`, a baza to wolumen Dockera — Ctrl-C, `kill -9`, restart kontenera
+  ani padnięcie sieci niczego nie psują i nie duplikują.
+- **Postęp też jest bezpieczny.** Skrypt zapisuje `reports/.backfill-progress.json` **po każdym
+  symbolu** (zapis atomowy przez plik tymczasowy + `os.replace`, więc padnięcie w trakcie zapisu
+  zostawia poprzednią kompletną wersję). Ponowne uruchomienie **tej samej komendy** pomija to, co
+  już pobrane, i dopobiera resztę.
+- **Symbol, który się nie udał, wraca do kolejki.** Do „zrobionych" trafia wyłącznie fetch, który
+  faktycznie zapisał wiersze — HTTP 502 i zerwane połączenie zostają nieukończone, więc kolejny
+  przebieg spróbuje ich ponownie.
+- **Zmiana `--years` zaczyna od zera.** Postęp jest kluczowany głębokością historii, żeby
+  6-letni backfill nie został po cichu uznany za 20-letni. (Sam upływ dnia go nie unieważnia —
+  `end` to „dzisiaj", a jednodniowy dryf nie ma znaczenia przy 20 latach.)
+- **Wymuszenie pełnego pobrania**: `--no-resume`. Bezpieczne w każdej chwili, kosztuje tylko czas.
+
+Kroki 2–9 są **bezstanowe** — to pojedyncze wywołania HTTP, które niczego nie zapisują (poza krokiem
+7/8, gdzie MLflow rejestruje wersję na końcu udanego treningu). Przerwane po prostu uruchamia się
+ponownie.
 
 ### 12.3 Pułapki operacyjne (wszystkie już raz nas trafiły)
 
