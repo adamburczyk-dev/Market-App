@@ -1750,6 +1750,22 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   Liczniki: market-data 69 (+2), scripts 29 (+3) → **bateria 1205**; ruff + format + mypy czyste.
   Kontrola anty-szczęściowa: wszystkie 3 nowe testy skryptów padają na kodzie sprzed poprawki.
 
+- 2026-07-31 — **Traceback był wyrzucany przez logger we WSZYSTKICH 13 serwisach.**
+  Użytkownik wkleił linię, która brzmi dokładnie jak diagnoza i nie jest nią:
+  `{"symbol": "AAPL", "exc_info": true, "event": "Fetch-and-store failed", "level": "error"}`.
+  `JSONRenderer` **nie formatuje** `exc_info` — serializuje go jako goły boolean i traceback
+  przepada; `structlog.processors.format_exc_info` nigdy nie było w łańcuchu procesorów, a
+  `app.debug` pod compose jest False, więc dotyczyło to wyłącznie ścieżki produkcyjnej. Każde
+  `logger.exception` w systemie od zawsze mówiło „coś padło" bez możliwości zapytania „co".
+  Odtworzone w izolacji (ta sama linia bez poprawki, pełny traceback w polu `exception` po niej),
+  poprawione w 13 identycznych kopiach `observability.py`, przypięte testem po obu stronach
+  (JSON niesie traceback; ConsoleRenderer w dev nadal renderuje po swojemu, ładniej).
+  **`diagnose.py`**: sekcja z logami oznacza teraz trafienia `>>`, a linie bez znacznika opisuje
+  wprost jako KONTEKST — bez tego sąsiednie `200 OK` czytały się jak awarie (pytanie użytkownika).
+  Obcięcie dopasowanej linii podniesione 200 → 2000 znaków, bo traceback jedzie teraz w JEDNEJ
+  linii JSON-a i stare obcięcie wyrzucałoby dokładnie to, co właśnie naprawiliśmy. Predykat łapie
+  też `"exception"`. Liczniki: market-data 71 (+2) → **bateria 1207**; ruff + format + mypy czyste.
+
 **Next (2026-07-30): kod toru predykcji jest skończony — projekt jest zablokowany na POMIARZE.**
 Etapy E0–E5 zaimplementowane; nie ma sensownego następnego zadania programistycznego, bo każda
 pozostała decyzja jest bramkowana liczbami, których nie mamy (E3: próg wykrywalności IC; E4 i wejście

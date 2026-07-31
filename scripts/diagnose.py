@@ -352,6 +352,11 @@ def probe_fetch() -> None:
         print("  OK ponowny zapis tych samych danych przechodzi (idempotentny)")
 
 
+def looks_like_error(line: str) -> bool:
+    low = line.lower()
+    return "traceback" in low or "error" in low or '"exception"' in low
+
+
 def recent_errors() -> None:
     section("OSTATNIE BLEDY W LOGACH market-data")
     code, out = compose("logs", "--tail", "400", "market-data", timeout=60)
@@ -359,17 +364,22 @@ def recent_errors() -> None:
         print(out.strip()[:400])
         return
     lines = out.splitlines()
-    hits = [
-        i
-        for i, line in enumerate(lines)
-        if "Traceback" in line or "Error" in line or "error" in line.lower()
-    ]
+    hits = [i for i, line in enumerate(lines) if looks_like_error(line)]
     if not hits:
         print("  brak linii z bledami w ostatnich 400 liniach")
         return
+    # Kontekst wokol trafienia jest po to, zeby bylo widac, co dzialo sie tuz
+    # przed bledem - ale bez oznaczenia wygladal jak lista bledow, wiec zwykle
+    # "200 OK" czytalo sie jako awarie. Trafienia sa teraz oznaczone.
+    print(f"  znaleziono {len(hits)} linii z bledem w ostatnich {len(lines)}")
+    print("  ('>>' = dopasowana linia; linie bez znacznika to KONTEKST, nie bledy)")
+    hitset = set(hits)
     start = max(0, hits[-1] - 3)
-    for line in lines[start : start + 30]:
-        print("  " + line[:200])
+    for i in range(start, min(len(lines), start + 30)):
+        marker = ">>" if i in hitset else "  "
+        # Traceback jedzie teraz w JEDNEJ linii jako pole "exception" (JSON),
+        # wiec obciecie do 200 znakow wyrzucalo dokladnie to, po co tu jestesmy.
+        print(f"  {marker} {lines[i][: 2000 if i in hitset else 200]}")
 
 
 def main() -> int:

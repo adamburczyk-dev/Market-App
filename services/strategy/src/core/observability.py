@@ -9,13 +9,25 @@ from prometheus_fastapi_instrumentator import Instrumentator
 def setup_observability(app: FastAPI, service_name: str) -> None:
     """Konfiguruj observability — wywołaj raz w main.py."""
 
+    processors: list = [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+    ]
+    if app.debug:
+        # ConsoleRenderer formats exc_info itself, and prettily.
+        processors.append(structlog.dev.ConsoleRenderer())
+    else:
+        # JSONRenderer does NOT: it serializes exc_info as the bare boolean
+        # `true` and the traceback is gone. Every `logger.exception` in this
+        # system logged `"exc_info": true` and nothing else, which is how a
+        # failing POST /fetch could sit in the container log for days saying
+        # only that it had failed. format_exc_info turns it into an `exception`
+        # field carrying the real traceback.
+        processors.append(structlog.processors.format_exc_info)
+        processors.append(structlog.processors.JSONRenderer())
     structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer() if app.debug else structlog.processors.JSONRenderer(),
-        ],
+        processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(20),
     )
 
