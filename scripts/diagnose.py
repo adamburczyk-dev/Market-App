@@ -171,39 +171,117 @@ def check_services() -> None:
         print(f"  {flag}{name:<20} health={status} ready={ready_status}{detail}")
 
 
-def check_database() -> None:
-    section("BAZA DANYCH")
+def psql(sql: str, timeout: float = 30.0) -> tuple[int, str]:
     user = env_value("DB_USER") or "trader"
     db = env_value("DB_NAME") or "trading_db"
-    queries = {
-        "rozszerzenia": "SELECT string_agg(extname, ', ') FROM pg_extension",
-        "schematy": (
-            "SELECT string_agg(nspname, ', ') FROM pg_namespace "
-            "WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema'"
-        ),
-        "tabela ohlcv": (
-            "SELECT count(*)::text FROM information_schema.tables "
-            "WHERE table_schema='market_data' AND table_name='ohlcv'"
-        ),
-        "wierszy w ohlcv": "SELECT count(*)::text FROM market_data.ohlcv",
-    }
+    code, out = compose(
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "-U",
+        user,
+        "-d",
+        db,
+        "-tAc",
+        sql,
+        timeout=timeout,
+    )
+    lines = out.strip().splitlines()
+    if not lines:
+        return code, ""
+    if code != 0:
+        # psql prints "ERROR: ..." first and a caret marker last; -tAc puts the
+        # VALUE last on success. Taking the last line either way turned every
+        # failed query into a lone "^" pointing at nothing.
+        return code, next((ln for ln in lines if "ERROR" in ln), lines[0])
+    return code, lines[-1]
+
+
+def report_queries(queries: dict[str, str]) -> None:
     for label, sql in queries.items():
-        code, out = compose(
-            "exec",
-            "-T",
-            "postgres",
-            "psql",
-            "-U",
-            user,
-            "-d",
-            db,
-            "-tAc",
-            sql,
-            timeout=30,
+        code, value = psql(sql)
+        print(f"  {'OK ' if code == 0 else '!! '}{label:<18}: {value[:200]}")
+
+
+def check_database() -> None:
+    section("BAZA DANYCH")
+    report_queries(
+        {
+            "rozszerzenia": "SELECT string_agg(extname, ', ') FROM pg_extension",
+            "schematy": (
+                "SELECT string_agg(nspname, ', ') FROM pg_namespace "
+                "WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema'"
+            ),
+            "tabela ohlcv": (
+                "SELECT count(*)::text FROM information_schema.tables "
+                "WHERE table_schema='market_data' AND table_name='ohlcv'"
+            ),
+            "wierszy w ohlcv": "SELECT count(*)::text FROM market_data.ohlcv",
+            "symboli w ohlcv": "SELECT count(DISTINCT symbol)::text FROM market_data.ohlcv",
+            "zakres ohlcv": (
+                "SELECT coalesce(min(ts)::date::text || ' .. ' || max(ts)::date::text, 'pusto') "
+                "FROM market_data.ohlcv"
+            ),
+        }
+    )
+
+
+def check_timescale() -> None:
+    """Stan hypertabeli i KOMPRESJI.
+
+    To jedyna wlasciwosc tej bazy, ktorej nie odtworzy zaden test na zwyklym
+    Postgresie: init-db.sql wlacza kompresje z polityka 7 dni, a market-data z
+    zalozenia PRZEPISUJE historie (naprawa po splicie odswieza kazdy bar, backfill
+    da sie powtorzyc, sonda ponizej pisze). Zapis do skompresowanego chunka to
+    inna sciezka niz zapis do swiezego, wiec raport musi pokazywac, ile chunkow
+    jest skompresowanych - inaczej awaria zapisu na starym oknie nie ma w tym
+    raporcie zadnego wytlumaczenia.
+    """
+    section("TIMESCALEDB (hypertabela i kompresja)")
+    # Gate na obecnosc rozszerzenia, a NIE `CASE WHEN to_regclass(...)` w jednym
+    # zapytaniu: Postgres rozwiazuje nazwy relacji przy PARSOWANIU, wiec galaz
+    # else-owa i tak wywala sie bledem katalogu na bazie bez timescaledb.
+    # (Sprawdzone na prawdziwym Postgresie - pierwsza wersja tej sekcji dawala
+    # trzy razy "relation ... does not exist" zamiast czytelnego "n/d".)
+    code, present = psql(
+        "SELECT count(*)::text FROM pg_extension WHERE extname='timescaledb'"
+    )
+    if code != 0:
+        print(f"  !! nie udalo sie sprawdzic rozszerzenia: {present[:200]}")
+        return
+    if present.strip() != "1":
+        print(
+            "  -  rozszerzenie timescaledb nieobecne - tabela ohlcv jest zwykla tabela"
         )
-        value = out.strip().splitlines()[-1] if out.strip() else ""
-        flag = "OK " if code == 0 else "!! "
-        print(f"  {flag}{label:<18}: {value[:200]}")
+        return
+    report_queries(
+        {
+            "hypertabela": (
+                "SELECT count(*)::text FROM timescaledb_information.hypertables "
+                "WHERE hypertable_name='ohlcv'"
+            ),
+            "chunkow": (
+                "SELECT count(*)::text FROM timescaledb_information.chunks "
+                "WHERE hypertable_name='ohlcv'"
+            ),
+            # Osobnym zapytaniem: nazwa kolumny zalezy od wersji rozszerzenia,
+            # a jesli ta jedna linia padnie, liczba chunkow ma sie i tak pokazac.
+            "skompresowanych": (
+                "SELECT count(*)::text FROM timescaledb_information.chunks "
+                "WHERE hypertable_name='ohlcv' AND is_compressed"
+            ),
+            "zadania": (
+                "SELECT coalesce(string_agg(proc_name || ' co ' || "
+                "coalesce(schedule_interval::text,'?'), ', '), 'brak') "
+                "FROM timescaledb_information.jobs WHERE hypertable_name='ohlcv'"
+            ),
+        }
+    )
+    print(
+        "     (skompresowany chunk to inna sciezka zapisu niz swiezy - jesli zapis\n"
+        "      do starego okna zawodzi, ta liczba jest pierwszym podejrzanym)"
+    )
 
 
 def check_redis_nats() -> None:
@@ -239,18 +317,39 @@ def check_redis_nats() -> None:
 
 
 def probe_fetch() -> None:
-    section("PROBNY FETCH (market-data)")
+    """Sonda ZAPISU - i celowo dwa razy pod rzad, tym samym oknem.
+
+    Pierwsze wywolanie sprawdza cala sciezke pobrania (siec, walidacja, zapis,
+    cache, event). Drugie sprawdza cos innego i wazniejszego: czy ponowne
+    wrzucenie TYCH SAMYCH danych przechodzi. Ma przechodzic - klucz naturalny
+    (symbol, interval, ts) jest po to, zeby zapis byl idempotentny, a caly
+    harmonogram przyrostowy swiadomie pobiera zakladke na juz posiadane bary.
+    Jednorazowa sonda nie odroznia "dziala" od "dziala tylko raz".
+    """
+    section("PROBNY FETCH (market-data) - UWAGA: to zapisuje do bazy")
     url = (
         "http://localhost:8001/api/v1/market-data/fetch/AAPL"
         "?interval=1d&start_date=2024-01-02&end_date=2024-01-10"
     )
-    status, body = http("POST", url, timeout=120)
-    print(f"  POST /fetch/AAPL -> HTTP {status}")
-    try:
-        parsed = json.loads(body)
-        print(f"  odpowiedz: {json.dumps(parsed, ensure_ascii=True)[:600]}")
-    except json.JSONDecodeError:
-        print(f"  odpowiedz (nie-JSON): {body[:600]!r}")
+    print("  okno: AAPL 1d 2024-01-02..2024-01-10 (te same bary, dwa razy)")
+    results = []
+    for attempt in (1, 2):
+        status, body = http("POST", url, timeout=120)
+        results.append(status)
+        print(f"  proba {attempt}: POST /fetch/AAPL -> HTTP {status}")
+        try:
+            parsed = json.loads(body)
+            print(f"    odpowiedz: {json.dumps(parsed, ensure_ascii=True)[:600]}")
+        except json.JSONDecodeError:
+            print(f"    odpowiedz (nie-JSON): {body[:600]!r}")
+    if results[0] == 200 and results[1] != 200:
+        print(
+            "  !! ZAPIS NIE JEST IDEMPOTENTNY: pierwszy przeszedl, drugi nie. "
+            "Kazde ponowne pobranie tego okna (zakladka harmonogramu, powtorzony "
+            "backfill, naprawa po splicie) bedzie sie tak konczyc."
+        )
+    elif results == [200, 200]:
+        print("  OK ponowny zapis tych samych danych przechodzi (idempotentny)")
 
 
 def recent_errors() -> None:
@@ -280,6 +379,7 @@ def main() -> int:
         check_containers,
         check_services,
         check_database,
+        check_timescale,
         check_redis_nats,
         probe_fetch,
         recent_errors,

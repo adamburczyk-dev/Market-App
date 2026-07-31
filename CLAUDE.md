@@ -366,6 +366,12 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
     clears it (`POST /circuit-breaker/reset`, refused while the breach still stands) and RED holds
     for the rest of the session instead of lifting on an intraday bounce; the latch is persisted,
     so a container restart is no longer a way to satisfy "require human restart".
+  - **TS-1** `init-db.sql` włącza kompresję TimescaleDB na `market_data.ohlcv` z polityką 7 dni,
+    a market-data **z założenia przepisuje historię** (naprawa po restatemencie odświeża każdy bar,
+    backfill wolno powtórzyć, sonda diagnostyczna pisze). Zapis do skompresowanego chunka to inna
+    ścieżka niż do świeżego i zależy od wersji rozszerzenia. Nie da się tego odtworzyć w piaskownicy
+    (obraz timescale niepobieralny), więc `diagnose.py` **raportuje** teraz liczbę skompresowanych
+    chunków — decyzja (wydłużyć próg kompresji albo ją wyłączyć dla tej tabeli) czeka na tę liczbę.
   - **D7** the backtest engine still rebalances daily while ML evaluation uses `1/h` overlapping
     tranches — the two are not comparable until the engine gets tranches too.
 - [P1 ✅ done 2026-07-07] **R1 resolved as (a)** — the signal-aggregator is the **decision node**:
@@ -1705,6 +1711,44 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   realny ml-pipeline (na realnym `nats-server`) nad upstreamem odpowiadającym 422 zwraca
   `502: upstream 422 from http://…/ohlcv/AMZN?interval=1d&limit=5293` — czyli to, co powinno było
   stać w raporcie zamiast `HTTP 500: {}`.
+
+- 2026-07-31 — **Przegląd `diagnose.py` na zgłoszenie „nie jesteśmy zabezpieczeni przed ponownym
+  wrzuceniem tych samych danych — sypie 500" — i dwa realne defekty znalezione po drodze.**
+  **(1) Regresja z masowego upsertu**: partia zawierająca ten sam `(symbol, interval, ts)` dwa razy
+  wywracała **cały** zapis symbolu — Postgres odmawia `ON CONFLICT DO UPDATE`, którego własna lista
+  VALUES nazywa ten sam klucz dwukrotnie („cannot affect row a second time"), a poprzedni
+  `session.merge` per bar po prostu stosował drugi wiersz. `save_bars` **deduplikuje** (wygrywa
+  ostatnie wystąpienie, klucz po INSTANCIE — naiwny i świadomy znacznik tej samej chwili to dwie
+  różne wartości Pythona i jeden wiersz w TIMESTAMPTZ, czyli dokładnie para, którą naiwna
+  deduplikacja by przepuściła) i loguje, ile wierszy się powtórzyło; zwracana liczba to teraz
+  faktycznie zapisane bary. **Zweryfikowane na prawdziwym Postgresie w obie strony**: przed
+  poprawką `CardinalityViolationError`, po — 4/4, a ponowny zapis **identycznego** okna był
+  idempotentny już wcześniej (czyli sam powtórzony fetch NIE jest tym 500).
+  **(2) Kontrola pokrycia obcinała własne wejście**: `validate_coverage` miała zaszyte `limit=5000`
+  mimo komentarza, że czyta CAŁĄ historię po to, by porównanie z `train_limit` było prawdziwe.
+  W raporcie użytkownika **346 z 455 symboli** ma dokładnie 5000 sesji i `first` spóźnione o sześć
+  tygodni względem zamówionego zakresu, a strażnik `stored_max > train_limit` **nie mógł zadziałać**,
+  bo `stored_max` był z definicji poniżej `train_limit`. Limit bierze się teraz ze wspólnego pułapu,
+  a trafienie w sufit odczytu jest **nazwane** w nocie („session count is a lower bound") — liczba,
+  która pochodzi z zapytania, nie ma udawać pomiaru. Test, który to pinował, pinował **defekt**
+  (`assert "limit=5000"`), więc został przepisany na własność, nie na literał.
+  **(3) Powody awarii wracają do raportu**: `backfill` zbiera `symbol → dlaczego`, konsola grupuje
+  awarie po przyczynie. Dotąd artefakt miał samą listę nazw, więc „41 symboli padło" było nie do
+  odróżnienia od „41 tickerów już nie istnieje" — na liście, która **celowo** zawiera spółki wycofane.
+  **`diagnose.py`**: nowa sekcja **TIMESCALEDB** (hypertabela, liczba chunków, ile SKOMPRESOWANYCH,
+  zadania) — to jedyna własność tej bazy, której nie odtworzy żaden test na zwykłym Postgresie
+  (patrz TS-1); sonda fetchu robi teraz **dwa** przebiegi tym samym oknem i wprost orzeka, czy zapis
+  jest idempotentny (jednorazowa sonda nie odróżnia „działa" od „działa raz"); `psql` przy błędzie
+  pokazuje linię `ERROR:`, a nie ostatnią (czyli samotny daszek `^`). **Błąd we własnej pierwszej
+  wersji tej sekcji, złapany uruchomieniem**: `SELECT CASE WHEN to_regclass('timescaledb_information.…')
+  IS NULL THEN 'n/d' ELSE (…) END` **nie chroni** — Postgres rozwiązuje nazwy relacji przy
+  PARSOWANIU, więc na bazie bez rozszerzenia leciały trzy „relation does not exist"; teraz bramką
+  jest osobne zapytanie o `pg_extension`. **Sprawdzone i NIE zmienione** (weryfikacja zamiast
+  założenia): `docker compose ps --all --format json` w Compose **v5.1.1** to nadal **JSONL**, nie
+  tablica — parser był poprawny (potwierdzone na dwóch realnych kontenerach z lokalnie zbudowanego
+  obrazu); porty wszystkich 13 serwisów w `SERVICES` zgadzają się z compose.
+  Liczniki: market-data 69 (+2), scripts 29 (+3) → **bateria 1205**; ruff + format + mypy czyste.
+  Kontrola anty-szczęściowa: wszystkie 3 nowe testy skryptów padają na kodzie sprzed poprawki.
 
 **Next (2026-07-30): kod toru predykcji jest skończony — projekt jest zablokowany na POMIARZE.**
 Etapy E0–E5 zaimplementowane; nie ma sensownego następnego zadania programistycznego, bo każda

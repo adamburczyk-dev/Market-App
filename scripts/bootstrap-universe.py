@@ -268,12 +268,19 @@ def backfill(
     already_done: dict[str, int] | None = None,
     progress_path: str | None = None,
     years: float = 0.0,
+    failures: dict[str, str] | None = None,
 ) -> dict[str, int]:
     """POST /fetch per symbol; returns rows stored per successful symbol.
 
     Symbols present in ``already_done`` are skipped, so an interrupted run
     resumes instead of re-downloading what it has. Re-fetching would be
     harmless — market-data upserts idempotently — but it would not be free.
+
+    ``failures`` collects symbol -> why, and the report keeps it. Without it the
+    artifact recorded a bare list of names, so "41 symbols failed" could not be
+    told apart from "41 tickers no longer exist" — one is expected on a list
+    that deliberately includes delisted names, the other is a defect, and they
+    looked identical.
     """
     rows_by_symbol: dict[str, int] = dict(already_done or {})
     resumed = [s for s in symbols if s in rows_by_symbol]
@@ -296,6 +303,8 @@ def backfill(
             status, body = _request("POST", url, timeout=300)
         except OSError as exc:
             print(f"  [{i + 1:>3}/{len(pending)}] {symbol:<6} FETCH ERROR: {exc}")
+            if failures is not None:
+                failures[symbol] = f"connection: {type(exc).__name__}: {exc}"
             continue
         if status == 200:
             rows_by_symbol[symbol] = int(body.get("rows", 0))
@@ -306,6 +315,8 @@ def backfill(
         else:
             detail = body.get("detail", "")
             print(f"  [{i + 1:>3}/{len(pending)}] {symbol:<6} HTTP {status}: {detail}")
+            if failures is not None:
+                failures[symbol] = f"HTTP {status}: {detail}"
         if pause_s and i + 1 < len(pending):
             time.sleep(pause_s)  # politeness toward the upstream data source
     return rows_by_symbol
@@ -322,7 +333,14 @@ def validate_coverage(market_url: str, symbols: list[str]) -> dict[str, dict]:
         # years were backfilled, the coverage read-back asked for 6, training
         # asked for 6, everything agreed, and the model silently saw a third of
         # the history. Reading the full span is what makes the comparison real.
-        query = urllib.parse.urlencode({"interval": "1d", "limit": 5000})
+        #
+        # ...and then this line said `limit: 5000`, which put the SAME cap back
+        # one level up: a 20-year backfill read back as exactly 5000 sessions
+        # for 346 of 455 symbols, `first` was six weeks late, `ok` was true, and
+        # `stored_max > train_limit` could never fire because stored_max was
+        # itself clamped below train_limit. A guard that truncates its own input
+        # cannot detect truncation. The ceiling is the service's, nothing local.
+        query = urllib.parse.urlencode({"interval": "1d", "limit": MAX_TRAIN_LIMIT})
         try:
             status, bars = _request(
                 "GET",
@@ -383,6 +401,13 @@ def validate_coverage(market_url: str, symbols: list[str]) -> dict[str, dict]:
         if len(stamps) < MIN_SESSIONS_FOR_TRAINING:
             note.append(
                 f"only {len(stamps)} sessions (<{MIN_SESSIONS_FOR_TRAINING} for training)"
+            )
+        if len(bars) >= MAX_TRAIN_LIMIT:
+            # The count below is then a FLOOR, not a measurement — say so rather
+            # than let a number that came from the query masquerade as data.
+            note.append(
+                f"read-back hit the service ceiling ({MAX_TRAIN_LIMIT}); "
+                "session count is a lower bound"
             )
         if max_gap > 7:  # 5 business days ≈ 7 calendar days
             note.append(f"max gap {max_gap} calendar days")
@@ -1431,6 +1456,7 @@ def main() -> int:
     }
 
     _check_service(market_url, "market-data")
+    fetch_errors: dict[str, str] = {}
     if args.skip_backfill:
         print(
             f"Skipping fetch — using bars already stored in market-data ({market_url})"
@@ -1451,6 +1477,7 @@ def main() -> int:
             already_done=load_progress(progress_path, args.years),
             progress_path=progress_path,
             years=args.years,
+            failures=fetch_errors,
         )
         print(
             f"\nBackfilled {len(rows)}/{len(symbols)} symbols, "
@@ -1459,6 +1486,14 @@ def main() -> int:
         failed_fetch = [s for s in symbols if s not in rows]
         if failed_fetch:
             print(f"FAILED: {', '.join(failed_fetch)}")
+            # Group by cause: 41 names say nothing, 41 names under two causes
+            # say whether this is a stale ticker list or a broken service.
+            by_reason: dict[str, list[str]] = {}
+            for symbol, reason in fetch_errors.items():
+                by_reason.setdefault(reason[:120], []).append(symbol)
+            for reason, names in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
+                shown = ", ".join(names[:8]) + ("..." if len(names) > 8 else "")
+                print(f"  {len(names):>3}x {reason}\n       {shown}")
         to_check = list(rows)
 
     print("\nCoverage check (stored bars):")
@@ -1502,6 +1537,9 @@ def main() -> int:
     report["backfill"] = {
         "rows_by_symbol": rows,
         "failed": failed,
+        # symbol -> the reason its fetch failed. The console had this all along;
+        # the report, which is the thing actually reviewed, threw it away.
+        "errors": fetch_errors,
         "skipped": bool(args.skip_backfill),
     }
     report["coverage"] = coverage

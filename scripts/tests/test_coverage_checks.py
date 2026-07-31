@@ -229,4 +229,30 @@ def test_coverage_is_read_over_the_whole_stored_history_not_the_requested_window
 
     assert seen, "no request was made"
     assert "start_date" not in seen[0], f"coverage query is window-bounded: {seen[0]}"
-    assert "limit=5000" in seen[0]
+    # The ceiling must be the service's, not a literal. This assertion used to
+    # read `limit=5000` — and that literal WAS the bug: a 20-year backfill read
+    # back as exactly 5000 sessions for 346 of 455 symbols, `first` was six
+    # weeks late, and `stored_max > train_limit` could not fire because
+    # stored_max was clamped below train_limit. The test pinned the defect.
+    assert f"limit={boot.MAX_TRAIN_LIMIT}" in seen[0]
+
+
+def test_a_read_back_that_hits_the_ceiling_says_so(monkeypatch):
+    """When the count comes from the query rather than from the data, the report
+    has to admit it — otherwise a truncated read looks like a short history."""
+    bars = [
+        {
+            "timestamp": (START + timedelta(days=i)).isoformat(),
+            "close": 100.0,
+            "adj_close": 100.0,
+            "high": 100.0,
+            "low": 100.0,
+            "open": 100.0,
+            "volume": 1.0,
+        }
+        for i in range(boot.MAX_TRAIN_LIMIT)
+    ]
+    monkeypatch.setattr(boot, "_request", lambda *a, **k: (200, bars))
+    info = boot.validate_coverage("http://x", ["SYM"])["SYM"]
+    assert info["sessions"] == boot.MAX_TRAIN_LIMIT
+    assert "lower bound" in info["note"]

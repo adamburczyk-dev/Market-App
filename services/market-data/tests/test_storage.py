@@ -35,6 +35,39 @@ async def test_save_is_idempotent(repository: OHLCVRepository):
 
 
 @pytest.mark.asyncio
+async def test_a_payload_that_repeats_a_bar_does_not_fail_the_whole_symbol(
+    repository: OHLCVRepository,
+):
+    """Postgres refuses an ON CONFLICT DO UPDATE that names one key twice
+    ("cannot affect row a second time"), so a provider returning a duplicated
+    bar took down the whole fetch with a 500 — and every retry with it, since
+    the payload is deterministic. The per-bar merge this replaced tolerated it.
+    """
+    written = await repository.save_bars(
+        [make_bar(close=100, day=1), make_bar(close=101, day=2), make_bar(close=999, day=1)]
+    )
+    assert written == 2  # the count reported is what was really stored
+
+    fetched = await repository.get_bars("AAPL", Interval.D1)
+    assert [b.close for b in fetched] == [999, 101]  # last occurrence wins
+
+
+@pytest.mark.asyncio
+async def test_a_naive_duplicate_of_an_aware_bar_is_also_collapsed(
+    repository: OHLCVRepository,
+):
+    """The pair a naive dedupe would miss: two different Python datetimes, one
+    single row in a TIMESTAMPTZ column — so the constraint still fires."""
+    aware = make_bar(close=100, day=3)
+    naive = make_bar(close=555, day=3)
+    naive = naive.model_copy(update={"timestamp": aware.timestamp.replace(tzinfo=None)})
+
+    assert await repository.save_bars([aware, naive]) == 1
+    fetched = await repository.get_bars("AAPL", Interval.D1)
+    assert [b.close for b in fetched] == [555]
+
+
+@pytest.mark.asyncio
 async def test_empty_save_returns_zero(repository: OHLCVRepository):
     assert await repository.save_bars([]) == 0
 

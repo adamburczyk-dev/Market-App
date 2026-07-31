@@ -1,7 +1,7 @@
 """Async persistence layer for OHLCV bars."""
 
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -28,6 +28,27 @@ _UPSERT_CHUNK = 2_000
 def _chunks(bars: list[OHLCVBar], size: int) -> Iterator[list[OHLCVBar]]:
     for start in range(0, len(bars), size):
         yield bars[start : start + size]
+
+
+def _deduplicate(bars: list[OHLCVBar]) -> list[OHLCVBar]:
+    """One bar per (symbol, interval, instant); the LAST occurrence wins.
+
+    Postgres refuses an ``ON CONFLICT DO UPDATE`` whose own VALUES list names
+    the same key twice ("cannot affect row a second time"), so a provider that
+    returns a bar twice — yfinance does, around repaired rows and partial
+    sessions — used to fail the ENTIRE symbol with a 500. The per-bar
+    ``session.merge`` this replaced simply applied the second one, so tolerating
+    a duplicate payload is not a new leniency; it is behaviour that came back.
+
+    Keyed on the instant, not on the datetime object: a naive and an aware
+    timestamp for the same moment are two different Python values and one
+    single row in a TIMESTAMPTZ column, which is precisely the pair that would
+    slip past a naive dedupe and hit the constraint anyway.
+    """
+    by_key: dict[tuple[str, str, datetime], OHLCVBar] = {}
+    for bar in bars:
+        by_key[(bar.symbol, bar.interval.value, as_utc(bar.timestamp).astimezone(UTC))] = bar
+    return list(by_key.values())
 
 
 def _to_values(bar: OHLCVBar) -> dict[str, Any]:
@@ -100,10 +121,21 @@ class OHLCVRepository:
         """
         if not bars:
             return 0
+        unique = _deduplicate(bars)
+        if len(unique) != len(bars):
+            # Worth a line: a provider repeating bars is a data-quality signal,
+            # and silently absorbing it would hide that as effectively as the
+            # crash did.
+            logger.warning(
+                "Duplicate bars in one payload — keeping the last of each",
+                symbol=bars[0].symbol,
+                received=len(bars),
+                unique=len(unique),
+            )
         async with self._sessionmaker() as session:
             dialect = session.bind.dialect.name if session.bind is not None else ""
             insert = pg_insert if dialect == "postgresql" else sqlite_insert
-            for chunk in _chunks(bars, _UPSERT_CHUNK):
+            for chunk in _chunks(unique, _UPSERT_CHUNK):
                 statement = insert(OHLCVRow).values([_to_values(bar) for bar in chunk])
                 await session.execute(
                     statement.on_conflict_do_update(
@@ -115,8 +147,8 @@ class OHLCVRepository:
                     )
                 )
             await session.commit()
-        logger.info("Saved OHLCV bars", count=len(bars), symbol=bars[0].symbol)
-        return len(bars)
+        logger.info("Saved OHLCV bars", count=len(unique), symbol=bars[0].symbol)
+        return len(unique)
 
     async def earliest_timestamp(self, symbol: str, interval: Interval) -> datetime | None:
         """Oldest stored bar — how far back a repair has to reach.

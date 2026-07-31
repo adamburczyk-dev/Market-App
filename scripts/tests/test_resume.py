@@ -173,3 +173,52 @@ def test_symbol_parsing_normalises_case_and_drops_empties():
     assert boot.split_symbols(" see,,k ,  ") == ["SEE", "K"]
     assert boot.split_symbols("") == []
     assert boot.split_symbols("   ") == []
+
+
+# --- what the report keeps about a failure ---------------------------------
+
+
+def test_a_failed_symbol_records_why_not_just_that_it_failed(tmp_path, monkeypatch):
+    """A bare list of names cannot distinguish a stale ticker from a broken
+    service, and the real run produced exactly that: 41 names, no causes, on a
+    universe that deliberately contains delisted companies. The console printed
+    the reason and the report — the thing actually reviewed — dropped it.
+    """
+    progress = str(tmp_path / "progress.json")
+    failures: dict[str, str] = {}
+    market = FakeMarket(fail_on={"B"}, raise_on="C")
+    monkeypatch.setattr(boot, "_request", market.request)
+
+    rows = boot.backfill(
+        "http://md",
+        ["A", "B", "C"],
+        START,
+        END,
+        pause_s=0.0,
+        already_done={},
+        progress_path=progress,
+        years=20.0,
+        failures=failures,
+    )
+
+    assert set(rows) == {"A"}
+    assert set(failures) == {"B", "C"}
+    assert "502" in failures["B"] and "upstream unavailable" in failures["B"]
+    assert "OSError" in failures["C"] and "connection reset" in failures["C"]
+
+
+def test_collecting_failures_stays_optional(tmp_path, monkeypatch):
+    """The parameter is additive: a caller that does not care must still run."""
+    market = FakeMarket(fail_on={"B"})
+    monkeypatch.setattr(boot, "_request", market.request)
+    rows = boot.backfill(
+        "http://md",
+        ["A", "B"],
+        START,
+        END,
+        pause_s=0.0,
+        already_done={},
+        progress_path=str(tmp_path / "p.json"),
+        years=20.0,
+    )
+    assert set(rows) == {"A"}
