@@ -150,13 +150,38 @@ async def list_models(service: MLPipelineService = Depends(get_service)) -> dict
     return {"models": service.registry.model_ids(), "registry_versions": versions}
 
 
+@router.get("/runs")
+async def list_runs(service: MLPipelineService = Depends(get_service)) -> dict:
+    """Which long operations have completed since this container started.
+
+    A full-universe training pass runs for hours and its report exists only in
+    the HTTP response, so a client read timeout used to destroy work that had
+    actually finished — the server does not stop when the caller goes away.
+    The index is deliberately thin; fetch one payload at a time.
+    """
+    return {"runs": service.runs()}
+
+
+@router.get("/runs/{operation}")
+async def get_run(operation: str, service: MLPipelineService = Depends(get_service)) -> dict:
+    """The full report of the last completed run of `operation`.
+
+    404 means it has not finished (or the container restarted) — NOT that it
+    failed. Poll here after a timeout instead of paying for the run twice.
+    """
+    entry = service.last_run(operation)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"no completed run recorded for {operation}")
+    return entry
+
+
 @router.post("/models/train")
 async def train(req: TrainRequest, service: MLPipelineService = Depends(get_service)) -> dict:
     """Run the full training pass (plan §6–§7): dataset → purged walk-forward →
     gate report → MLflow version + drift baseline. Synchronous and potentially
     minutes-long — ops/scheduled use; promotion to production stays manual."""
     with _mapped_errors("train"):
-        return await service.train(
+        result = await service.train(
             req.symbols,
             Interval(req.interval),
             limit=req.limit,
@@ -166,6 +191,7 @@ async def train(req: TrainRequest, service: MLPipelineService = Depends(get_serv
                 UniverseParams(top_n=req.universe_top_n) if req.universe_top_n is not None else None
             ),
         )
+        return service.record_run("train", result)
 
 
 @router.post("/models/target-study")
@@ -176,7 +202,8 @@ async def target_study(
     absolute vs excess) by how well RAW features already predict them. No model
     is fitted, so this costs nothing against the gate's n_trials."""
     with _mapped_errors("target-study"):
-        return await service.target_study(req.symbols, Interval(req.interval), limit=req.limit)
+        result = await service.target_study(req.symbols, Interval(req.interval), limit=req.limit)
+        return service.record_run("target-study", result)
 
 
 @router.post("/models/sector-study")
@@ -188,9 +215,10 @@ async def sector_study(
     Read `composition.share_neutralized_against_peers` first: with too few names
     per sector the transform barely applies and the comparison means nothing."""
     with _mapped_errors("sector-study"):
-        return await service.sector_study(
+        result = await service.sector_study(
             req.symbols, Interval(req.interval), req.sectors, limit=req.limit
         )
+        return service.record_run("sector-study", result)
 
 
 @router.post("/models/alpha-decay")
@@ -202,13 +230,14 @@ async def alpha_decay(
     by assumption; this measures whether that is right. Model-free — no fit, no
     trials consumed. Read the t-statistics, not the IC levels."""
     with _mapped_errors("alpha-decay"):
-        return await service.alpha_decay(
+        result = await service.alpha_decay(
             req.symbols,
             Interval(req.interval),
             limit=req.limit,
             horizons=tuple(req.horizons),
             delays=tuple(req.delays),
         )
+        return service.record_run("alpha-decay", result)
 
 
 @router.post("/models/cost-study")
@@ -220,13 +249,14 @@ async def cost_study(
     while the edge does not grow at all, so a result that survives at $1M need
     not survive at $50M. Model-free — no fit, no trials consumed."""
     with _mapped_errors("cost-study"):
-        return await service.cost_study(
+        result = await service.cost_study(
             req.symbols,
             Interval(req.interval),
             limit=req.limit,
             aum_usd=req.aum_usd,
             turnover_daily=req.turnover_daily,
         )
+        return service.record_run("cost-study", result)
 
 
 @router.post("/models/cpcv")
@@ -235,7 +265,7 @@ async def cpcv(req: CpcvRequest, service: MLPipelineService = Depends(get_servic
     reported as a dispersion rather than a single number. Expensive (C(N,k)
     fits) and diagnostic only — nothing is registered or promotable from it."""
     with _mapped_errors("cpcv"):
-        return await service.cpcv(
+        result = await service.cpcv(
             req.symbols,
             Interval(req.interval),
             limit=req.limit,
@@ -243,6 +273,7 @@ async def cpcv(req: CpcvRequest, service: MLPipelineService = Depends(get_servic
             test_groups=req.test_groups,
             params=TrainingParams(model_kind=req.model_kind, n_seeds=req.n_seeds),
         )
+        return service.record_run("cpcv", result)
 
 
 @router.post("/models/capacity-probe")
@@ -254,7 +285,8 @@ async def capacity_probe(
     cannot: optimization problem, or nothing in the data to learn? Diagnostic
     only — nothing is registered, nothing can be promoted from it."""
     with _mapped_errors("capacity-probe"):
-        return await service.capacity_probe(req.symbols, Interval(req.interval), limit=req.limit)
+        result = await service.capacity_probe(req.symbols, Interval(req.interval), limit=req.limit)
+        return service.record_run("capacity-probe", result)
 
 
 @router.post("/models/tune")
@@ -263,9 +295,10 @@ async def tune(req: TuneRequest, service: MLPipelineService = Depends(get_servic
     holdout) and report the winner plus the number of configurations tried —
     that count is what the gate's deflated Sharpe must be told."""
     with _mapped_errors("tune"):
-        return await service.tune(
+        result = await service.tune(
             req.symbols, Interval(req.interval), limit=req.limit, n_folds=req.n_folds
         )
+        return service.record_run("tune", result)
 
 
 @router.get("/serving")

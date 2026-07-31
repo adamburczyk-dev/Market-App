@@ -12,7 +12,7 @@ baseline and publish ModelDriftDetectedEvent when the verdict is actionable.
 
 import asyncio
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -111,6 +111,36 @@ class MLPipelineService:
         self._horizon_days = horizon_days
         self._contract = data_contract or TrainingDataContract()
         self._dataset_params = dataset_params or DatasetParams()
+        self._runs: dict[str, dict[str, Any]] = {}
+
+    # --- completed runs, kept so a client timeout does not destroy them ------
+
+    def record_run(self, operation: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Remember a finished run and return it unchanged (call it inline).
+
+        Training on the full universe takes hours, and the report exists only in
+        the HTTP response — so a client read timeout threw away work that had
+        completed. It really had completed: uvicorn does not cancel an endpoint
+        when the caller disconnects (measured, not assumed), so everything after
+        the await still runs. Keeping the payload here is what makes it
+        retrievable afterwards via GET /runs/{operation}.
+        """
+        self._runs[operation] = {
+            "operation": operation,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "result": result,
+        }
+        return result
+
+    def last_run(self, operation: str) -> dict[str, Any] | None:
+        return self._runs.get(operation)
+
+    def runs(self) -> list[dict[str, Any]]:
+        """Index only — the payloads are large and fetched one at a time."""
+        return [
+            {"operation": name, "completed_at": entry["completed_at"]}
+            for name, entry in sorted(self._runs.items())
+        ]
 
     @property
     def registry(self) -> ModelRegistry:

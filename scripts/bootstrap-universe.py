@@ -30,6 +30,7 @@ requested, completed — a FAILED gate is still a completed, honest result);
 from __future__ import annotations
 
 import argparse
+import contextlib
 import itertools
 import json
 import os
@@ -202,6 +203,62 @@ def _request(
         if not body:
             body = {"detail": "<empty body — unhandled exception, see service logs>"}
         return exc.code, body
+
+
+def _post_operation(
+    ml_url: str,
+    path: str,
+    operation: str,
+    payload: dict,
+    timeout: float,
+    recover_s: float = 3600.0,
+) -> tuple[int, dict]:
+    """POST a long ml-pipeline operation; if the CLIENT times out, collect the
+    result the server finished anyway.
+
+    A read timeout is a statement about this socket, not about the work: uvicorn
+    does not stop an endpoint when the caller disconnects, so a training pass
+    that runs past `--train-timeout` still completes, logs to MLflow and records
+    its report. Giving up here threw away hours of compute and left the run with
+    nothing to show but the word "timed out".
+
+    The stale-result trap is the reason for `previous`: the container may still
+    hold an EARLIER run of the same operation, and returning that would be worse
+    than the timeout — it would look like a fresh answer. Only a report that did
+    not exist before this call is accepted.
+    """
+    runs_url = f"{ml_url}/api/v1/ml-pipeline/runs/{operation}"
+    previous = None
+    with contextlib.suppress(OSError):
+        status, body = _request("GET", runs_url, timeout=30)
+        if status == 200:
+            previous = body.get("completed_at")
+
+    try:
+        return _request(
+            "POST", f"{ml_url}/api/v1/ml-pipeline/{path}", payload, timeout=timeout
+        )
+    except OSError as exc:
+        print(f"  client timed out after {timeout:.0f}s — the SERVER is still working.")
+        print(
+            f"  polling {runs_url} for up to {recover_s / 60:.0f} min (no work is repeated)"
+        )
+        deadline = time.time() + recover_s
+        while time.time() < deadline:
+            time.sleep(30)
+            try:
+                status, body = _request("GET", runs_url, timeout=60)
+            except OSError:
+                continue  # service busy or restarting — keep waiting
+            if status == 200 and body.get("completed_at") != previous:
+                print(f"  recovered the completed run ({body.get('completed_at')})")
+                result = dict(body.get("result") or {})
+                result["recovered_after_client_timeout"] = True
+                return 200, result
+        raise OSError(
+            f"timed out after {timeout:.0f}s and no completed run appeared "
+            f"within {recover_s / 60:.0f} min"
+        ) from exc
 
 
 def _check_service(base_url: str, name: str) -> None:
@@ -576,9 +633,10 @@ def run_target_study(
         f"\nTarget study on {len(symbols)} symbols (label shapes + raw-feature IC)..."
     )
     try:
-        status, body = _request(
-            "POST",
-            f"{ml_url}/api/v1/ml-pipeline/models/target-study",
+        status, body = _post_operation(
+            ml_url,
+            "models/target-study",
+            "target-study",
             {"symbols": symbols, "interval": "1d", "limit": limit},
             timeout=timeout_s,
         )
@@ -691,9 +749,10 @@ def run_sector_study(
     sectors = {s: SECTOR_BY_SYMBOL.get(s) for s in symbols}
     print(f"\nSector study on {len(symbols)} symbols (model-free)...")
     try:
-        status, body = _request(
-            "POST",
-            f"{ml_url}/api/v1/ml-pipeline/models/sector-study",
+        status, body = _post_operation(
+            ml_url,
+            "models/sector-study",
+            "sector-study",
             {"symbols": symbols, "interval": "1d", "limit": limit, "sectors": sectors},
             timeout=timeout_s,
         )
@@ -763,9 +822,10 @@ def run_cpcv(
         "at a time (sync — many fits)..."
     )
     try:
-        status, body = _request(
-            "POST",
-            f"{ml_url}/api/v1/ml-pipeline/models/cpcv",
+        status, body = _post_operation(
+            ml_url,
+            "models/cpcv",
+            "cpcv",
             {
                 "symbols": symbols,
                 "interval": "1d",
@@ -841,9 +901,10 @@ def run_alpha_decay(
     """
     print(f"\nAlpha decay on {len(symbols)} symbols (model-free)...")
     try:
-        status, body = _request(
-            "POST",
-            f"{ml_url}/api/v1/ml-pipeline/models/alpha-decay",
+        status, body = _post_operation(
+            ml_url,
+            "models/alpha-decay",
+            "alpha-decay",
             {"symbols": symbols, "interval": "1d", "limit": limit},
             timeout=timeout_s,
         )
@@ -920,9 +981,10 @@ def run_cost_study(
     if turnover_daily is not None:
         payload["turnover_daily"] = turnover_daily
     try:
-        status, body = _request(
-            "POST",
-            f"{ml_url}/api/v1/ml-pipeline/models/cost-study",
+        status, body = _post_operation(
+            ml_url,
+            "models/cost-study",
+            "cost-study",
             payload,
             timeout=timeout_s,
         )
@@ -995,9 +1057,10 @@ def run_capacity_probe(
     """
     print(f"\nCapacity probe on {len(symbols)} symbols (sync — can take minutes)...")
     try:
-        status, body = _request(
-            "POST",
-            f"{ml_url}/api/v1/ml-pipeline/models/capacity-probe",
+        status, body = _post_operation(
+            ml_url,
+            "models/capacity-probe",
+            "capacity-probe",
             {"symbols": symbols, "interval": "1d", "limit": limit},
             timeout=timeout_s,
         )
@@ -1044,9 +1107,10 @@ def run_sweep(
         f"\nConfiguration sweep on {len(symbols)} symbols (sync — several minutes)..."
     )
     try:
-        status, body = _request(
-            "POST",
-            f"{ml_url}/api/v1/ml-pipeline/models/tune",
+        status, body = _post_operation(
+            ml_url,
+            "models/tune",
+            "tune",
             {"symbols": symbols, "interval": "1d", "limit": limit},
             timeout=timeout_s,
         )
@@ -1105,9 +1169,10 @@ def run_training(
         extra += f" [{n_seeds}-seed ensemble]"
     print(f"\nTraining on {len(symbols)} symbols{extra} (sync — can take minutes)...")
     try:
-        status, body = _request(
-            "POST",
-            f"{ml_url}/api/v1/ml-pipeline/models/train",
+        status, body = _post_operation(
+            ml_url,
+            "models/train",
+            "train",
             {
                 "symbols": symbols,
                 "interval": "1d",
@@ -1413,7 +1478,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--train-timeout", type=float, default=1800.0, help="Training HTTP timeout (s)"
+        "--train-timeout",
+        type=float,
+        default=5400.0,
+        help=(
+            "HTTP read timeout for the long operations (s, default 90 min). "
+            "Exceeding it is no longer fatal: the server finishes anyway and the "
+            "script collects the report from /runs/{operation}."
+        ),
     )
     parser.add_argument(
         "--market-data-url",

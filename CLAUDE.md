@@ -1766,6 +1766,21 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   linii JSON-a i stare obcięcie wyrzucałoby dokładnie to, co właśnie naprawiliśmy. Predykat łapie
   też `"exception"`. Liczniki: market-data 71 (+2) → **bateria 1207**; ruff + format + mypy czyste.
 
+- 2026-07-31 — **Badania przeszły na 414 symbolach × 20 lat; trening i alpha-decay padły na
+  timeoucie KLIENTA.** Wyniki w następnym wpisie; tu poprawka, bez której kolejny bieg straci to
+  samo. Read timeout to zdanie o gnieździe, nie o pracy: **uvicorn nie anuluje endpointu, gdy
+  klient się rozłączy** (zmierzone osobną sondą, nie założone), więc trening biegł dalej, zapisał
+  się do MLflow — a raport, istniejący wyłącznie w odpowiedzi HTTP, przepadł. Teraz ml-pipeline
+  **zapamiętuje ostatni ukończony bieg** każdej długiej operacji (`record_run` wołane w trasie po
+  awaicie) i wydaje go przez `GET /runs` + `GET /runs/{operation}`; skrypt bootstrapu po timeoucie
+  **odpytuje** ten endpoint zamiast się poddawać. Pułapka, przed którą broni `previous`: kontener
+  może trzymać WCZEŚNIEJSZY raport tej samej operacji, a zwrócenie go byłoby gorsze niż timeout —
+  wyglądałoby jak świeża odpowiedź; akceptowany jest tylko raport, którego przed wywołaniem nie
+  było. Nieudany bieg **nie jest** zapisywany (polling nie może wziąć błędu za wynik), a 404 znaczy
+  „jeszcze nie skończył", nigdy „skończył i jest pusty". `--train-timeout` 1800 → 5400 s, plus do
+  60 min dobijania. Liczniki: ml-pipeline 309 (+4), scripts 32 (+3) → **bateria 1214**; ruff +
+  format + mypy czyste.
+
 **Next (2026-07-30): kod toru predykcji jest skończony — projekt jest zablokowany na POMIARZE.**
 Etapy E0–E5 zaimplementowane; nie ma sensownego następnego zadania programistycznego, bo każda
 pozostała decyzja jest bramkowana liczbami, których nie mamy (E3: próg wykrywalności IC; E4 i wejście

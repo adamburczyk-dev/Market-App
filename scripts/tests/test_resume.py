@@ -12,6 +12,8 @@ import json
 import pathlib
 from datetime import date
 
+import pytest
+
 SPEC = importlib.util.spec_from_file_location(
     "bootstrap", pathlib.Path(__file__).resolve().parents[1] / "bootstrap-universe.py"
 )
@@ -222,3 +224,79 @@ def test_collecting_failures_stays_optional(tmp_path, monkeypatch):
         years=20.0,
     )
     assert set(rows) == {"A"}
+
+
+# --- a client timeout must not throw away a finished run --------------------
+
+
+class FakeLongRun:
+    """POST always times out; /runs starts empty and fills in after N polls."""
+
+    def __init__(self, appears_after: int = 2, previous: str | None = None):
+        self.appears_after = appears_after
+        self.polls = 0
+        self.previous = previous
+        self.posts = 0
+
+    def request(self, method, url, payload=None, timeout=0):
+        if method == "POST":
+            self.posts += 1
+            raise TimeoutError("timed out")  # an OSError, like socket.timeout
+        self.polls += 1
+        if self.previous is not None and self.polls <= self.appears_after:
+            return 200, {"completed_at": self.previous, "result": {"stale": True}}
+        if self.polls <= self.appears_after:
+            return 404, {"detail": "no completed run recorded"}
+        return 200, {
+            "completed_at": "2026-07-31T09:00:00Z",
+            "result": {"gate": "passed"},
+        }
+
+
+def test_a_timed_out_run_is_collected_instead_of_lost(monkeypatch):
+    """The server does not stop when the caller disconnects, so the report is
+    there to be picked up. Losing it cost a full training pass once already."""
+    fake = FakeLongRun(appears_after=1)
+    monkeypatch.setattr(boot, "_request", fake.request)
+    monkeypatch.setattr(boot.time, "sleep", lambda _s: None)
+
+    status, body = boot._post_operation(
+        "http://ml", "models/train", "train", {}, timeout=1.0
+    )
+    assert status == 200
+    assert body["gate"] == "passed"
+    assert body["recovered_after_client_timeout"] is True
+    assert fake.posts == 1, "the work must never be requested twice"
+
+
+def test_a_stale_report_from_an_earlier_run_is_not_accepted(monkeypatch):
+    """The container may still hold YESTERDAY's report for the same operation.
+    Returning it would be worse than the timeout: it would look like an answer."""
+    fake = FakeLongRun(appears_after=2, previous="2026-07-30T09:00:00Z")
+    monkeypatch.setattr(boot, "_request", fake.request)
+    monkeypatch.setattr(boot.time, "sleep", lambda _s: None)
+
+    status, body = boot._post_operation(
+        "http://ml", "models/train", "train", {}, timeout=1.0
+    )
+    assert status == 200
+    assert body["gate"] == "passed"
+    assert "stale" not in body
+
+
+def test_giving_up_still_raises_so_the_report_records_it(monkeypatch):
+    class NeverFinishes(FakeLongRun):
+        def request(self, method, url, payload=None, timeout=0):
+            if method == "POST":
+                raise TimeoutError("timed out")
+            return 404, {"detail": "not yet"}
+
+    monkeypatch.setattr(boot, "_request", NeverFinishes().request)
+    monkeypatch.setattr(boot.time, "sleep", lambda _s: None)
+    clock = iter([0.0, 0.0, 10.0, 20.0, 10_000.0, 10_000.0, 10_000.0])
+    monkeypatch.setattr(boot.time, "time", lambda: next(clock))
+
+    with pytest.raises(OSError, match="no completed run appeared"):
+        boot._post_operation(
+            "http://ml", "models/train", "train", {}, timeout=1.0, recover_s=60
+        )
