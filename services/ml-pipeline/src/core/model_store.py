@@ -10,6 +10,7 @@ not match the artifact's feature list. Promotion uses the registry alias
 
 import json
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,13 @@ from src.core.training import GateReport
 logger = structlog.get_logger()
 
 PRODUCTION_ALIAS = "production"
+
+
+def _as_iso(epoch_ms: int | None) -> str | None:
+    """MLflow timestamps are epoch milliseconds; None stays None, never 1970."""
+    if not epoch_ms:
+        return None
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).isoformat()
 
 
 class MlflowModelStore:
@@ -157,6 +165,14 @@ class MlflowModelStore:
         return self.load(version)
 
     def versions(self) -> list[dict[str, Any]]:
+        """Registered versions, oldest first.
+
+        ``created_at`` is here because the listing is what gets consulted after
+        a training run whose report was lost — and "did the run that just took
+        three hours actually register anything?" cannot be answered by a version
+        number alone, only by when the version appeared. MLflow keeps the
+        timestamp in epoch milliseconds; it is emitted as ISO UTC.
+        """
         try:
             found = self._client.search_model_versions(f"name='{self._model_name}'")
         except mlflow.exceptions.MlflowException:
@@ -167,6 +183,7 @@ class MlflowModelStore:
                 "version": str(mv.version),
                 "run_id": mv.run_id or "",
                 "production": str(mv.version) == production,
+                "created_at": _as_iso(getattr(mv, "creation_timestamp", None)),
             }
             for mv in sorted(found, key=lambda m: int(m.version))
         ]

@@ -51,6 +51,26 @@ def test_versions_listing(store, trained, tmp_path, monkeypatch):
     assert [v["production"] for v in versions] == [False, True]
 
 
+def test_versions_carry_when_they_were_registered(store, trained, tmp_path, monkeypatch):
+    """The listing is what gets consulted after a training run whose report was
+    lost, and "did those three hours register anything?" is a question about
+    WHEN, not about a version number. MLflow keeps epoch milliseconds; a naive
+    pass-through would report 1970 or crash the JSON encoder."""
+    from datetime import UTC, datetime
+
+    monkeypatch.chdir(tmp_path)
+    _, model, report = trained
+    before = datetime.now(UTC)
+    store.log_training(model, report)
+
+    created = store.versions()[0]["created_at"]
+    assert created is not None
+    parsed = datetime.fromisoformat(created)
+    assert parsed.tzinfo is not None
+    # registered during this test, not at the epoch
+    assert abs((parsed - before).total_seconds()) < 300
+
+
 def test_load_production_none_when_nothing_promoted(store):
     assert store.load_production() is None
 

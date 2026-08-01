@@ -84,11 +84,14 @@ async def test_train_end_to_end(tmp_path, monkeypatch):
     assert baseline.prediction_reference
     assert set(baseline.reference_features) == set(result["features"])
     # version visible in the store, not yet production
-    assert store.versions()[0] == {
-        "version": "1",
-        "run_id": store.versions()[0]["run_id"],
-        "production": False,
-    }
+    listed = store.versions()
+    assert len(listed) == 1
+    assert listed[0]["version"] == "1"
+    assert listed[0]["run_id"]
+    assert listed[0]["production"] is False
+    # when it was registered — the only field that answers "did the run that
+    # just took three hours actually produce this, or is it last week's?"
+    assert listed[0]["created_at"] is not None
 
 
 @pytest.mark.asyncio
