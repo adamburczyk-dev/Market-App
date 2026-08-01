@@ -300,3 +300,27 @@ def test_giving_up_still_raises_so_the_report_records_it(monkeypatch):
         boot._post_operation(
             "http://ml", "models/train", "train", {}, timeout=1.0, recover_s=60
         )
+
+
+def test_the_recovery_window_scales_with_the_budget(monkeypatch, capsys):
+    """A 90-minute budget deserves 90 more minutes of waiting, not a fixed
+    hour — the measured training pass on 414 symbols already ran past 90."""
+
+    state = {"posted": False}
+
+    def spy(method, url, payload=None, timeout=0):
+        if method == "POST":
+            state["posted"] = True
+            raise TimeoutError("timed out")
+        if not state["posted"]:
+            return 404, {"detail": "nothing recorded yet"}  # the pre-call probe
+        return 200, {"completed_at": "2026-07-31T09:00:00Z", "result": {}}
+
+    monkeypatch.setattr(boot, "_request", spy)
+    monkeypatch.setattr(boot.time, "sleep", lambda _s: None)
+
+    status, _ = boot._post_operation(
+        "http://ml", "models/train", "train", {}, timeout=5400.0
+    )
+    assert status == 200
+    assert "for up to 90 min" in capsys.readouterr().out

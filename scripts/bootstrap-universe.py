@@ -211,7 +211,7 @@ def _post_operation(
     operation: str,
     payload: dict,
     timeout: float,
-    recover_s: float = 3600.0,
+    recover_s: float | None = None,
 ) -> tuple[int, dict]:
     """POST a long ml-pipeline operation; if the CLIENT times out, collect the
     result the server finished anyway.
@@ -222,11 +222,18 @@ def _post_operation(
     its report. Giving up here threw away hours of compute and left the run with
     nothing to show but the word "timed out".
 
+    The recovery window defaults to the timeout again (at least an hour): if the
+    caller budgeted 90 minutes, waiting another 90 is proportionate, and the
+    measured training pass on 414 symbols already ran past 90. Polling costs one
+    GET every 30 seconds, so a generous window is nearly free — losing the run
+    is not.
+
     The stale-result trap is the reason for `previous`: the container may still
     hold an EARLIER run of the same operation, and returning that would be worse
     than the timeout — it would look like a fresh answer. Only a report that did
     not exist before this call is accepted.
     """
+    recover_s = max(3600.0, timeout) if recover_s is None else recover_s
     runs_url = f"{ml_url}/api/v1/ml-pipeline/runs/{operation}"
     previous = None
     with contextlib.suppress(OSError):
