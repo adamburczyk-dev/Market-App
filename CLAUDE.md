@@ -1781,6 +1781,42 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   60 min dobijania. Liczniki: ml-pipeline 309 (+4), scripts 32 (+3) → **bateria 1214**; ruff +
   format + mypy czyste.
 
+- 2026-08-01 — **Trening #3 (414 symboli × 20 lat) i sonda pojemności: model ZAPADŁ SIĘ, a kontrola
+  sondy była za słaba.** Bieg przeszedł w całości (1 868 128 próbek, 4778 sesji, 61 foldów, wersja 3
+  w MLflow) i **bramka odrzuciła model na 5 z 6 warunków**, zaczynając od G0: `pred_std = 0.0`,
+  `auc_train = 0.5000`, IC dokładnie 0.0000 — sieć wypuszczała **jedną liczbę dla każdego wiersza**.
+  Sygnatura skali: ta sama konfiguracja w sondzie (60 tys. wierszy) daje `auc_train` 0.584, a na
+  1,78 mln wierszy zapada się do stałej; foldy (krótsze okna) mają `auc_train` śr. 0.521 i
+  `pred_std` ~0.013, przy czym **dwa foldy też są dokładnie 0.0**.
+  **Eksperyment obalił obie moje hipotezy mechanizmu**: na syntetycznym panelu ze słabym sygnałem
+  ani rosnąca liczba kroków (1k → 63k), ani weight decay, ani obniżone lr nie powodują zapadnięcia
+  (`pred_std` stabilnie ~0.029). Czyli to nie jest sam optymalizator.
+  **To skierowało mnie na samą sondę — i tam był defekt.** Kontrola permutowała etykiety
+  **globalnie**, co niszczy naraz dwie rzeczy: sparowanie nazwy z etykietą (pytanie sondy) ORAZ to,
+  że etykiety jednej sesji w większości się zgadzają (triple barrier h=10 to w dużej mierze efekt
+  DATY — zmierzona korelacja par na realnym panelu to 0.358). Cechy są trwałe, więc duży model uczy
+  się „ta konfiguracja to ta data, a ta data rosła" **bez żadnej przewagi przekrojowej**, a kontrola
+  po globalnym przetasowaniu tego nie potrafi. **Zmierzone**: na panelu, w którym etykieta jest
+  czystym efektem daty i przekrojowej przewidywalności NIE MA z konstrukcji, stara sonda dała gap
+  **+0.066 przy progu 0.05, pełną separację i werdykt „learnable structure EXISTS"**. Po zmianie na
+  permutację **wewnątrz sesji** (zachowuje dzienną stopę pozytywów, oddaje tylko sparowanie nazw)
+  ten sam panel daje +0.0038 i „NO learnable structure". Przy okazji: kontrola, która nie znajdzie
+  swoich sesji, **rzuca teraz błąd** — cicho niepermutująca kontrola dawałaby zawsze „brak
+  struktury", czyli pomyłkę w stronę, której nikt nie zauważa.
+  **Konsekwencja dla wcześniejszego wpisu**: werdykt „struktura ISTNIEJE" (gap +0.201) pochodzi ze
+  starej, zawyżającej kontroli i **wymaga powtórzenia**; +0.201 jest wyraźnie ponad zmierzoną
+  podłogą artefaktu +0.066, więc nie jest to czysty artefakt, ale liczba nie jest wiarygodna.
+  **Alpha decay (P5-4) — pierwszy pełny wynik**: próg z permutowanego nulla |t| = 4.03; cztery cechy
+  go przechodzą. `amihud_20` IC **+0.0619** (t 6.26) i `dollar_volume_20` −0.0472 (t −5.22) — obie
+  rosną monotonicznie z horyzontem, szczyt na 63 sesjach, i są **niewrażliwe na opóźnienie wejścia**
+  (99.8% IC po 5 dniach): to premia za niepłynność/rozmiar, czyli premia za ryzyko, nie sygnał
+  czasowy. `return_1d` IC −0.0177 (t −6.68) szczytuje na h=1 i **traci 72% IC po jednym dniu
+  opóźnienia** — realna alfa krótkoterminowa, której nasza architektura (świece dzienne, cechy po
+  zamknięciu, zlecenie następnej sesji) z definicji nie zdąży zebrać. `return_5d` (t −4.60) pośrodku.
+  Werdykt studium: IC szczytuje średnio na **34 sesjach**, więc horyzont 10 zamyka etykietę w środku
+  ruchu. Zgadza się to z target study, które wskazało horyzont **63**.
+  ml-pipeline 312 (+2); ruff + format + mypy czyste.
+
 **Next (2026-07-30): kod toru predykcji jest skończony — projekt jest zablokowany na POMIARZE.**
 Etapy E0–E5 zaimplementowane; nie ma sensownego następnego zadania programistycznego, bo każda
 pozostała decyzja jest bramkowana liczbami, których nie mamy (E3: próg wykrywalności IC; E4 i wejście

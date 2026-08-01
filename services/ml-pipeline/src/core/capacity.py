@@ -14,7 +14,23 @@ unregularized model on the training window and read the TRAIN AUC.
 The reading requires a control. A big enough network memorizes random labels,
 so a high train AUC alone proves nothing — it has to be compared against the
 same model trained on SHUFFLED labels, which measures pure memorization
-capacity for this feature matrix and sample size. What matters is the gap:
+capacity for this feature matrix and sample size.
+
+The shuffle has to be done WITHIN each session, and that is not a detail. A
+global shuffle destroys two things at once: which name got which label (the
+cross-sectional question) and the fact that a session's labels mostly agree
+(a triple-barrier label at h=10 is largely a date effect — measured pairwise
+correlation on the real panel is 0.36). Features are persistent, so a big
+model can learn "this feature configuration is that date, and that date was an
+up-market" with no cross-sectional edge at all, while the globally-shuffled
+control cannot. Measured: on a synthetic panel whose labels are a PURE date
+effect, with zero cross-sectional predictability by construction, the global
+shuffle produced a gap of +0.066 against a 0.05 threshold and the probe
+announced "learnable structure EXISTS". Shuffling within a session keeps each
+day's positive rate exactly and permutes only which name got which label —
+which is the only question the probe is asking.
+
+What matters is the gap:
 
   real ≫ shuffled  → learnable structure exists; the production config is
                      leaving it on the table (cause (a))
@@ -71,6 +87,31 @@ class CapacityProbe:
         return asdict(self)
 
 
+def _shuffle_within_sessions(y: np.ndarray, dates: list, rng: np.random.Generator) -> np.ndarray:
+    """Permute labels inside each session; the per-day positive rate is kept.
+
+    This is the control the probe needs: it removes the pairing between a NAME
+    and its label while leaving the date effect — which carries most of the
+    label variance — exactly as it was.
+    """
+    if len(dates) != len(y):
+        # A control that cannot find its sessions would silently permute
+        # nothing, and an unshuffled control makes the probe answer "no
+        # structure" every time — wrong in the quiet direction.
+        raise ValueError(f"dates has {len(dates)} rows, labels have {len(y)}")
+    labels = y.copy()
+    index_by_date: dict[object, list[int]] = {}
+    for position, session in enumerate(dates):
+        index_by_date.setdefault(session, []).append(position)
+    for positions in index_by_date.values():
+        if len(positions) < 2:
+            continue
+        block = labels[positions]
+        rng.shuffle(block)
+        labels[positions] = block
+    return labels
+
+
 def _fit_and_score(
     x: np.ndarray, y: np.ndarray, config: TrainConfig, seed_offset: int = 0
 ) -> float:
@@ -107,6 +148,7 @@ def run_capacity_probe(
 
     x = ds.x[-max_rows:]
     y = ds.y[-max_rows:]
+    dates = list(ds.dates[-max_rows:])
     if len(np.unique(y)) < 2:
         raise ValueError("capacity probe needs both classes present")
 
@@ -116,8 +158,10 @@ def run_capacity_probe(
     rng = np.random.default_rng(over.seed)
     shuffled_runs: list[float] = []
     for i in range(n_shuffles):
-        labels = y.copy()
-        rng.shuffle(labels)  # fresh permutation each time, not one reused draw
+        # Fresh permutation each time, not one reused draw — and WITHIN each
+        # session, so the control keeps the date effect and gives up only the
+        # cross-sectional pairing.
+        labels = _shuffle_within_sessions(y, dates, rng)
         shuffled_runs.append(_fit_and_score(x, labels, over, seed_offset=100 + i))
 
     production = _fit_and_score(x, y, production_config or TrainConfig(), seed_offset=900)
