@@ -386,6 +386,75 @@ def backfill(
     return rows_by_symbol
 
 
+def backfill_fundamentals(
+    fundamentals_url: str,
+    symbols: list[str],
+    pause_s: float,
+    report: dict | None = None,
+) -> int:
+    """Fill the point-in-time fundamentals panel from SEC EDGAR, symbol by symbol.
+
+    The panel is what `--with-fundamentals` joins into training, and until it is
+    populated that flag adds columns of neutral 0.5 — a family that is present
+    in name only. Driven per symbol rather than through the service's weekly
+    scheduler because that gives progress, a per-symbol reason when a ticker
+    fails, and a read-back of what actually landed.
+
+    SEC asks for a descriptive User-Agent and a polite request rate; the pause
+    is per symbol and the service adds its own between XBRL concept calls.
+    """
+    print(f"\nFundamentals backfill: {len(symbols)} symbols via {fundamentals_url}")
+    print("  (SEC EDGAR, annual 10-K filings; needs SEC_USER_AGENT set in .env)")
+    stored: dict[str, int] = {}
+    failures: dict[str, str] = {}
+    for i, symbol in enumerate(symbols):
+        # /backfill, not /refresh: refresh keeps the newest two filings, which
+        # answers the serving question. Training needs the whole history.
+        url = f"{fundamentals_url}/api/v1/fundamental-data/backfill/{symbol}?periods=24"
+        try:
+            status, body = _request("POST", url, {}, timeout=180)
+        except OSError as exc:
+            failures[symbol] = f"connection: {type(exc).__name__}: {exc}"
+            print(f"  [{i + 1:>3}/{len(symbols)}] {symbol:<6} ERROR: {exc}")
+            continue
+        if status == 200:
+            periods = int(body.get("periods", 0) or 0)
+            stored[symbol] = periods
+            print(
+                f"  [{i + 1:>3}/{len(symbols)}] {symbol:<6} {periods:>3} annual periods"
+            )
+        else:
+            detail = body.get("detail", body)
+            failures[symbol] = f"HTTP {status}: {detail}"
+            print(f"  [{i + 1:>3}/{len(symbols)}] {symbol:<6} HTTP {status}: {detail}")
+        if pause_s and i + 1 < len(symbols):
+            time.sleep(pause_s)
+
+    with_data = [s for s, n in stored.items() if n > 0]
+    print(
+        f"\n  {len(with_data)}/{len(symbols)} symbols have at least one annual period; "
+        f"{len(failures)} failed"
+    )
+    if failures:
+        by_reason: dict[str, list[str]] = {}
+        for symbol, reason in failures.items():
+            by_reason.setdefault(reason[:120], []).append(symbol)
+        for reason, names in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
+            shown = ", ".join(names[:8]) + ("..." if len(names) > 8 else "")
+            print(f"  {len(names):>3}x {reason}\n       {shown}")
+    if report is not None:
+        report["fundamentals_backfill"] = {
+            "periods_by_symbol": stored,
+            "symbols_with_data": len(with_data),
+            "errors": failures,
+        }
+    # Annual filings only: 20 years of history is ~20 observations per name, so
+    # the family ranks the cross-section slowly. That is a property of the data,
+    # not a defect — but it is why these features cannot matter at a 10-session
+    # horizon and might at 63.
+    return 0 if with_data else 1
+
+
 def validate_coverage(market_url: str, symbols: list[str]) -> dict[str, dict]:
     """Read back ALL stored bars and sanity-check span + gaps (>5 business days)."""
     report: dict[str, dict] = {}
@@ -1503,6 +1572,26 @@ def main() -> int:
         default=os.environ.get("ML_PIPELINE_URL", "http://localhost:8005"),
     )
     parser.add_argument(
+        "--fundamental-data-url",
+        default=os.environ.get("FUNDAMENTAL_DATA_URL", "http://localhost:8009"),
+    )
+    parser.add_argument(
+        "--fundamentals-backfill",
+        action="store_true",
+        help=(
+            "Fill the point-in-time fundamentals panel from SEC EDGAR over the "
+            "whole universe (annual 10-K history). Prerequisite for "
+            "--with-fundamentals: without it that flag joins a family that is "
+            "present in name only. Needs SEC_USER_AGENT in .env."
+        ),
+    )
+    parser.add_argument(
+        "--fundamentals-pause",
+        type=float,
+        default=0.5,
+        help="Seconds between symbols during the fundamentals backfill (SEC politeness)",
+    )
+    parser.add_argument(
         "--report-out",
         default=None,
         help=(
@@ -1640,6 +1729,17 @@ def main() -> int:
     report["train_limit"] = args.train_limit
 
     exit_code = 1 if failed else 0
+    if args.fundamentals_backfill:
+        # Before the studies: the fundamentals family can only be MEASURED once
+        # the panel holds history, and the per-feature IC table is what decides
+        # whether it enters the model at all (stage-2 rule).
+        trainable = [s for s in symbols if coverage.get(s, {}).get("sessions", 0) > 0]
+        exit_code |= backfill_fundamentals(
+            args.fundamental_data_url.rstrip("/"),
+            trainable,
+            args.fundamentals_pause,
+            report=report,
+        )
     if args.target_study:
         trainable = [s for s, info in coverage.items() if info["sessions"] > 0]
         ml_url = args.ml_pipeline_url.rstrip("/")

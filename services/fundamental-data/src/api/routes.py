@@ -96,6 +96,27 @@ async def get_panel(
     }
 
 
+@router.post("/backfill/{symbol}")
+async def backfill(
+    symbol: str,
+    periods: int = Query(default=24, ge=2, le=40),
+    service: FundamentalDataService = Depends(get_service),
+) -> dict:
+    """Store the symbol's FULL annual history in the point-in-time panel.
+
+    `POST /refresh` keeps the newest two filings — enough to answer "what do we
+    know now", which is what serving asks. Training asks what was knowable in
+    2012, and that needs the history: this is the route that puts it there.
+    """
+    stored = await service.refresh_history(symbol.upper(), periods=periods)
+    if not stored:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no EDGAR fundamentals for {symbol} (SEC_USER_AGENT set? ticker known?)",
+        )
+    return {"symbol": symbol.upper(), "periods": stored}
+
+
 @router.post("/refresh/{symbol}")
 async def refresh(symbol: str, service: FundamentalDataService = Depends(get_service)) -> dict:
     """Pull the latest annual filings from EDGAR, score, and publish."""

@@ -1817,6 +1817,30 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   ruchu. Zgadza się to z target study, które wskazało horyzont **63**.
   ml-pipeline 312 (+2); ruff + format + mypy czyste.
 
+- 2026-08-01 — **Panel fundamentów mógł trzymać najwyżej DWA lata na spółkę — pytanie użytkownika
+  („czy nie powinniśmy mieć danych finansowych przed strojeniem modelu?") trafiło w realną dziurę.**
+  P2-3 zbudowało poprawny panel point-in-time (`filed_at`, odczyt as-of, `GET /panel`, złączenie w
+  `build_dataset`), ale **jedyną ścieżką, która cokolwiek do niego zapisywała, był `refresh`** —
+  a ten woła `latest_statements(count=2)`. Odpowiedź na „co wiemy teraz" (pytanie serwowania) była
+  jednocześnie całą historią, jaką miało dostać uczenie. Złączenie po 20 latach dawało więc
+  neutralne 0.5 na prawie każdej sesji, czyli rodzinę cech obecną wyłącznie z nazwy. Dane były na
+  wyciągnięcie ręki: `EdgarClient` **już pobiera wszystkie roczne okresy** i dopiero na końcu tnie
+  `periods[:count]`. Nowe `refresh_history` zapisuje **cały** panel (każdy okres punktowany
+  względem SWOJEGO poprzednika — F-Score porównuje kolejne lata, więc ocenianie 2012 względem 2025
+  dałoby liczbę wyglądającą jak wynik i nic nieznaczącą), publikuje **jedno** zdarzenie zamiast
+  dwudziestu (`fundamentals.updated` mówi, że zmieniła się bieżąca wiedza — odtwarzanie 20 lat
+  budziłoby każdego konsumenta 20 razy na spółkę), route `POST /backfill/{symbol}?periods=N`.
+  **Druga dziura, obok**: `SCHEDULE_REFRESH_ENABLED` / `REFRESH_SYMBOLS` / `REFRESH_SYMBOL_PAUSE_S`
+  **nigdy nie były przekazane w compose ani w Helmie**, więc tygodniowy harmonogram odświeżania
+  istniał w kodzie i był nieosiągalny w działającym systemie — panel po jednorazowym wypełnieniu
+  i tak by się zestarzał. Dodane po obu stronach (render sprawdzony: `helm template` i
+  `docker compose config`). Skrypt bootstrapu: `--fundamentals-backfill` (+ `--fundamentals-pause`,
+  `--fundamental-data-url`) przechodzi po uniwersum, raportuje liczbę okresów per symbol i grupuje
+  awarie po przyczynie. Ograniczenie warte zapamiętania: EDGAR czytamy **tylko rocznie (10-K)**,
+  więc 20 lat to ~20 obserwacji na spółkę — rodzina rankuje przekrój wolno i z definicji nie może
+  nic znaczyć przy horyzoncie 10 sesji, a może przy 63. fundamental-data 54 testy (+7); ruff +
+  format + mypy czyste.
+
 **Next (2026-07-30): kod toru predykcji jest skończony — projekt jest zablokowany na POMIARZE.**
 Etapy E0–E5 zaimplementowane; nie ma sensownego następnego zadania programistycznego, bo każda
 pozostała decyzja jest bramkowana liczbami, których nie mamy (E3: próg wykrywalności IC; E4 i wejście

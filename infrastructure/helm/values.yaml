@@ -231,6 +231,11 @@ services:
       DB_USER: trader
       # SEC_USER_AGENT required for live EDGAR fetch; without it the service
       # degrades gracefully to manually-ingested statements.
+      # Weekly universe refresh — runs only with SEC_USER_AGENT set AND a
+      # non-empty REFRESH_SYMBOLS, so it stays inert until deliberately armed.
+      SCHEDULE_REFRESH_ENABLED: "true"
+      REFRESH_SYMBOLS: ""
+      REFRESH_SYMBOL_PAUSE_S: "1.0"
 
   macro-data:
     enabled: true

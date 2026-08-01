@@ -63,6 +63,50 @@ class FundamentalDataService:
         )
         return scored, breakdown
 
+    async def refresh_history(self, symbol: str, periods: int = 24) -> int:
+        """Store EVERY available annual period, not just the newest two.
+
+        `refresh` answers "what do we know now", which is the serving question,
+        and it is the only path that ever wrote to the panel — so the panel
+        could hold at most two years per symbol and a point-in-time join over
+        twenty years was impossible by construction. The XBRL response already
+        contains the full history; it was being sliced away.
+
+        Each period is scored against its own predecessor (an F-Score compares
+        consecutive years, so scoring 2012 against 2025 would be meaningless).
+        Only the newest publishes an event: `fundamentals.updated` announces
+        that current knowledge changed, and replaying twenty years of history
+        would wake every downstream consumer twenty times for one symbol.
+        """
+        statements = await self._fetcher.latest_statements(symbol, count=periods)
+        if not statements:
+            logger.warning("No fundamentals available", symbol=symbol)
+            return 0
+        # newest first from the fetcher; score each against the year before it
+        scored: list[FinancialStatements] = []
+        for index, current in enumerate(statements):
+            prior = statements[index + 1] if index + 1 < len(statements) else None
+            breakdown = compute_f_score(current, prior)
+            scored.append(current.model_copy(update={"piotroski_f_score": breakdown.score}))
+            if index == 0:
+                self._latest[current.symbol.upper()] = (scored[0], breakdown)
+        await self._store.save(scored)
+        await self._publisher.publish(
+            FundamentalsUpdatedEvent(
+                symbol=scored[0].symbol,
+                period_end=scored[0].period_end.isoformat(),
+                fiscal_period=scored[0].fiscal_period,
+            )
+        )
+        logger.info(
+            "Fundamentals history stored",
+            symbol=scored[0].symbol,
+            periods=len(scored),
+            oldest=scored[-1].period_end.isoformat(),
+            newest=scored[0].period_end.isoformat(),
+        )
+        return len(scored)
+
     async def refresh(self, symbol: str) -> tuple[FinancialStatements, FScoreBreakdown] | None:
         """Pull the latest two annual filings from EDGAR, score, and publish."""
         statements = await self._fetcher.latest_statements(symbol, count=2)

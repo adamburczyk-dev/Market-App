@@ -475,6 +475,13 @@ services:
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
       SEC_USER_AGENT: ${SEC_USER_AGENT:-}
+      # Weekly EDGAR refresh of the universe. The service has had this scheduler
+      # since it was built, but the variables were never passed through here, so
+      # there was no way to turn it on in a running stack — the panel could only
+      # be filled one POST /refresh/{symbol} at a time and then went stale.
+      SCHEDULE_REFRESH_ENABLED: ${SCHEDULE_REFRESH_ENABLED:-true}
+      REFRESH_SYMBOLS: ${REFRESH_SYMBOLS:-}
+      REFRESH_SYMBOL_PAUSE_S: ${REFRESH_SYMBOL_PAUSE_S:-1.0}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     ports:
       - "8009:8000"
