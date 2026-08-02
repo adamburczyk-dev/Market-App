@@ -100,7 +100,10 @@ def test_untouched_truncated_tail_is_dropped():
 
 
 def test_macro_one_hot_appended():
-    regimes = {START + timedelta(days=i): "crisis" for i in range(120)}
+    # Keyed by DATE. The old datetime keying worked only here, where the test
+    # built the exact session instants; in production the lookup could never
+    # hit — and nothing passed `regime_by_date` at all, so it never showed.
+    regimes = {(START + timedelta(days=i)).date(): "crisis" for i in range(120)}
     ds = build_dataset(universe(), PARAMS, regime_by_date=regimes)
     crisis = ds.feature_names.index("macro_crisis")
     expansion = ds.feature_names.index("macro_expansion")
@@ -215,7 +218,10 @@ def test_zero_variance_drop_keeps_the_label_diagnostics():
 
 
 def test_zero_variance_drop_keeps_informative_columns():
-    regimes = {START + timedelta(days=i): "crisis" if i % 2 else "expansion" for i in range(120)}
+    regimes = {
+        (START + timedelta(days=i)).date(): "crisis" if i % 2 else "expansion"
+        for i in range(120)
+    }
     ds = build_dataset(universe(), PARAMS, regime_by_date=regimes)
     cleaned, dropped = drop_zero_variance_features(ds)
     # crisis/expansion alternate → they carry variance and must survive

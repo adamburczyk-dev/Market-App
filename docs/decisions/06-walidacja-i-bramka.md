@@ -120,7 +120,7 @@ Jego niezamknięte decyzje żyją tutaj, żeby nie zniknęły razem z dokumentem
 | **D3** | Makro liczone dwa razy (nastawienie w agregatorze + limity w risk-mgmt) | **otwarta** — patrz `07-agregacja-i-decyzja.md` | decyzja człowieka; rekomendacja: limity zostają, nastawienie znika |
 | **D5** | Filtr RSI jako osobna reguła czy doklejka do momentum | **zamknięta 2026-08-02: osobna reguła** (`rsi_bollinger_reversion`). Są to przeciwne zakłady — momentum kupuje szczyt przekroju, rewersja kupuje wyprzedaną nazwę — więc sklejenie ich uśredniłoby dokładnie tę niezgodę, którą agregator ma ważyć. Zmierzalne: reguły są teraz osobnymi źródłami wag | — |
 | **D7** | Backtest na nakładających się transzach | **otwarta** — silnik nadal rebalansuje dziennie, więc backtest i ocena ML mierzą różne obiekty | przepisanie silnika na przekrojowy z transzami `1/h` |
-| **D8** | Reżim jako cecha czy jako warunkowanie modelu | **otwarta** → wraca razem z P2-4 | historia makro vintage |
+| **D8** | Reżim jako cecha czy jako warunkowanie modelu | **otwarta, ale odblokowana 2026-08-02**: historia vintage istnieje (P2-4, `03-dane.md`), więc reżim da się wreszcie zmierzyć jako cechę | pomiar IC kolumn `macro_*` na realnym backfillu |
 
 Decyzje **rozstrzygnięte** przez ten plan i opisane w pozostałych plikach tego folderu: D4
 (meta-labeling zamiast równoległego głosowania → `05-cechy.md` / P5-1), D6 (`llm-svc` — odłożone).

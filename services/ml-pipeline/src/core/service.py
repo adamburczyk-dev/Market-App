@@ -12,13 +12,13 @@ baseline and publish ModelDriftDetectedEvent when the verdict is actionable.
 
 import asyncio
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import numpy as np
 import structlog
 from trading_common.events import ModelDriftDetectedEvent
-from trading_common.schemas import FinancialStatements, Interval
+from trading_common.schemas import FinancialStatements, Interval, OHLCVBar
 
 from src.core.alpha_decay import DEFAULT_DELAYS, DEFAULT_HORIZONS, run_alpha_decay
 from src.core.capacity import run_capacity_probe
@@ -35,6 +35,7 @@ from src.core.dataset import (
 from src.core.evaluation import effective_sample_size
 from src.core.fundamentals_client import FundamentalsClient
 from src.core.inference_log import InferenceLog
+from src.core.macro_client import MacroClient
 from src.core.market_data_client import MarketDataClient
 from src.core.model import TrainedModel
 from src.core.model_store import MlflowModelStore
@@ -89,6 +90,7 @@ class MLPipelineService:
         publisher: Publisher,
         market_client: MarketDataClient | None = None,
         fundamentals_client: FundamentalsClient | None = None,
+        macro_client: MacroClient | None = None,
         model_store: MlflowModelStore | None = None,
         serving: ServingEngine | None = None,
         inference_log: InferenceLog | None = None,
@@ -103,6 +105,7 @@ class MLPipelineService:
         self._publisher = publisher
         self._market = market_client
         self._fundamentals = fundamentals_client
+        self._macro = macro_client
         self._store = model_store
         self._serving = serving
         self._log = inference_log
@@ -278,11 +281,50 @@ class MLPipelineService:
             "survivorship": survivorship_report(bars_by_symbol),
             "universe": universe.diagnostics if universe is not None else None,
         }
+
+        # P2-4: the macro one-hot finally has a source. macro-data classifies
+        # each past day from ONLY the vintages published by then, so these
+        # columns carry something a model may legitimately learn from — before
+        # this, `regime_by_date` had no caller and all five were constant zero.
+        regime_by_date = await self._regime_history(bars_by_symbol)
+        selection["macro"] = {
+            "days_with_regime": len(regime_by_date),
+            "source": "macro-data/history" if self._macro is not None else "not configured",
+        }
+
         return (
-            build_dataset(bars_by_symbol, params, fundamentals_by_symbol=panel, universe=universe),
+            build_dataset(
+                bars_by_symbol,
+                params,
+                regime_by_date=regime_by_date or None,
+                fundamentals_by_symbol=panel,
+                universe=universe,
+            ),
             expected_sessions,
             selection,
         )
+
+    async def _regime_history(self, bars_by_symbol: dict[str, list[OHLCVBar]]) -> dict[date, str]:
+        """Point-in-time regimes spanning the bars we are about to train on.
+
+        The window comes from the DATA, not from a config default: asking for a
+        fixed range would either miss the early sessions or ask macro-data to
+        walk decades nobody requested.
+        """
+        if self._macro is None:
+            return {}
+        timestamps = [bar.timestamp for bars in bars_by_symbol.values() for bar in bars]
+        if not timestamps:
+            return {}
+        history = await self._macro.get_regime_history(
+            min(timestamps).date(), max(timestamps).date()
+        )
+        if not history:
+            logger.warning(
+                "No macro history available — the macro_* columns will be constant "
+                "and dropped by the variance filter (P2-4 backfill not run?)"
+            )
+        return history
 
     async def target_study(
         self,

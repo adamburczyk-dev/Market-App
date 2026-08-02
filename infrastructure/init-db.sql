@@ -17,6 +17,7 @@ CREATE SCHEMA IF NOT EXISTS backtest;
 CREATE SCHEMA IF NOT EXISTS ml_pipeline;
 CREATE SCHEMA IF NOT EXISTS risk_mgmt;
 CREATE SCHEMA IF NOT EXISTS execution;
+CREATE SCHEMA IF NOT EXISTS macro_data;
 
 -- ============================================================
 -- Tabela OHLCV (hypertable TimescaleDB)
@@ -97,6 +98,33 @@ CREATE TABLE IF NOT EXISTS market_data.fundamentals (
 -- Odczyt as-of chodzi po (symbol, filed_at DESC) — to jest ten indeks.
 CREATE INDEX IF NOT EXISTS idx_fundamentals_symbol_filed
     ON market_data.fundamentals (symbol, filed_at DESC);
+
+-- ============================================================
+-- Panel makro z semantyką VINTAGE (P2-4)
+-- ============================================================
+-- Szereg makro ma DWIE osie czasu i obie są nośne:
+--   observation_date - okres, który liczba opisuje (marzec 2015),
+--   realtime_start   - dzień, od którego ta liczba BYŁA opublikowaną wartością.
+-- FRED rewiduje wstecz, więc ta sama obserwacja istnieje wielokrotnie: pierwszy
+-- odczyt, rewizja z kolejnego miesiąca, rewizja benchmarkowa po latach.
+-- Trzymanie tylko najnowszej zamienia cechę makro w look-ahead — model dostałby
+-- to, czym marzec 2015 OKAZAŁ się być, a nie to, co wtedy było wiadome.
+CREATE TABLE IF NOT EXISTS macro_data.macro_observations (
+    series           TEXT NOT NULL,
+    observation_date DATE NOT NULL,
+    -- Część klucza, NOT NULL: NULL w kluczu głównym nie jest porównywalny,
+    -- więc taki wiersz duplikowałby się przy każdym backfillu.
+    realtime_start   DATE NOT NULL,
+    value            DOUBLE PRECISION NOT NULL,
+    source           TEXT NOT NULL DEFAULT 'fred',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (series, observation_date, realtime_start)
+);
+
+-- Odczyt as-of idzie po (series, realtime_start, observation_date): najpierw
+-- "co mogłem zobaczyć w dniu D", potem "który okres jest w tym najnowszy".
+CREATE INDEX IF NOT EXISTS idx_macro_asof
+    ON macro_data.macro_observations (series, realtime_start, observation_date DESC);
 
 -- ============================================================
 -- Tabela sygnałów tradingowych

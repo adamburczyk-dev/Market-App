@@ -167,6 +167,29 @@ class MacroSnapshot(BaseModel):
     fed_funds_rate: float | None = None
 
 
+class MacroObservation(BaseModel):
+    """One macro reading, dated on BOTH axes that matter (macro-data-svc).
+
+    `observation_date` is the period the number describes; `realtime_start` is
+    the date from which that number was the published value. The two are not the
+    same and the gap is where look-ahead lives: unemployment for March 2015 is
+    published in April and then **revised** for years afterwards. Asking FRED
+    today what the March-2015 rate was returns the revised figure — a number
+    nobody could have traded on. ALFRED's vintage API answers the honest
+    question instead, and this contract is the shape of that answer.
+
+    `realtime_start` is optional so a non-vintage fetch is still representable,
+    but such a row is deliberately INVISIBLE to as-of reads: a fact we cannot
+    date cannot be used point-in-time. Same rule as `filed_at` on fundamentals.
+    """
+
+    series: str
+    observation_date: date
+    value: float
+    realtime_start: date | None = None
+    source: str = "fred"
+
+
 class SentimentSnapshot(BaseModel):
     """News / social sentiment for a symbol."""
 

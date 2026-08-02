@@ -341,11 +341,11 @@ make test-market-data     # pojedynczy serwis
 cd services/ml-pipeline && python -m pytest tests/ -v
 ```
 
-Stan na 2026-08-02: **1352 testów, wszystkie zielone** na Pythonie 3.12; `ruff` + `ruff format` + `mypy` czyste (`--strict` dla `trading-common`). Rozkład:
+Stan na 2026-08-02: **1378 testów, wszystkie zielone** na Pythonie 3.12; `ruff` + `ruff format` + `mypy` czyste (`--strict` dla `trading-common`). Rozkład:
 
 | Komponent | Testów | Co jest testowane |
 |-----------|:---:|-------------------|
-| `ml-pipeline` | 315 | Etykiety triple-barrier, podziały purged, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring, badania |
+| `ml-pipeline` | 321 | Etykiety triple-barrier, podziały purged, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring, badania |
 | `trading-common` | 308 | Kontrakty, zdarzenia, `RiskEnvelope`, `CostAwareFilter`, cechy, rangi, fundamenty, scheduler, **registry strategii** |
 | `risk-mgmt` | 133 | Wielkość pozycji, limity reżimowe/sektorowe, wyłącznik z zatrzaskiem, trwałość stanu |
 | `signal-aggregator` | 97 | Łączenie sygnałów per strategia, wagi adaptacyjne, bufory TTL, wybór poziomów, filtr kosztów |
@@ -354,7 +354,7 @@ Stan na 2026-08-02: **1352 testów, wszystkie zielone** na Pythonie 3.12; `ruff`
 | `backtest` | 58 | Punktacja ścieżki pozycji bez podglądania przyszłości, ocena reguły z registry, walk-forward |
 | `fundamental-data` | 54 | F-Score Piotroskiego (9 sygnałów), klient EDGAR, panel point-in-time, czynniki §5 |
 | `execution` | 60 | Wypełnienia, idempotencja, wyjścia ochronne, tylko long, trwałość, historia kapitału |
-| `macro-data` | 41 | Detekcja reżimu, klient FRED, zdarzenia przejścia |
+| `macro-data` | 54 | Detekcja reżimu, klient FRED/ALFRED, panel vintage, odczyt as-of |
 | `feature-engine` | 38 | Orkiestracja cech, wzbogacanie atrybutami, magazyn, API rang |
 | `notification` | 33 | Mapowanie zdarzeń na alerty, kanały, izolacja awarii |
 | `scripts/` | 33 | Bootstrap uniwersum, kontrola pokrycia, diagnostyka, audyt zależności |

@@ -259,6 +259,8 @@ services:
       limits:
         memory: "512Mi"
         cpu: "500m"
+    # Vintage panel (P2-4): the macro_* model features exist only if history does.
+    needsDb: true
     env:
       LOG_LEVEL: INFO
       # FRED_API_KEY required for live FRED fetch; manual overrides work without.

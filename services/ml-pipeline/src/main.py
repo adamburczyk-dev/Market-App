@@ -92,6 +92,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         publisher,
         market_client=market_client,
         fundamentals_client=fundamentals_client,
+        # Same client the serving path uses, so training and inference read the
+        # regime from one place (P2-4).
+        macro_client=macro_client,
         model_store=model_store,
         serving=serving,
         inference_log=inference_log,

@@ -114,3 +114,38 @@ całą historię. Czysto przyrostowe pobieranie zostawiłoby stare bary na przed
 seria wyglądałaby wiarygodnie i była błędna dokładnie na złączeniu. Zakładka służy porównaniu
 **współczynnika** `adj_close/close`; przy zmianie wymuszane jest pełne odświeżenie **do
 `earliest_timestamp`**, nie do domyślnego okna.
+
+## Historia makro jest VINTAGE albo jej nie ma (P2-4)
+
+**Kiedy:** 2026-08-02
+**Stan przed:** macro-data trzymała jeden snapshot w pamięci. `build_dataset` od zawsze przyjmował
+`regime_by_date` i **nikt nigdy tego parametru nie przekazał**, więc pięć kolumn `macro_*` było
+w każdym treningu stałym zerem i wypadało przez filtr zerowej wariancji. Rodzina istniała z nazwy.
+**Dlaczego vintage, a nie zwykły backfill:** FRED **rewiduje szeregi wstecz**. Zapytanie dziś o marzec
+2015 zwraca wartość po rewizjach — liczbę, której wtedy nikt nie mógł znać. Backfill „ostatnich
+wartości" wyglądałby kompletnie i byłby błędny dokładnie tam, gdzie najtrudniej to zauważyć.
+**Rozstrzygnięcie:** ALFRED (`realtime_start`/`realtime_end` na tym samym endpoincie) zwraca każdą
+obserwację razem z oknem, w którym BYŁA opublikowaną wartością. Panel jest kluczowany trójką
+`(series, observation_date, realtime_start)` — szereg makro ma **dwie osie czasu** i obie są nośne:
+okres, który liczba opisuje, oraz dzień, od którego ta liczba była znana.
+**Odczyt as-of jest dwuwymiarowy.** Pominięcie `realtime_start` karmi model rewizjami, które jeszcze
+nie istniały; pominięcie `observation_date` zwraca to, co ostatnio zrewidowano, zamiast najnowszego
+okresu. To dwa różne błędy i żaden się nie wywala.
+**Opóźnienie publikacji wychodzi za darmo:** marzec jest publikowany w kwietniu, a `realtime_start`
+to koduje — nie ma osobnego parametru „lag" do przestrojenia.
+**Wiersz bez `realtime_start` jest NIEWIDOCZNY dla odczytów historycznych**, nie „stary". Ta sama
+reguła co `filed_at` w fundamentach: faktu, którego nie umiemy zadatować, nie wolno użyć
+point-in-time. Wartownik jest w dalekiej **przyszłości** — zakodowanie „nieznane" jako bardzo stara
+data zrobiłoby dokładnie odwrotność i uczyniłoby każdy niedatowany wiersz najwcześniejszą rzeczą,
+jaką wiedzieliśmy.
+**Reżim jest WYPROWADZANY przy odczycie, nie zapisywany.** Utrwalenie etykiety zamroziłoby jedną
+wersję `classify_regime` w danych: po zmianie progu historia dalej twierdziłaby swoje, bez śladu,
+że policzono ją innymi regułami.
+**Dzień, którego nie da się sklasyfikować, jest NIEOBECNY** w odpowiedzi, nie wypełniony domyślnym
+„expansion" — `_regime_one_hot` zamienia brak w same zera, a wymyślona wartość byłaby faktem
+zmyślonym tam, gdzie prawdą jest brak.
+**Zweryfikowane na prawdziwym PostgreSQL-u (13/13)** ze schematem z `init-db.sql`: rewizja z 2016
+nie wycieka do zapytania o 2015, klucz główny to faktycznie trójka z vintage, powtórzony wiersz
+w jednej partii nie wywraca zapisu, a lipcowe pogorszenie zmienia reżim dopiero od lipca.
+**Wciąż otwarte: D8** — czy reżim ma być cechą modelu, czy warunkowaniem (osobny model per reżim).
+Teraz jest przynajmniej mierzalny.

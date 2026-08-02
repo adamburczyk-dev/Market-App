@@ -14,7 +14,7 @@ with the neutral rank 0.5.
 """
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import date, datetime
 
 import numpy as np
 import structlog
@@ -152,7 +152,7 @@ def _regime_one_hot(regime: str | None) -> dict[str, float]:
 def build_dataset(
     bars_by_symbol: dict[str, list[OHLCVBar]],
     params: DatasetParams | None = None,
-    regime_by_date: dict[datetime, str] | None = None,
+    regime_by_date: dict[date, str] | None = None,
     feature_names: list[str] | None = None,
     sector_by_symbol: dict[str, str | None] | None = None,
     fundamentals_by_symbol: dict[str, list[FinancialStatements]] | None = None,
@@ -238,7 +238,12 @@ def build_dataset(
                 sessions_skipped_thin += 1
             continue
 
-        macro = _regime_one_hot(regime_by_date.get(session) if regime_by_date else None)
+        # Keyed by DATE, not by the session datetime: sessions are tz-aware
+        # timestamps and a macro history is a calendar. Matching on the exact
+        # instant would never hit, and the failure is silent — every row would
+        # get the all-zeros "unknown" one-hot and the columns would look
+        # populated-but-constant, which is exactly the state P2-4 set out to fix.
+        macro = _regime_one_hot(regime_by_date.get(session.date()) if regime_by_date else None)
         if fundamentals_by_symbol is not None:
             cutoff = session_cutoff(session.date())
             merged = []

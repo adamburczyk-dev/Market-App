@@ -35,7 +35,7 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (test counts measured 2026-08-02 on Python 3.12, not from memory —
-**1352 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
+**1378 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
 
 | Komponent | Port | Rola | Testy |
 |---|---|---|---|
@@ -44,12 +44,12 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 | `feature-engine` | 8002 | Wskaźniki Tier-1 + wzbogacenie Tier-2, rangi przekrojowe (`/ranked`) | 38 |
 | `strategy` | 8003 | **Każda aktywna reguła** z registry → `RiskEnvelope` → `CostAwareFilter` → własny sygnał; monitor degradacji per strategia | 60 |
 | `backtest` | 8004 | Ocena **reguły z registry** na historii symbolu + walk-forward, tygodniowa rewalidacja, krzywa kapitału | 58 |
-| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania | 315 |
+| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania | 321 |
 | `risk-mgmt` | 8006 | Sizing adaptacyjny, limity reżimowe i sektorowe, wyłącznik z zatrzaskiem, rejestr zleceń | 133 |
 | `execution` | 8007 | Paper broker, wyjścia ochronne SL/TP, likwidacja na BLACK, feedback portfela, **historia kapitału** | 60 |
 | `notification` | 8008 | 5 strumieni → alerty (log/Slack/Telegram/e-mail) | 33 |
 | `fundamental-data` | 8009 | SEC EDGAR, Piotroski 9/9, **panel point-in-time** (`filed_at`) | 54 |
-| `macro-data` | 8010 | FRED + detekcja reżimu → `macro.regime_changed` | 41 |
+| `macro-data` | 8010 | FRED + detekcja reżimu → `macro.regime_changed`, **panel vintage (ALFRED)** | 54 |
 | `company-classifier` | 8011 | Profil → styl inwestycyjny + routing stosu modeli | 25 |
 | `signal-aggregator` | 8012 | **Węzeł decyzyjny**: każda strategia osobno + ML + makro → jedna decyzja z poziomami i sektorem | 97 |
 | `dashboard` | 8501 | BFF nad HTTP pozostałych serwisów + **6 sekcji z wykresami** (kapitał, ryzyko, strategie, backtest, ML, zdrowie) | 34 |
@@ -115,11 +115,12 @@ przez granicę serwisów.
     ścieżka niż do świeżego i zależy od wersji rozszerzenia. Nie da się tego odtworzyć w piaskownicy
     (obraz timescale niepobieralny), więc `diagnose.py` **raportuje** teraz liczbę skompresowanych
     chunków — decyzja (wydłużyć próg kompresji albo ją wyłączyć dla tej tabeli) czeka na tę liczbę.
-  - **P2-4** (z zarchiwizowanego planu predykcji) `macro-data` **nie ma żadnej warstwy trwałości** —
-    tylko bieżący snapshot w pamięci. Dlatego `regime_by_date` nie ma czym wypełnić i 5 kolumn
-    `macro_*` wypada jako stałe z KAŻDEGO treningu. Wymaga też danych **vintage** (ALFRED): FRED
-    rewiduje szeregi wstecz, więc makro jako cecha bez vintage to look-ahead na rewizjach.
-    Odblokowuje decyzję D8 (reżim jako cecha czy jako warunkowanie).
+  - [✅ done 2026-08-02] ~~**P2-4** `macro-data` nie ma warstwy trwałości~~: panel **vintage**
+    (ALFRED `realtime_start`), odczyt as-of po DWÓCH osiach czasu, `regime_by_date` ma wreszcie
+    źródło. **Zostaje do zrobienia u użytkownika: `POST /backfill`** — egress do FRED jest
+    zablokowany w piaskownicy, więc kod jest zweryfikowany na realnym PostgreSQL-u, ale panel jest
+    pusty do czasu backfillu. Do tego czasu kolumny `macro_*` nadal wypadają jako stałe, co serwis
+    **mówi wprost** w logu i w `selection.macro.days_with_regime`. D8 odblokowana.
   - **P2-5** (z zarchiwizowanego planu predykcji, opcjonalne) fractional differentiation — do
     rozważenia dopiero, gdy cechy stacjonarne się wyczerpią.
   - **D7** the backtest engine still rebalances daily while ML evaluation uses `1/h` overlapping
@@ -569,9 +570,46 @@ danych (414 symboli × 20 lat) i seria defektów operacyjnych znalezionych dopie
   zatrzymujący po porcie **po cichu nic nie ubijał** i stare procesy trzymały porty — zabijanie idzie
   teraz po linii poleceń.
 
+- 2026-08-02 — **P2-4: historia makro — i dlaczego zwykły backfill byłby gorszy niż jego brak.**
+  `build_dataset` od zawsze przyjmował `regime_by_date` i **nikt nigdy tego parametru nie
+  przekazał**, więc 5 kolumn `macro_*` było w każdym treningu stałym zerem i wypadało przez filtr
+  wariancji. Rodzina istniała z nazwy. **Sednem nie było jednak dodanie tabeli, tylko VINTAGE:**
+  FRED rewiduje szeregi wstecz, więc zapytanie dziś o marzec 2015 zwraca wartość po rewizjach —
+  liczbę, której wtedy nikt nie mógł znać. Backfill „ostatnich wartości" wyglądałby kompletnie
+  i byłby błędny dokładnie tam, gdzie najtrudniej to zauważyć: wiarygodne liczby, żadna niedostępna
+  w swoim czasie. ALFRED (`realtime_start`/`realtime_end`) zwraca każdą obserwację razem z oknem,
+  w którym BYŁA opublikowaną wartością. Panel kluczowany trójką `(series, observation_date,
+  realtime_start)` — szereg makro ma **dwie osie czasu** i obie są nośne. **Odczyt as-of jest
+  dwuwymiarowy i pomylenie osi to dwa różne błędy**: bez `realtime_start` model dostaje rewizje,
+  które jeszcze nie istniały; bez `observation_date` dostaje to, co ostatnio zrewidowano, zamiast
+  najnowszego okresu. Żaden się nie wywala. **Opóźnienie publikacji wychodzi za darmo** — marzec jest
+  publikowany w kwietniu, a `realtime_start` to koduje, więc nie ma osobnego parametru „lag".
+  **Wiersz bez vintage jest NIEWIDOCZNY dla historii**, nie „stary" (ta sama reguła co `filed_at`),
+  a wartownik siedzi w dalekiej **przyszłości**: zakodowanie „nieznane" jako stara data zrobiłoby
+  odwrotność i uczyniłoby każdy niedatowany wiersz najwcześniejszą rzeczą, jaką wiedzieliśmy.
+  **Reżim jest wyprowadzany przy odczycie, nie zapisywany** — utrwalenie etykiety zamroziłoby jedną
+  wersję `classify_regime` w danych. **Dzień, którego nie da się sklasyfikować, jest NIEOBECNY**,
+  nie wypełniony domyślnym „expansion". **Złapane po drodze:** (1) `regime_by_date` było kluczowane
+  `datetime`, a sesje to znaczniki ze strefą — dopasowanie po dokładnym instancie **nigdy by nie
+  trafiło**, i to po cichu; działało wyłącznie w testach, bo tylko one konstruowały te same
+  instanty. Klucz to teraz `date`. (2) Pierwsza wersja `regime_history` robiła zapytanie na dzień —
+  7300 round-tripów na 20 lat; jedno przejście po panelu. (3) Brakujący import `text` w starcie
+  macro-daty wywaliłby serwis na Postgresie (ruff, nie test). Liczniki: macro-data 54 (+13),
+  ml-pipeline 321 (+6), shared 308 → **bateria 1378**; ruff + format + mypy czyste,
+  `check-dependencies` OK, compose i Helm zsynchronizowane (`needsDb`, render sprawdzony).
+  **Kontrola anty-szczęściowa**: po usunięciu samego filtru `realtime_start <= day` pada **4 z 13**
+  testów vintage — dokładnie te o wycieku rewizji. **Zweryfikowane na prawdziwym PostgreSQL-u
+  (13/13)** ze schematem z `init-db.sql`, nie z echa ORM-a: klucz główny to faktycznie trójka
+  z vintage, rewizja z 2016 nie wycieka do zapytania o 2015, powtórzony wiersz w jednej partii nie
+  wywraca zapisu (`ON CONFLICT` nie znosi dwóch tych samych kluczy w jednym VALUES), a lipcowe
+  pogorszenie zmienia reżim `slowdown → crisis` dopiero od lipca.
+  **Do zrobienia u użytkownika:** `POST /api/v1/macro-data/backfill` — egress do FRED jest
+  w piaskownicy zablokowany, więc panel jest pusty do czasu backfillu, a `GET /coverage` mówi wprost,
+  ile wierszy jest i ile z nich jest niedatowanych.
+
 **Next (2026-08-02): tor predykcji zablokowany na pomiarze — pracujemy poza nim.**
 
-Etapy **strategii + registry** oraz **dashboardu** są zamknięte (wpisy z 2026-08-02 na końcu logu). Kod toru predykcji
+Etapy **strategii + registry**, **dashboardu** i **historii makro (P2-4)** są zamknięte (wpisy z 2026-08-02 na końcu logu). Kod toru predykcji
 (E0–E5) jest skończony i **nie ma tam sensownego następnego zadania programistycznego**: każda pozostała decyzja jest bramkowana liczbami, których nie mamy (t-stat
 IC ≥ 2). Trening #3 na 414 symbolach × 20 lat skończył się zapadnięciem modelu do stałej i
 odrzuceniem przez bramkę na 5 z 6 warunków, a sonda pojemności wymaga powtórzenia po naprawie jej
@@ -584,8 +622,8 @@ udokumentowanej specyfikacji jest niezbudowana. Otwarte fronty, w kolejności do
 |---|---|---|
 | ~~Strategie + registry~~ | ✅ **zamknięte 2026-08-02** — 5 reguł w registry, agregator kluczowany parą, backtest ocenia regułę z registry | `Plan_Rozwoju` Faza 2 |
 | ~~Dashboard / frontend~~ | ✅ **zamknięte 2026-08-02** — 6 sekcji, wykresy SVG, historia kapitału w execution | `Plan_Rozwoju` Faza 4, Tydzień 21 |
-| **Historia makro (P2-4)** ← **BIEŻĄCY ETAP** | macro-data nie ma warstwy trwałości → 5 kolumn `macro_*` wypada z każdego treningu | plan predykcji §13 (T2-2) |
-| Wskaźniki techniczne | ~5 z ~20 rodzin z checklisty „30+" | `Plan_Rozwoju` Faza 1, Tydzień 3 |
+| ~~Historia makro (P2-4)~~ | ✅ **zamknięte 2026-08-02** — panel vintage z ALFRED, odczyt as-of po dwóch osiach, `regime_by_date` wreszcie ma źródło. **Backfill u użytkownika** (egress do FRED zablokowany w piaskownicy) | plan predykcji §13 (T2-2) |
+| **Wskaźniki techniczne** ← **BIEŻĄCY ETAP** | ~9 z ~20 rodzin z checklisty „30+" (blok klasycznej TA doszedł z etapem strategii) | `Plan_Rozwoju` Faza 1, Tydzień 3 |
 | Sentyment / FinBERT | kontrakt i event istnieją, **producenta nie ma** | `Plan_Rozwoju` Faza 3, Tydzień 17–18 |
 | Raport feature importance | brak | `Plan_Rozwoju` Faza 3, checklist |
 

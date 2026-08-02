@@ -520,11 +520,20 @@ services:
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_pass}
       FRED_API_KEY: ${FRED_API_KEY:-}
+      # Vintage panel (P2-4) — without it the live regime still works, but
+      # history (and therefore the macro_* model features) does not.
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-trading_system}
+      DB_USER: ${DB_USER:-trading}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     ports:
       - "8010:8000"
     depends_on:
       nats:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       # python -c, not curl: the slim images ship no curl binary
