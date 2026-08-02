@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager, suppress
 import nats
 import structlog
 from fastapi import FastAPI
+from sqlalchemy import text
 from trading_common.scheduler import PeriodicTask
 
 from src.api import router as api_router
@@ -55,6 +56,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             engine = make_engine(settings.database_url)
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+                # `create_all` creates missing TABLES, never missing COLUMNS, so
+                # a panel created before these existed would keep silently
+                # storing filings without them — the same trap adj_close hit in
+                # market-data. Postgres only: a fresh sqlite (tests) gets them
+                # from create_all.
+                if engine.dialect.name == "postgresql":
+                    for column in ("gross_profit", "cost_of_revenue"):
+                        await conn.execute(
+                            text(
+                                "ALTER TABLE fundamentals "
+                                f"ADD COLUMN IF NOT EXISTS {column} DOUBLE PRECISION"
+                            )
+                        )
             store = SqlFundamentalsStore(make_sessionmaker(engine))
         except Exception as exc:  # noqa: BLE001 - keep the app up for health probes
             logger.error("Fundamentals panel unavailable — history disabled", error=str(exc))

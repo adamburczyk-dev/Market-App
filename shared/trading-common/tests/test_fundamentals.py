@@ -12,6 +12,7 @@ import pytest
 from trading_common.fundamentals import (
     fundamental_features,
     latest_available_before,
+    prior_available_before,
     session_cutoff,
 )
 from trading_common.schemas import FinancialStatements
@@ -143,3 +144,114 @@ def test_naive_and_aware_timestamps_compare_without_crashing():
     # ...and the cutoff itself may be naive too
     assert latest_available_before([naive], datetime(2024, 6, 14)) is not None
     assert latest_available_before([naive], datetime(2024, 1, 1)) is None
+
+
+# --- the factor families from the prediction plan §5 ------------------------
+
+
+def _filing(
+    period_end: date,
+    filed: datetime | None = None,
+    **fields: float,
+) -> FinancialStatements:
+    return FinancialStatements(
+        symbol="AAPL", period_end=period_end, fiscal_period="FY", filed_at=filed, **fields
+    )
+
+
+def test_gross_profitability_prefers_the_reported_figure_and_derives_it_otherwise():
+    """Novy-Marx 2013. Filers report GrossProfit or CostOfRevenue, not both by
+    convention — a factor available on half the universe is not a factor."""
+    direct = _filing(date(2024, 12, 31), revenue=1000, gross_profit=400, total_assets=2000)
+    assert fundamental_features(direct)["fund_gross_profitability"] == pytest.approx(0.2)
+
+    derived = _filing(date(2024, 12, 31), revenue=1000, cost_of_revenue=650, total_assets=2000)
+    assert fundamental_features(derived)["fund_gross_profitability"] == pytest.approx(0.175)
+
+    neither = _filing(date(2024, 12, 31), revenue=1000, total_assets=2000)
+    assert "fund_gross_profitability" not in fundamental_features(neither)
+
+
+def test_accruals_keep_their_sign():
+    """Sloan 1996: HIGH accruals predict LOW returns, so the ratio must stay
+    signed. Taking an absolute value would merge the two ends of the anomaly."""
+    earnings_without_cash = _filing(
+        date(2024, 12, 31), net_income=200, operating_cash_flow=50, total_assets=1000
+    )
+    cash_rich = _filing(
+        date(2024, 12, 31), net_income=200, operating_cash_flow=350, total_assets=1000
+    )
+    assert fundamental_features(earnings_without_cash)["fund_accruals"] == pytest.approx(0.15)
+    assert fundamental_features(cash_rich)["fund_accruals"] == pytest.approx(-0.15)
+
+
+def test_asset_growth_needs_a_prior_and_says_nothing_without_one():
+    current = _filing(date(2024, 12, 31), total_assets=1200)
+    prior = _filing(date(2023, 12, 31), total_assets=1000)
+    assert fundamental_features(current, prior=prior)["fund_asset_growth"] == pytest.approx(0.2)
+    assert "fund_asset_growth" not in fundamental_features(current)
+
+
+def test_valuation_ratios_use_the_market_cap_at_that_price():
+    current = _filing(
+        date(2024, 12, 31),
+        total_assets=1000,
+        total_liabilities=600,
+        net_income=80,
+        shares_outstanding=100,
+    )
+    out = fundamental_features(current, price=8.0)  # market cap 800
+    assert out["fund_book_to_market"] == pytest.approx(0.5)  # equity 400 / 800
+    assert out["fund_earnings_yield"] == pytest.approx(0.1)  # 80 / 800
+    # ...and no price means no guess
+    assert "fund_book_to_market" not in fundamental_features(current)
+
+
+def test_negative_book_equity_is_reported_not_dropped():
+    """Buybacks and accumulated deficits produce negative book equity. That is a
+    real and distinct case, not missing data — dropping it would quietly remove
+    a whole class of company from the factor."""
+    levered = _filing(
+        date(2024, 12, 31), total_assets=1000, total_liabilities=1400, shares_outstanding=100
+    )
+    assert fundamental_features(levered, price=10.0)["fund_book_to_market"] < 0
+
+
+def test_the_original_four_features_are_unchanged_without_prior_or_price():
+    """Serving passes neither, and must keep computing exactly what it did."""
+    statement = _filing(
+        date(2024, 12, 31),
+        revenue=1000,
+        net_income=100,
+        total_assets=2000,
+        total_liabilities=800,
+    )
+    assert set(fundamental_features(statement)) == {
+        "fund_net_margin",
+        "fund_roa",
+        "fund_leverage",
+    }
+
+
+def test_the_prior_must_clear_the_same_cutoff_as_the_current_filing():
+    """The trap: picking the previous filing by fiscal period alone reaches for
+    a statement that had not been published yet whenever a restatement or a late
+    filer reorders publication against period. Asset growth would then be
+    computed from a balance sheet nobody had seen."""
+    cutoff = datetime(2025, 4, 1, tzinfo=UTC)
+    fy2024 = _filing(date(2024, 12, 31), filed=datetime(2025, 2, 1, tzinfo=UTC), total_assets=1200)
+    fy2023 = _filing(date(2023, 12, 31), filed=datetime(2024, 2, 1, tzinfo=UTC), total_assets=1000)
+    # filed AFTER the cutoff even though its period sits in between
+    restated = _filing(date(2024, 6, 30), filed=datetime(2025, 6, 1, tzinfo=UTC), total_assets=9999)
+
+    prior = prior_available_before([fy2024, fy2023, restated], cutoff, fy2024)
+    assert prior is not None
+    assert prior.period_end == date(2023, 12, 31), "an unpublished filing was used as the prior"
+
+
+def test_an_undated_filing_is_never_a_prior():
+    """Undated is not old — the same rule the as-of read already enforces."""
+    cutoff = datetime(2025, 4, 1, tzinfo=UTC)
+    current = _filing(date(2024, 12, 31), filed=datetime(2025, 2, 1, tzinfo=UTC), total_assets=1200)
+    undated = _filing(date(2023, 12, 31), total_assets=1000)
+    assert prior_available_before([current, undated], cutoff, current) is None

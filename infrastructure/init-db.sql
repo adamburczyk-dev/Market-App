@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS market_data.fundamentals (
     fiscal_period       TEXT NOT NULL,
     filed_at            TIMESTAMPTZ,
     revenue             DOUBLE PRECISION,
+    -- Gross profitability (Novy-Marx): filerzy raportują jedno albo drugie.
+    gross_profit        DOUBLE PRECISION,
+    cost_of_revenue     DOUBLE PRECISION,
     net_income          DOUBLE PRECISION,
     total_assets        DOUBLE PRECISION,
     total_liabilities   DOUBLE PRECISION,

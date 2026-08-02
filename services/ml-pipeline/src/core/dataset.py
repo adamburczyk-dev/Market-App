@@ -22,6 +22,7 @@ from trading_common.features import FEATURE_LOOKBACK, FULL_HISTORY, compute_feat
 from trading_common.fundamentals import (
     fundamental_features,
     latest_available_before,
+    prior_available_before,
     session_cutoff,
 )
 from trading_common.prices import adjusted_ohlc
@@ -234,11 +235,22 @@ def build_dataset(
             cutoff = session_cutoff(session.date())
             merged = []
             for vector, (symbol, _) in zip(snapshot, members, strict=True):
-                known = latest_available_before(fundamentals_by_symbol.get(symbol, []), cutoff)
+                filings = fundamentals_by_symbol.get(symbol, [])
+                known = latest_available_before(filings, cutoff)
                 if known is None:
                     merged.append(vector)
                     continue
-                extra = fundamental_features(known)
+                # Asset growth needs the previous balance sheet and the two
+                # valuation ratios need a market cap. Both are taken from what
+                # was knowable at this session: the prior filing must clear the
+                # SAME cutoff, and the price is the RAW close (shares are
+                # reported as of the filing, so a back-adjusted price would
+                # compute a market cap that never existed).
+                extra = fundamental_features(
+                    known,
+                    prior=prior_available_before(filings, cutoff, known),
+                    price=vector.features.get("close"),
+                )
                 if extra:
                     fundamental_rows += 1
                 merged.append(vector.model_copy(update={"features": {**vector.features, **extra}}))

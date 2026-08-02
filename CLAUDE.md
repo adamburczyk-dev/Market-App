@@ -1841,6 +1841,44 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
   nic znaczyć przy horyzoncie 10 sesji, a może przy 63. fundamental-data 54 testy (+7); ruff +
   format + mypy czyste.
 
+- 2026-08-02 — **Powrót do specyfikacji z badań: audyt luk + rodzina fundamentalna z §5.**
+  Użytkownik słusznie zauważył, że projekt zawęził się do diagnostyki modelu na najwęższym możliwym
+  wejściu, podczas gdy duża część udokumentowanej specyfikacji jest niezbudowana. **Audyt luk
+  względem własnych dokumentów** (zweryfikowany kodem, nie pamięcią): (a) `Plan_Rozwoju` Faza 1
+  wymienia z nazwy ~20 rodzin wskaźników i checklistę „30+" — mamy z nich SMA 10/20/50, RSI i ROC;
+  brak EMA, MACD, ADX, Aroon, Stochastic, CCI, Williams %R, Bollinger, ATR, Keltner, OBV, VWAP,
+  A/D, MFI, formacji świecowych (TA-Lib nie jest nawet zależnością); (b) Faza 3 mówi „100+ features"
+  — model dostaje 15; (c) `SentimentSnapshot` + `SENTIMENT_UPDATED` istnieją w kontraktach, ale
+  **żaden serwis ich nie produkuje**; (d) Faza 2 wymienia 5 strategii + registry — jest jedna
+  (`momentum.py`), registry nie ma; (e) macro-data nie ma magazynu historii, więc `regime_by_date`
+  nie ma czym wypełnić i 5 kolumn `macro_*` wypada jako stałe w każdym treningu (P2-4 nietknięte);
+  (f) dashboard ma ~1,5 z 6 sekcji ze spec i **zero wykresów**; (g) Faza 3 wymaga raportu feature
+  importance — nie ma go.
+  **Zrobione (wybór użytkownika): rodzina fundamentalna z §5 planu predykcji.** Contracts-first:
+  `FinancialStatements` += `gross_profit`, `cost_of_revenue` (filerzy raportują jedno ALBO drugie,
+  a pokrycie decyduje, czy to w ogóle jest czynnik) + kolumny w ORM, `init-db.sql` i **idempotentny
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`** w starcie serwisu — dokładnie ta sama pułapka, którą
+  zastawił `adj_close`: `create_all` tworzy brakujące TABELE, nigdy brakujących KOLUMN. EDGAR:
+  nowe tagi `GrossProfit` + fallbacki `CostOfRevenue`/`CostOfGoodsAndServicesSold`/…
+  `fundamental_features` przyjmuje teraz `prior` i `price` i liczy **pięć nowych cech**:
+  `fund_gross_profitability` (Novy-Marx 2013), `fund_accruals` (Sloan 1996, **ze znakiem** — anomalia
+  polega na tym, że WYSOKIE accruals zapowiadają NISKIE zwroty), `fund_asset_growth`
+  (Cooper–Gulen–Schill 2008), `fund_book_to_market` i `fund_earnings_yield` (Fama–French).
+  Dwie decyzje warte zapamiętania: **cena musi być SUROWA** — liczba akcji pochodzi ze sprawozdania,
+  więc pomnożenie jej przez cenę skorygowaną wstecz liczy kapitalizację, która nigdy nie istniała
+  (późniejszy split 2:1 zmniejsza ją o połowę); oraz **poprzednie sprawozdanie musi przejść TEN SAM
+  odcięcie czasowe** (`prior_available_before`) — wybór po samym okresie fiskalnym sięgnąłby po
+  filing jeszcze nieopublikowany, gdy restatement albo spóźniony filer odwracają kolejność
+  publikacji względem okresu. Bez `prior`/`price` funkcja zwraca dokładnie dawne cztery cechy, więc
+  ścieżka serwowania działa bez zmian. **Adopcja do modelu czeka na pomiar** (reguła etapu E2:
+  rodzina wchodzi, gdy tabela IC to potwierdzi) — a włączenie w treningu wymaga włączenia
+  w serwowaniu w tym samym kroku. Liczniki: shared 244 (+8), ml-pipeline 315 (+3),
+  fundamental-data 54 → **bateria ~1250**; ruff + format + mypy (`--strict` na shared) czyste.
+  **Zweryfikowane na prawdziwym PostgreSQL-u (12/12)**: tabela utworzona BEZ nowych kolumn dostaje
+  je migracją ze startu (dwukrotne uruchomienie bez błędu), stary wiersz przeżywa, obie kolumny
+  robią round-trip przez realny store, pięć czynników liczy się as-of z dokładnością do 1e-9,
+  a sesja sprzed drugiego filingu **nie wymyśla** wzrostu aktywów.
+
 **Next (2026-07-30): kod toru predykcji jest skończony — projekt jest zablokowany na POMIARZE.**
 Etapy E0–E5 zaimplementowane; nie ma sensownego następnego zadania programistycznego, bo każda
 pozostała decyzja jest bramkowana liczbami, których nie mamy (E3: próg wykrywalności IC; E4 i wejście

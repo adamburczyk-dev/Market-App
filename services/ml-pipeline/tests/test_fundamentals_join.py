@@ -190,3 +190,82 @@ async def test_client_degrades_instead_of_failing_the_run():
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(503)))
     assert await client.panel(["AAPL"]) == {}
     await client.aclose()
+
+
+# --- the factor families from the prediction plan §5 ------------------------
+
+
+def valued_panel(symbols: list[str]) -> dict[str, list[FinancialStatements]]:
+    """Two filings per symbol, carrying everything the new factors need.
+
+    Both filing dates sit INSIDE the bar window (which starts 2021-01-04 and
+    runs 400 days): asset growth compares two balance sheets, so a fixture
+    whose second filing is published after the last session can only ever show
+    one of them — and the test would pass or fail for the wrong reason.
+    """
+    out: dict[str, list[FinancialStatements]] = {}
+    for index, s in enumerate(symbols):
+        base = 1000.0 + 50.0 * index  # a real cross-section, not one constant
+        # growth must DIFFER across names too: an identical ratio everywhere
+        # ranks to 0.5 for all of them, which looks exactly like a neutral fill
+        growth = 1.05 + 0.02 * index
+        out[s] = [
+            statement(s, "2020-06-30", "2021-02-15", 2).model_copy(
+                update={
+                    "total_assets": base,
+                    "gross_profit": 300.0,
+                    "operating_cash_flow": 60.0,
+                    "shares_outstanding": 100.0 + index,
+                }
+            ),
+            statement(s, "2021-06-30", "2021-11-01", 8).model_copy(
+                update={
+                    "total_assets": base * growth,
+                    "gross_profit": 400.0,
+                    "operating_cash_flow": 90.0,
+                    "shares_outstanding": 100.0 + index,
+                }
+            ),
+        ]
+    return out
+
+
+def test_every_named_factor_family_reaches_the_feature_contract():
+    """The §5 table: the families were documented long before they were
+    computed, and the run that mattered had none of them."""
+    u = universe()
+    ds = build_dataset(u, PARAMS, fundamentals_by_symbol=valued_panel(sorted(u)))
+    for name in (
+        "fund_gross_profitability",
+        "fund_accruals",
+        "fund_asset_growth",
+        "fund_book_to_market",
+        "fund_earnings_yield",
+    ):
+        assert name in ds.feature_names, f"{name} never reached the dataset"
+        # ranked into [0, 1] and not a single constant value
+        values = column(ds, name)
+        assert values.min() >= 0.0 and values.max() <= 1.0
+        assert values.std() > 0.0, f"{name} is constant — it carries nothing"
+
+
+def test_asset_growth_is_absent_while_only_one_filing_is_public():
+    """Before the second filing there is no prior to compare against, and the
+    honest answer is a neutral fill rather than a growth rate invented from the
+    one balance sheet that exists."""
+    u = universe()
+    single = {s: [v[0]] for s, v in valued_panel(sorted(u)).items()}
+    ds = build_dataset(u, PARAMS, fundamentals_by_symbol=single)
+    assert "fund_asset_growth" not in ds.feature_names
+
+
+def test_the_valuation_ratio_moves_with_price_not_just_with_the_filing():
+    """B/M and E/P are the only fundamental features that change between
+    filings. If they were computed from the statement alone they would be step
+    functions, and the rank would be a rank of filing dates."""
+    u = universe()
+    ds = build_dataset(u, PARAMS, fundamentals_by_symbol=valued_panel(sorted(u)))
+    first_symbol = ds.symbols[0]
+    rows = [i for i, s in enumerate(ds.symbols) if s == first_symbol]
+    series = column(ds, "fund_book_to_market")[rows]
+    assert len(set(series.round(6))) > 1, "book-to-market never moved for a symbol"

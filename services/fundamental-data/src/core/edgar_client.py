@@ -28,6 +28,15 @@ TAG_MAP: dict[str, tuple[tuple[str, str], ...]] = {
         ("RevenueFromContractWithCustomerIncludingAssessedTax", "USD"),
         ("SalesRevenueNet", "USD"),
     ),
+    # Gross profitability (Novy-Marx 2013). Filers report one form or the
+    # other, so both are pulled and the derivation prefers the direct figure.
+    "gross_profit": (("GrossProfit", "USD"),),
+    "cost_of_revenue": (
+        ("CostOfRevenue", "USD"),
+        ("CostOfGoodsAndServicesSold", "USD"),
+        ("CostOfGoodsSold", "USD"),
+        ("CostOfServices", "USD"),
+    ),
     "net_income": (("NetIncomeLoss", "USD"),),
     "total_assets": (("Assets", "USD"),),
     "total_liabilities": (("Liabilities", "USD"),),
@@ -220,6 +229,8 @@ class EdgarClient:
                     period_end=period_end,
                     fiscal_period="FY",
                     revenue=value("revenue"),
+                    gross_profit=value("gross_profit"),
+                    cost_of_revenue=value("cost_of_revenue"),
                     net_income=value("net_income"),
                     total_assets=value("total_assets"),
                     total_liabilities=value("total_liabilities"),

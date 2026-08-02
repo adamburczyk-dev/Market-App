@@ -134,6 +134,12 @@ class FinancialStatements(BaseModel):
     period_end: date
     fiscal_period: str  # "Q1".."Q4" | "FY"
     revenue: float | None = None
+    # Gross profitability (Novy-Marx 2013) needs revenue minus cost of revenue.
+    # Both are carried because filers report one or the other: `gross_profit`
+    # direct where it exists, otherwise derived from `cost_of_revenue`. A factor
+    # present on half the universe is not a factor, so coverage decides here.
+    gross_profit: float | None = None
+    cost_of_revenue: float | None = None
     net_income: float | None = None
     total_assets: float | None = Field(default=None, ge=0)
     total_liabilities: float | None = Field(default=None, ge=0)

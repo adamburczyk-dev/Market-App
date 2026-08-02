@@ -26,12 +26,38 @@ from trading_common.schemas import FinancialStatements
 from trading_common.timeutil import as_utc
 
 
-def fundamental_features(statement: FinancialStatements) -> dict[str, float]:
+def _gross_profit(statement: FinancialStatements) -> float | None:
+    """Revenue minus cost of revenue, however the filer chose to report it."""
+    if statement.gross_profit is not None:
+        return statement.gross_profit
+    if statement.revenue is not None and statement.cost_of_revenue is not None:
+        return statement.revenue - statement.cost_of_revenue
+    return None
+
+
+def fundamental_features(
+    statement: FinancialStatements,
+    prior: FinancialStatements | None = None,
+    price: float | None = None,
+) -> dict[str, float]:
     """Scale-free ratios (plus the F-score) from one filing.
+
+    The families named in the prediction plan §5, with the literature each
+    comes from. Three of them need more than a single filing, which is why the
+    signature takes more than one:
+
+    * `prior` — the previous filing KNOWN AT THE SAME MOMENT, for asset growth.
+      Passing the globally-previous filing instead would be look-ahead.
+    * `price` — the RAW close of the session being valued, for the two
+      valuation ratios. It must be the raw close, not the adjusted one: shares
+      outstanding are reported as of the filing, so multiplying them by a
+      back-adjusted price computes a market cap that never existed (a later 2:1
+      split would halve it).
 
     Conservative throughout: a missing or degenerate input yields no feature
     rather than a guessed one, so the caller's neutral fill is a visible gap
-    instead of a fabricated number.
+    instead of a fabricated number. With neither `prior` nor `price` the result
+    is exactly the original four features, so existing callers are unaffected.
     """
     out: dict[str, float] = {}
     if statement.piotroski_f_score is not None:
@@ -42,6 +68,45 @@ def fundamental_features(statement: FinancialStatements) -> dict[str, float]:
         out["fund_roa"] = statement.net_income / statement.total_assets
     if statement.total_liabilities is not None and statement.total_assets:
         out["fund_leverage"] = statement.total_liabilities / statement.total_assets
+
+    # Gross profitability — Novy-Marx 2013. The cleanest profitability measure:
+    # further down the income statement every line is more polluted by
+    # accounting choices, which is why gross profit beats earnings here.
+    gross = _gross_profit(statement)
+    if gross is not None and statement.total_assets:
+        out["fund_gross_profitability"] = gross / statement.total_assets
+
+    # Accruals — Sloan 1996. Earnings not backed by cash reverse; the ratio is
+    # signed on purpose, since the anomaly is that HIGH accruals predict LOW
+    # returns.
+    if (
+        statement.net_income is not None
+        and statement.operating_cash_flow is not None
+        and statement.total_assets
+    ):
+        out["fund_accruals"] = (
+            statement.net_income - statement.operating_cash_flow
+        ) / statement.total_assets
+
+    # Asset growth — Cooper-Gulen-Schill 2008. Companies that expand the balance
+    # sheet fastest underperform.
+    if prior is not None and statement.total_assets is not None and prior.total_assets:
+        out["fund_asset_growth"] = statement.total_assets / prior.total_assets - 1.0
+
+    if price is not None and price > 0 and statement.shares_outstanding:
+        market_cap = statement.shares_outstanding * price
+        # Book-to-market — Fama-French. Book equity can legitimately be
+        # negative (buybacks, accumulated deficits); the ratio stays signed
+        # rather than being dropped, because a negative-equity firm is a real
+        # and distinct case, not missing data.
+        if statement.total_assets is not None and statement.total_liabilities is not None:
+            out["fund_book_to_market"] = (
+                statement.total_assets - statement.total_liabilities
+            ) / market_cap
+        # Earnings yield (E/P) — the inverse of the P/E, which is the direction
+        # that stays finite when earnings approach zero.
+        if statement.net_income is not None:
+            out["fund_earnings_yield"] = statement.net_income / market_cap
     return out
 
 
@@ -50,6 +115,11 @@ FUNDAMENTAL_FEATURE_NAMES: tuple[str, ...] = (
     "fund_net_margin",
     "fund_roa",
     "fund_leverage",
+    "fund_gross_profitability",
+    "fund_accruals",
+    "fund_asset_growth",
+    "fund_book_to_market",
+    "fund_earnings_yield",
 )
 
 
@@ -85,10 +155,36 @@ def latest_available_before(
     return max(eligible, key=_filing_order)
 
 
+def prior_available_before(
+    statements: list[FinancialStatements],
+    cutoff: datetime,
+    current: FinancialStatements,
+) -> FinancialStatements | None:
+    """The filing one period back, restricted to what was public at `cutoff`.
+
+    Asset growth compares two balance sheets, and picking the second one by
+    period alone would reach for a filing that had not been published yet
+    whenever a restatement or a late filer reorders publication against fiscal
+    period. Both statements have to clear the same cutoff.
+    """
+    cutoff = as_utc(cutoff)
+    eligible = [
+        s
+        for s in statements
+        if s.filed_at is not None
+        and as_utc(s.filed_at) < cutoff
+        and s.period_end < current.period_end
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda s: s.period_end)
+
+
 __all__ = [
     "FUNDAMENTAL_FEATURE_NAMES",
     "as_utc",
     "fundamental_features",
     "latest_available_before",
+    "prior_available_before",
     "session_cutoff",
 ]

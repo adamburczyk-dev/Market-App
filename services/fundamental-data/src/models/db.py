@@ -40,6 +40,9 @@ class FundamentalsRow(Base):
     # deliberately excluded from as-of reads rather than assumed to be old.
     filed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revenue: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Gross profitability inputs — filers report one form or the other.
+    gross_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_of_revenue: Mapped[float | None] = mapped_column(Float, nullable=True)
     net_income: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_assets: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_liabilities: Mapped[float | None] = mapped_column(Float, nullable=True)

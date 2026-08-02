@@ -20,6 +20,8 @@ logger = structlog.get_logger()
 
 _FIELDS = (
     "revenue",
+    "gross_profit",
+    "cost_of_revenue",
     "net_income",
     "total_assets",
     "total_liabilities",
