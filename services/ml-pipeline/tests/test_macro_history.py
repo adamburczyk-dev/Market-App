@@ -70,9 +70,7 @@ def test_a_regime_history_makes_the_columns_vary():
 
     columns = macro_columns(ds)
     assert columns, "the macro block must be present"
-    varying = [
-        c for c in columns if len({row for row in ds.x[:, ds.feature_names.index(c)]}) > 1
-    ]
+    varying = [c for c in columns if len({row for row in ds.x[:, ds.feature_names.index(c)]}) > 1]
     assert varying, "at least one regime column must vary once history exists"
 
 

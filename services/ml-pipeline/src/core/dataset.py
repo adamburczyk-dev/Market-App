@@ -40,16 +40,30 @@ from src.core.universe import Universe
 
 logger = structlog.get_logger()
 
-# Excluded from the model input:
-#  - absolute-level features, whose cross-sectional rank proxies price level, not signal
-#  - momentum_20, a deprecated alias of return_20d (identical column — perfect
-#    collinearity gives the same information twice and inflates its influence)
-#  - RULE_ONLY_FEATURES: the classic-TA block computed for the rule strategies.
-#    It is imported rather than re-listed so a new indicator cannot join the
-#    model contract by being added in trading-common and forgotten here.
-EXCLUDED_FEATURES: frozenset[str] = (
-    frozenset({"close", "sma_10", "sma_20", "sma_50", "momentum_20"}) | RULE_ONLY_FEATURES
+# Two different reasons to keep a column out of the model, and they are not
+# interchangeable — which is why they are separate sets.
+#
+# NEVER admissible. An absolute level's cross-sectional rank is a proxy for
+# share price, and `momentum_20` is a literal duplicate of `return_20d` (perfect
+# collinearity gives the same information twice and inflates its influence).
+# No measurement can change either fact.
+INADMISSIBLE_FEATURES: frozenset[str] = frozenset(
+    {"close", "sma_10", "sma_20", "sma_50", "momentum_20"}
 )
+
+# NOT YET adopted. The classic-TA block is computed for the rule strategies and
+# stays out of the model until the per-feature IC table earns it a place (stage
+# E2). Imported rather than re-listed, so an indicator added in trading-common
+# cannot join the model contract by being forgotten here.
+#
+# The distinction matters because these ARE measurable: `build_dataset` admits
+# them when `include_candidates=True`, which is how a candidate can earn its
+# way in. Folding them into one exclusion list — as this module did — made the
+# only path that could measure a candidate also the path that hid it, so a new
+# indicator could never be evaluated at all.
+CANDIDATE_FEATURES: frozenset[str] = RULE_ONLY_FEATURES
+
+EXCLUDED_FEATURES: frozenset[str] = INADMISSIBLE_FEATURES | CANDIDATE_FEATURES
 
 REGIMES = ("expansion", "recovery", "slowdown", "contraction", "crisis")
 
@@ -157,6 +171,7 @@ def build_dataset(
     sector_by_symbol: dict[str, str | None] | None = None,
     fundamentals_by_symbol: dict[str, list[FinancialStatements]] | None = None,
     universe: Universe | None = None,
+    include_candidates: bool = False,
 ) -> Dataset:
     """Assemble the pooled cross-sectional dataset from per-symbol OHLCV history.
 
@@ -164,6 +179,12 @@ def build_dataset(
     or missing regime is all-zeros). ``feature_names`` freezes the column
     order (serving/training contract); by default it is derived as the sorted
     union of ranked feature keys minus ``EXCLUDED_FEATURES``.
+
+    ``include_candidates`` admits `CANDIDATE_FEATURES` — the classic-TA block
+    that is computed but not adopted. It exists so the per-feature IC study can
+    RANK a candidate without the training path ever seeing it; the inadmissible
+    columns (price levels, the `momentum_20` duplicate) stay out either way,
+    because no measurement can make a share-price proxy into a signal.
 
     ``sector_by_symbol`` turns on sector neutralization (P2-2): features are
     demeaned within their peer group before the global rank, so the ranking
@@ -307,7 +328,10 @@ def build_dataset(
 
     if feature_names is None:
         keys = {key for row in rows for key in row}
-        feature_names = sorted(keys - EXCLUDED_FEATURES)
+        # Candidates are admitted only for MEASUREMENT. Training never sets the
+        # flag, so a family cannot slip into the model contract by being studied.
+        excluded = INADMISSIBLE_FEATURES if include_candidates else EXCLUDED_FEATURES
+        feature_names = sorted(keys - excluded)
 
     x = np.array(
         [[row.get(name, 0.5) for name in feature_names] for row in rows], dtype=float

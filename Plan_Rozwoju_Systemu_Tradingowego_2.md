@@ -1957,7 +1957,7 @@ Legenda: ✅ zrobione · ⚠️ częściowo · ❌ niezbudowane
 | CI/CD | ✅ | `.github/workflows/` — testy 14 komponentów + `scripts/`, audyt zależności |
 | Helm chart | ✅ | generyczny `templates/services.yaml`, 13 Deploymentów |
 | market-data: fetch → walidacja → TimescaleDB → cache → event | ✅ | + harmonogram przyrostowy z wykrywaniem restatementu |
-| **30+ wskaźników technicznych** | ❌ | mamy ~5 z ~20 nazwanych rodzin: SMA 10/20/50, RSI, ROC. Brak: EMA, MACD, ADX, Aroon, Stochastic, CCI, Williams %R, Bollinger, ATR, Keltner, OBV, VWAP, A/D, MFI, SMA-200, formacje świecowe. TA-Lib nie jest zależnością |
+| **30+ wskaźników technicznych** | ✅ | 48 nazw, ~17 z ~20 rodzin (2026-08-02). Doszły: EMA, MACD, Bollinger, Donchian, ATR, Keltner, Stochastic, CCI, ADX+±DI, Aroon, MFI, OBV, A/D, VWAP. **Świadomie pominięte, z powodem:** Williams %R jest liniową transformacją Stochastic %K, więc ma **identyczną rangę przekrojową** — dodanie odtworzyłoby duplikat usunięty przez T0-7; formacje świecowe wymagałyby TA-Liba albo kilkudziesięciu ręcznych reguł przy znikomym dowodzie przekrojowym. Wszystkie nowe są **kandydatami** (`CANDIDATE_FEATURES`), mierzalnymi przez `include_candidates`, ale nieprzyjętymi do modelu, dopóki tabela IC ich nie potwierdzi |
 | Cache wskaźników w Redis + subskrypcja NATS | ✅ | `feature-engine` |
 | **Testy porównujące wyniki z reference values** | ❌ | testy sprawdzają własności, nie wartości referencyjne |
 | Pierwsza strategia + backtest runner | ✅ | `momentum.py` + silnik wektorowy long/flat |

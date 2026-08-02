@@ -35,16 +35,16 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (test counts measured 2026-08-02 on Python 3.12, not from memory —
-**1378 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
+**1400 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
 
 | Komponent | Port | Rola | Testy |
 |---|---|---|---|
-| `shared/trading-common` | — | Kontrakty, wspólne obliczenia, **registry strategii** i **statystyki ryzyka** — wszystko, co musi być identyczne po obu stronach granicy serwisów | 308 |
+| `shared/trading-common` | — | Kontrakty, wspólne obliczenia, **registry strategii** i **statystyki ryzyka** — wszystko, co musi być identyczne po obu stronach granicy serwisów | 325 |
 | `market-data` | 8001 | OHLCV: pobranie (Yahoo/Alpha Vantage), walidacja, TimescaleDB, cache, harmonogram przyrostowy | 71 |
 | `feature-engine` | 8002 | Wskaźniki Tier-1 + wzbogacenie Tier-2, rangi przekrojowe (`/ranked`) | 38 |
 | `strategy` | 8003 | **Każda aktywna reguła** z registry → `RiskEnvelope` → `CostAwareFilter` → własny sygnał; monitor degradacji per strategia | 60 |
 | `backtest` | 8004 | Ocena **reguły z registry** na historii symbolu + walk-forward, tygodniowa rewalidacja, krzywa kapitału | 58 |
-| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania | 321 |
+| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania | 325 |
 | `risk-mgmt` | 8006 | Sizing adaptacyjny, limity reżimowe i sektorowe, wyłącznik z zatrzaskiem, rejestr zleceń | 133 |
 | `execution` | 8007 | Paper broker, wyjścia ochronne SL/TP, likwidacja na BLACK, feedback portfela, **historia kapitału** | 60 |
 | `notification` | 8008 | 5 strumieni → alerty (log/Slack/Telegram/e-mail) | 33 |
@@ -607,9 +607,34 @@ danych (414 symboli × 20 lat) i seria defektów operacyjnych znalezionych dopie
   w piaskownicy zablokowany, więc panel jest pusty do czasu backfillu, a `GET /coverage` mówi wprost,
   ile wierszy jest i ile z nich jest niedatowanych.
 
+- 2026-08-02 — **Wskaźniki z checklisty Fazy 1 — i defekt, przez który kandydat NIGDY nie mógł
+  zapracować na wejście.** Reguła etapu E2 brzmi „rodzina wchodzi do modelu, gdy tabela IC to
+  potwierdzi". Okazała się **niewykonalna**: `alpha_decay` woła `build_dataset`, ten stosuje
+  `EXCLUDED_FEATURES`, a nowe wskaźniki są właśnie tam — czyli **jedyna ścieżka, która mogła zmierzyć
+  kandydata, sama go ukrywała**. Rozbite na dwa zbiory, bo to dwa różne powody:
+  `INADMISSIBLE_FEATURES` (poziomy cenowe, duplikat `momentum_20`) — **żaden pomiar tego nie zmieni**,
+  ranga poziomu to proxy na cenę akcji; oraz `CANDIDATE_FEATURES` — policzone, jeszcze nieprzyjęte,
+  wpuszczane przez `build_dataset(include_candidates=True)` i `POST /models/alpha-decay`
+  z `include_candidates`. **Trening nigdy nie ustawia tej flagi**, więc rodzina nie wejdzie do
+  kontraktu mimochodem, a pomiar nic nie kosztuje w rozliczeniu wielokrotnego testowania (studium
+  jest model-free). **Rodziny:** Stochastic %K/%D, CCI(20), ADX(14)+±DI, Aroon(25), MFI(14),
+  OBV i A/D **jako nachylenie** (skumulowana suma rankuje to, jak długo spółka jest notowana, a nie
+  sygnał — normalizowane średnim wolumenem), VWAP **jako stosunek**, Keltner **jako pozycja**.
+  **Świadomie pominięte:** Williams %R (to `%K - 100`, transformacja liniowa → **identyczna ranga
+  przekrojowa**; dodanie odtworzyłoby duplikat, który T0-7 usunął) i formacje świecowe (TA-Lib nie
+  jest zależnością, kilkadziesiąt formacji to duża powierzchnia przy znikomym dowodzie przekrojowym).
+  **Dwa realne błędy złapane testami, nie przeglądem:** MFI potrzebuje **21** barów, nie 20 (każdy
+  z 20 przepływów jest klasyfikowany ruchem względem POPRZEDNIEJ ceny typowej), a w pętli %D indeks
+  `end - 14` schodził poniżej zera — w Pythonie to wycinek liczony od końca, więc „za mało historii"
+  zamieniało się w **pusty wycinek i `ValueError` trzy funkcje dalej**; wywróciło 17 testów backtestu,
+  bo to on liczy cechy na krótkich oknach. Oba przypięte, plus test przechodzący każdą długość serii
+  od 1 do 39. Liczniki: shared 325 (+17), ml-pipeline 325 (+4) → **bateria 1400**; ruff + format +
+  mypy (`--strict` na shared) czyste, `check-dependencies` OK. **Kontrola anty-szczęściowa**: po
+  zlaniu obu zbiorów z powrotem w jeden pada test „kandydaci są wpuszczani do pomiaru".
+
 **Next (2026-08-02): tor predykcji zablokowany na pomiarze — pracujemy poza nim.**
 
-Etapy **strategii + registry**, **dashboardu** i **historii makro (P2-4)** są zamknięte (wpisy z 2026-08-02 na końcu logu). Kod toru predykcji
+Etapy **strategii + registry**, **dashboardu**, **historii makro (P2-4)** i **wskaźników** są zamknięte (wpisy z 2026-08-02 na końcu logu). Kod toru predykcji
 (E0–E5) jest skończony i **nie ma tam sensownego następnego zadania programistycznego**: każda pozostała decyzja jest bramkowana liczbami, których nie mamy (t-stat
 IC ≥ 2). Trening #3 na 414 symbolach × 20 lat skończył się zapadnięciem modelu do stałej i
 odrzuceniem przez bramkę na 5 z 6 warunków, a sonda pojemności wymaga powtórzenia po naprawie jej
@@ -623,9 +648,9 @@ udokumentowanej specyfikacji jest niezbudowana. Otwarte fronty, w kolejności do
 | ~~Strategie + registry~~ | ✅ **zamknięte 2026-08-02** — 5 reguł w registry, agregator kluczowany parą, backtest ocenia regułę z registry | `Plan_Rozwoju` Faza 2 |
 | ~~Dashboard / frontend~~ | ✅ **zamknięte 2026-08-02** — 6 sekcji, wykresy SVG, historia kapitału w execution | `Plan_Rozwoju` Faza 4, Tydzień 21 |
 | ~~Historia makro (P2-4)~~ | ✅ **zamknięte 2026-08-02** — panel vintage z ALFRED, odczyt as-of po dwóch osiach, `regime_by_date` wreszcie ma źródło. **Backfill u użytkownika** (egress do FRED zablokowany w piaskownicy) | plan predykcji §13 (T2-2) |
-| **Wskaźniki techniczne** ← **BIEŻĄCY ETAP** | ~9 z ~20 rodzin z checklisty „30+" (blok klasycznej TA doszedł z etapem strategii) | `Plan_Rozwoju` Faza 1, Tydzień 3 |
+| ~~Wskaźniki techniczne~~ | ✅ **zamknięte 2026-08-02** — ~17 z ~20 rodzin, a co ważniejsze: kandydat jest **mierzalny bez bycia zaadoptowanym** (`include_candidates`) | `Plan_Rozwoju` Faza 1, Tydzień 3 |
+| **Raport feature importance** ← **BIEŻĄCY ETAP** | brak; dashboard ma na niego miejsce i wprost mówi, że nie jest zmierzony | `Plan_Rozwoju` Faza 3, checklist |
 | Sentyment / FinBERT | kontrakt i event istnieją, **producenta nie ma** | `Plan_Rozwoju` Faza 3, Tydzień 17–18 |
-| Raport feature importance | brak | `Plan_Rozwoju` Faza 3, checklist |
 
 Aneks statusu z mapowaniem checklist Faz 1–5 na kod: `Plan_Rozwoju_Systemu_Tradingowego_2.md`,
 sekcja „Aneks: status realizacji". Mapa dokumentów i zasada „który plik wygrywa": `docs/README.md`.

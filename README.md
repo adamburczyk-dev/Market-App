@@ -341,12 +341,12 @@ make test-market-data     # pojedynczy serwis
 cd services/ml-pipeline && python -m pytest tests/ -v
 ```
 
-Stan na 2026-08-02: **1378 testów, wszystkie zielone** na Pythonie 3.12; `ruff` + `ruff format` + `mypy` czyste (`--strict` dla `trading-common`). Rozkład:
+Stan na 2026-08-02: **1400 testów, wszystkie zielone** na Pythonie 3.12; `ruff` + `ruff format` + `mypy` czyste (`--strict` dla `trading-common`). Rozkład:
 
 | Komponent | Testów | Co jest testowane |
 |-----------|:---:|-------------------|
-| `ml-pipeline` | 321 | Etykiety triple-barrier, podziały purged, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring, badania |
-| `trading-common` | 308 | Kontrakty, zdarzenia, `RiskEnvelope`, `CostAwareFilter`, cechy, rangi, fundamenty, scheduler, **registry strategii** |
+| `ml-pipeline` | 325 | Etykiety triple-barrier, podziały purged, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring, badania |
+| `trading-common` | 325 | Kontrakty, zdarzenia, `RiskEnvelope`, `CostAwareFilter`, cechy, rangi, fundamenty, scheduler, **registry strategii** |
 | `risk-mgmt` | 133 | Wielkość pozycji, limity reżimowe/sektorowe, wyłącznik z zatrzaskiem, trwałość stanu |
 | `signal-aggregator` | 97 | Łączenie sygnałów per strategia, wagi adaptacyjne, bufory TTL, wybór poziomów, filtr kosztów |
 | `market-data` | 71 | Fetchery, masowy upsert i deduplikacja, cache, harmonogram przyrostowy, wykrywanie restatementu |

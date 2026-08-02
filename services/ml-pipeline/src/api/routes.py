@@ -109,6 +109,11 @@ class AlphaDecayRequest(TrainRequest):
     # Entry delays, in sessions — how stale a signal may be before it stops
     # being worth acting on.
     delays: list[int] = Field(default=[0, 1, 2, 3, 5], min_length=1, max_length=8)
+    # Admit the classic-TA block (CANDIDATE_FEATURES) into the comparison. Off
+    # by default so the routine study reports the model's actual inputs; turned
+    # on, this is how stage E2's "a family joins after the IC table says so"
+    # is actually executed. Measuring costs no trials — the study is model-free.
+    include_candidates: bool = False
 
 
 class CostStudyRequest(TrainRequest):
@@ -236,6 +241,7 @@ async def alpha_decay(
             limit=req.limit,
             horizons=tuple(req.horizons),
             delays=tuple(req.delays),
+            include_candidates=req.include_candidates,
         )
         return service.record_run("alpha-decay", result)
 

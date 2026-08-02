@@ -105,6 +105,20 @@ TECHNICAL_FEATURES: frozenset[str] = frozenset(
         "donchian_pos_20",
         "atr_14",
         "atr_pct_14",
+        "keltner_pos_20",
+        "stoch_k_14",
+        "stoch_d_14",
+        "cci_20",
+        "mfi_14",
+        "vwap_ratio_20",
+        "obv_slope_20",
+        "ad_slope_20",
+        "aroon_up_25",
+        "aroon_down_25",
+        "aroon_osc_25",
+        "plus_di_14",
+        "minus_di_14",
+        "adx_14",
     }
 )
 
@@ -130,6 +144,20 @@ RULE_ONLY_FEATURES: frozenset[str] = frozenset(
         "donchian_pos_20",
         "atr_14",
         "atr_pct_14",
+        "keltner_pos_20",
+        "stoch_k_14",
+        "stoch_d_14",
+        "cci_20",
+        "mfi_14",
+        "vwap_ratio_20",
+        "obv_slope_20",
+        "ad_slope_20",
+        "aroon_up_25",
+        "aroon_down_25",
+        "aroon_osc_25",
+        "plus_di_14",
+        "minus_di_14",
+        "adx_14",
     }
 )
 
@@ -197,6 +225,74 @@ def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14)
     for i in range(period, len(tr)):
         atr = (atr * (period - 1) + float(tr[i])) / period
     return atr
+
+
+def _wilder_smooth(values: np.ndarray, period: int) -> np.ndarray:
+    """Wilder's smoothing — the recursion ADX, ATR and friends are defined on.
+
+    Not the same as an EMA with alpha=1/period at the seed: Wilder seeds with a
+    plain SUM of the first `period` values and then decays. Using an EMA instead
+    is the usual reason a hand-rolled ADX disagrees with every chart package.
+    """
+    out = np.full(len(values), np.nan)
+    if len(values) < period:
+        return out
+    total = float(values[:period].sum())
+    out[period - 1] = total
+    for i in range(period, len(values)):
+        total = total - total / period + float(values[i])
+        out[i] = total
+    return out
+
+
+def _directional_index(
+    high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14
+) -> tuple[float, float, float] | None:
+    """(+DI, -DI, ADX) — trend STRENGTH, deliberately direction-agnostic in ADX.
+
+    ADX is what distinguishes "trending" from "ranging" without saying which
+    way, which is why a breakout rule and a mean-reversion rule want opposite
+    readings of the same number.
+    """
+    if len(close) < 2 * period + 1:
+        return None
+    up_move = high[1:] - high[:-1]
+    down_move = low[:-1] - low[1:]
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    prev_close = close[:-1]
+    tr = np.maximum(
+        high[1:] - low[1:],
+        np.maximum(np.abs(high[1:] - prev_close), np.abs(low[1:] - prev_close)),
+    )
+
+    tr_s = _wilder_smooth(tr, period)
+    plus_s = _wilder_smooth(plus_dm, period)
+    minus_s = _wilder_smooth(minus_dm, period)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        plus_di = 100.0 * plus_s / tr_s
+        minus_di = 100.0 * minus_s / tr_s
+        dx = 100.0 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+    dx = dx[~np.isnan(dx)]
+    if len(dx) < period:
+        return None
+    # ADX is Wilder's average of DX; seeded with the mean of the first `period`.
+    adx = float(dx[:period].mean())
+    for value in dx[period:]:
+        adx = (adx * (period - 1) + float(value)) / period
+    return float(plus_di[-1]), float(minus_di[-1]), adx
+
+
+def _slope_per_bar(values: np.ndarray) -> float:
+    """Least-squares slope of `values` against bar index."""
+    n = len(values)
+    x = np.arange(n, dtype=float)
+    x_centred = x - x.mean()
+    denominator = float((x_centred**2).sum())
+    if denominator == 0:
+        return 0.0
+    return float((x_centred * (values - values.mean())).sum() / denominator)
 
 
 def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
@@ -354,6 +450,120 @@ def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
             # `atr_14` itself is on the adjusted scale; multiplying a raw price
             # by an adjusted distance is the scale mix this pair avoids.
             feats["atr_pct_14"] = float(atr / closes[-1])
+
+        # Keltner: the same idea as Bollinger with ATR instead of standard
+        # deviation, so it widens on gaps rather than only on close-to-close
+        # dispersion. Only the POSITION is kept — the bands themselves are
+        # price levels whose cross-sectional rank is share price.
+        if n >= 20:
+            middle_k = float(closes[-20:].mean())
+            width = 2.0 * atr
+            if width > 0:
+                feats["keltner_pos_20"] = float((closes[-1] - middle_k) / width)
+
+    # --- Phase-1 checklist families, added as CANDIDATES ------------------
+    # Each is in a form whose cross-sectional rank means something. That
+    # constraint removed several from the checklist as written: OBV and the
+    # A/D line are unbounded cumulative sums, so ranking their LEVEL ranks how
+    # long a symbol has been listed. Their slope is the part that carries
+    # information, and that is what is stored.
+
+    if n >= 15:
+        # Stochastic %K: where the close sits in the recent high-low range.
+        # Distinct from RSI, which only ever sees closes.
+        window_high = float(highs[-14:].max())
+        window_low = float(lows[-14:].min())
+        if window_high > window_low:
+            feats["stoch_k_14"] = float(
+                100.0 * (closes[-1] - window_low) / (window_high - window_low)
+            )
+            # %D is the 3-period average of %K; computed from the same window
+            # slid back, not from a stored series.
+            k_values = []
+            for offset in range(3):
+                end = n - offset
+                start = end - 14
+                # A negative start would slice from the END of the array and
+                # silently hand `.max()` an empty window — Python's negative
+                # indexing turns "not enough history" into a crash three
+                # functions away instead of a missing feature here.
+                if start < 0:
+                    break
+                hi = float(highs[start:end].max())
+                lo = float(lows[start:end].min())
+                if hi > lo:
+                    k_values.append(100.0 * (closes[end - 1] - lo) / (hi - lo))
+            if len(k_values) == 3:
+                feats["stoch_d_14"] = float(sum(k_values) / 3.0)
+
+    if n >= 20:
+        # CCI: typical price against its own average, scaled by MEAN absolute
+        # deviation (not standard deviation — that is Lambert's definition and
+        # the reason the ±100 convention means what it does).
+        typical = (highs[-20:] + lows[-20:] + closes[-20:]) / 3.0
+        mean_typical = float(typical.mean())
+        mean_deviation = float(np.abs(typical - mean_typical).mean())
+        if mean_deviation > 0:
+            feats["cci_20"] = float((typical[-1] - mean_typical) / (0.015 * mean_deviation))
+
+        # VWAP as a RATIO: the level itself is a price, the ratio is not.
+        volume_window = volumes[-20:]
+        traded = float(volume_window.sum())
+        if traded > 0:
+            vwap = float((typical[-20:] * volume_window).sum() / traded)
+            if vwap > 0:
+                feats["vwap_ratio_20"] = float(closes[-1] / vwap)
+
+        # OBV and A/D: slope over the window, normalized by average volume, so
+        # the number is comparable across a mega-cap and a small-cap. The raw
+        # cumulative level is deliberately NOT stored.
+        direction = np.sign(np.diff(closes))
+        obv = np.concatenate([[0.0], np.cumsum(direction * volumes[1:])])
+        average_volume = float(volumes[-20:].mean())
+        if average_volume > 0:
+            feats["obv_slope_20"] = float(_slope_per_bar(obv[-20:]) / average_volume)
+            span = highs - lows
+            with np.errstate(divide="ignore", invalid="ignore"):
+                multiplier = np.where(span > 0, ((closes - lows) - (highs - closes)) / span, 0.0)
+            ad_line = np.cumsum(multiplier * volumes)
+            feats["ad_slope_20"] = float(_slope_per_bar(ad_line[-20:]) / average_volume)
+
+    if n >= 21:
+        # Money Flow Index: RSI computed on price × volume, so it separates a
+        # rally that money followed from one that it did not. Needs 21 bars, not
+        # 20: each of the 20 flows is classified by its move against the PREVIOUS
+        # typical price, so the window is one bar longer than it looks.
+        typical_full = (highs + lows + closes) / 3.0
+        money_flow = typical_full * volumes
+        deltas = np.diff(typical_full[-21:])  # 20 deltas
+        flows = money_flow[-20:]  # aligned one-for-one with them
+        positive = float(flows[deltas > 0].sum())
+        negative = float(flows[deltas < 0].sum())
+        if negative > 0:
+            feats["mfi_14"] = float(100.0 - 100.0 / (1.0 + positive / negative))
+        elif positive > 0:
+            feats["mfi_14"] = 100.0
+
+    if n >= 26:
+        # Aroon: how RECENTLY the window's extreme happened. Time-based, so it
+        # says something none of the price-based families do.
+        lookback = 25
+        recent_high = highs[-(lookback + 1) :]
+        recent_low = lows[-(lookback + 1) :]
+        since_high = lookback - int(np.argmax(recent_high))
+        since_low = lookback - int(np.argmin(recent_low))
+        feats["aroon_up_25"] = float(100.0 * (lookback - since_high) / lookback)
+        feats["aroon_down_25"] = float(100.0 * (lookback - since_low) / lookback)
+        feats["aroon_osc_25"] = feats["aroon_up_25"] - feats["aroon_down_25"]
+
+    directional = _directional_index(highs, lows, closes, 14)
+    if directional is not None:
+        plus_di, minus_di, adx = directional
+        feats["plus_di_14"] = plus_di
+        feats["minus_di_14"] = minus_di
+        # ADX measures trend STRENGTH without direction — which is exactly why
+        # a breakout rule and a mean-reversion rule want opposite readings of it.
+        feats["adx_14"] = adx
 
     return FeatureVector(
         symbol=last.symbol,

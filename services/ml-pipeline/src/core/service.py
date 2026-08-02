@@ -401,6 +401,7 @@ class MLPipelineService:
         limit: int = 1500,
         horizons: tuple[int, ...] = DEFAULT_HORIZONS,
         delays: tuple[int, ...] = DEFAULT_DELAYS,
+        include_candidates: bool = False,
     ) -> dict[str, Any]:
         """How long the signal lasts, and how much a delayed entry costs.
 
@@ -423,6 +424,7 @@ class MLPipelineService:
             self._dataset_params,
             horizons=horizons,
             delays=delays,
+            include_candidates=include_candidates,
         )
 
     async def cost_study(

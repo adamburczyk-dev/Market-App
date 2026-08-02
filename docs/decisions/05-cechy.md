@@ -115,3 +115,47 @@ wielokrotnego testowania. Pomiar jest **model-free** (IC surowych rang + t-stat)
 kosztuje w rozliczeniu bramki.
 **Praktyczna konsekwencja:** nowe wskaźniki liczone dla **strategii regułowych** trafiają do
 `EXCLUDED_FEATURES` — kontrakt cech modelu nie może zmienić się mimochodem.
+
+## Kandydat musi być MIERZALNY, nie będąc zaadoptowanym
+
+**Kiedy:** 2026-08-02 (etap wskaźników)
+**Defekt strukturalny:** `EXCLUDED_FEATURES` był jednym zbiorem, a `alpha_decay` woła
+`build_dataset`, który go stosuje. Czyli **jedyna ścieżka, która mogła zmierzyć nowy wskaźnik, sama
+go ukrywała** — reguła etapu E2 („rodzina wchodzi, gdy tabela IC to potwierdzi") była niewykonalna,
+bo tabela IC nigdy nie mogła zobaczyć kandydata.
+**Rozstrzygnięcie — dwa zbiory, bo to dwa różne powody:**
+- `INADMISSIBLE_FEATURES` — poziomy cenowe i duplikat `momentum_20`. **Żaden pomiar tego nie zmieni**:
+  ranga przekrojowa poziomu to proxy na cenę akcji. Wykluczone na obu ścieżkach.
+- `CANDIDATE_FEATURES` (= `RULE_ONLY_FEATURES`) — policzone, jeszcze nieprzyjęte.
+  `build_dataset(include_candidates=True)` je wpuszcza, a **trening nigdy nie ustawia tej flagi**.
+**Pomiar nic nie kosztuje w rozliczeniu wielokrotnego testowania** — studium jest model-free (IC
+surowych rang + t-stat), więc nie zużywa prób z bramki.
+
+## Rodziny z checklisty Fazy 1 — w postaci, która ma sens po rangowaniu
+
+**Kiedy:** 2026-08-02
+**Kryterium doboru:** nie „bo checklista wymienia", tylko: (a) niewspółliniowe z tym, co już jest,
+(b) liczalne z samego OHLCV, (c) **ranga przekrojowa musi coś znaczyć**. Ostatni punkt przeformułował
+połowę listy.
+
+| Rodzina | Postać i dlaczego taka |
+|---|---|
+| Stochastic %K/%D(14,3) | pozycja zamknięcia w zakresie high-low; różna od RSI, które widzi tylko zamknięcia |
+| CCI(20) | cena typowa vs własna średnia, skalowana **średnim odchyleniem bezwzględnym** (definicja Lamberta — użycie odchylenia standardowego przeskalowałoby konwencję ±100) |
+| ADX(14) + ±DI | siła trendu **bez kierunku** — dlatego reguła wybicia i reguła rewersji chcą przeciwnych odczytów tej samej liczby |
+| Aroon(25) | czas od ekstremum — jedyna rodzina mówiąca coś, czego nie mówią rodziny cenowe |
+| MFI(14) | RSI ważony pieniądzem; odróżnia wzrost, za którym poszedł kapitał, od takiego, za którym nie |
+| OBV / A/D | **nachylenie, nie poziom**: skumulowana suma rankuje to, jak długo spółka jest notowana, a nie sygnał. Normalizowane średnim wolumenem, żeby porównywały się mega-cap i small-cap |
+| VWAP(20) | **stosunek** `close/VWAP` — sam VWAP to cena |
+| Keltner(20) | tylko **pozycja** w kanale; pasma to poziomy cenowe |
+
+**Świadomie POMINIĘTE, z powodem:**
+- **Williams %R** — to `%K - 100`, transformacja liniowa, więc jego ranga przekrojowa jest
+  **identyczna** ze Stochastic %K. Dodanie go odtworzyłoby duplikat `momentum_20`, który T0-7 usunął.
+- **Formacje świecowe** — TA-Lib nie jest zależnością, a ręczne wdrożenie kilkudziesięciu formacji
+  to duża powierzchnia przy znikomym udokumentowanym dowodzie przekrojowym.
+
+**Złapane testem, nie przeglądem:** MFI potrzebuje **21** barów, nie 20 (każdy z 20 przepływów jest
+klasyfikowany ruchem względem POPRZEDNIEJ ceny typowej), a w pętli %D indeks `end - 14` schodził
+poniżej zera — w Pythonie to wycinek liczony od końca, więc „za mało historii" zamieniało się
+w pusty wycinek i `ValueError` trzy funkcje dalej. Oba przypinają teraz testy.

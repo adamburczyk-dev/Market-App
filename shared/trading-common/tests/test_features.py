@@ -367,3 +367,171 @@ def test_the_classic_block_does_not_raise_the_required_window():
     If a future indicator changes that, FULL_HISTORY has to move with it."""
     assert compute_feature_vector(make_bars(FULL_HISTORY)).features.keys() >= RULE_ONLY_FEATURES
     assert FULL_HISTORY == 253
+
+
+# --- Phase-1 checklist families, added as CANDIDATES -----------------------
+
+
+def test_stochastic_places_the_close_in_the_high_low_range():
+    """Reference values with no arithmetic: a close at the window high is 100,
+    at the low is 0."""
+    closes = [100.0] * 19 + [110.0]
+    highs = [110.0] * 20
+    lows = [100.0] * 20
+    at_high = compute_feature_vector(ohlc_bars(closes, highs, lows))
+    assert at_high.features["stoch_k_14"] == pytest.approx(100.0)
+
+    at_low = compute_feature_vector(ohlc_bars([100.0] * 20, highs, lows))
+    assert at_low.features["stoch_k_14"] == pytest.approx(0.0)
+
+
+def test_stochastic_d_is_the_average_of_three_k_readings():
+    closes = [100.0 + i for i in range(30)]
+    fv = compute_feature_vector(ohlc_bars(closes))
+    # In a monotonic rise every %K is at the top of its own window, so %D
+    # equals %K — a degenerate case, but it pins the averaging shape.
+    assert fv.features["stoch_d_14"] == pytest.approx(fv.features["stoch_k_14"], abs=1e-6)
+
+
+def test_stochastic_is_absent_on_a_flat_range_rather_than_dividing_by_zero():
+    fv = compute_feature_vector(ohlc_bars([100.0] * 30, [100.0] * 30, [100.0] * 30))
+    assert "stoch_k_14" not in fv.features
+
+
+def test_cci_uses_MEAN_absolute_deviation_not_standard_deviation():
+    """Lambert's definition. Using std would rescale the ±100 convention and
+    make every published threshold mean something different."""
+    closes = [100.0 + (5.0 if i % 2 else -5.0) for i in range(30)]
+    bars = ohlc_bars(closes, closes, closes)  # typical price == close
+    fv = compute_feature_vector(bars)
+
+    window = closes[-20:]
+    mean = sum(window) / 20
+    mad = sum(abs(c - mean) for c in window) / 20
+    expected = (window[-1] - mean) / (0.015 * mad)
+    assert fv.features["cci_20"] == pytest.approx(expected)
+
+
+def test_mfi_is_100_when_every_move_is_up_and_0_when_every_move_is_down():
+    rising = compute_feature_vector(ohlc_bars([100.0 + i for i in range(30)]))
+    falling = compute_feature_vector(ohlc_bars([200.0 - i for i in range(30)]))
+    assert rising.features["mfi_14"] == pytest.approx(100.0)
+    assert falling.features["mfi_14"] == pytest.approx(0.0)
+
+
+def test_mfi_differs_from_rsi_because_volume_counts():
+    """If they agreed the family would be a duplicate — the whole reason to add
+    MFI is that it weighs each move by the money behind it."""
+    closes = [100.0 + (3.0 if i % 2 else -2.0) for i in range(40)]
+    heavy_up = [2_000_000.0 if i % 2 else 500_000.0 for i in range(40)]
+    plain = compute_feature_vector(ohlc_bars(closes))
+    weighted = compute_feature_vector(
+        [
+            bar.model_copy(update={"volume": volume})
+            for bar, volume in zip(ohlc_bars(closes), heavy_up, strict=True)
+        ]
+    )
+    assert weighted.features["mfi_14"] != pytest.approx(plain.features["rsi_14"])
+
+
+def test_vwap_ratio_is_one_when_price_never_moves():
+    fv = compute_feature_vector(ohlc_bars([100.0] * 30, [100.0] * 30, [100.0] * 30))
+    assert fv.features["vwap_ratio_20"] == pytest.approx(1.0)
+
+
+def test_vwap_ratio_is_above_one_in_a_rise():
+    fv = compute_feature_vector(ohlc_bars([100.0 + i for i in range(30)]))
+    assert fv.features["vwap_ratio_20"] > 1.0
+
+
+def test_obv_and_ad_are_stored_as_SLOPES_not_levels():
+    """A cumulative sum's cross-sectional rank ranks how long a symbol has been
+    listed. Only the slope carries information, so only the slope is kept."""
+    fv = compute_feature_vector(ohlc_bars([100.0 + i for i in range(40)]))
+    assert "obv_slope_20" in fv.features and "obv" not in fv.features
+    assert "ad_slope_20" in fv.features and "ad_line" not in fv.features
+    assert fv.features["obv_slope_20"] > 0  # every session closes up
+
+
+def test_obv_slope_is_normalized_by_volume_so_it_compares_across_sizes():
+    closes = [100.0 + i for i in range(40)]
+    small = compute_feature_vector(ohlc_bars(closes))
+    big = compute_feature_vector(
+        [b.model_copy(update={"volume": b.volume * 1000}) for b in ohlc_bars(closes)]
+    )
+    assert big.features["obv_slope_20"] == pytest.approx(small.features["obv_slope_20"], rel=1e-6)
+
+
+def test_aroon_is_100_when_the_extreme_is_today():
+    rising = compute_feature_vector(ohlc_bars([100.0 + i for i in range(40)]))
+    assert rising.features["aroon_up_25"] == pytest.approx(100.0)
+    assert rising.features["aroon_osc_25"] > 0
+
+    falling = compute_feature_vector(ohlc_bars([200.0 - i for i in range(40)]))
+    assert falling.features["aroon_down_25"] == pytest.approx(100.0)
+    assert falling.features["aroon_osc_25"] < 0
+
+
+def test_adx_is_direction_agnostic_but_di_is_not():
+    """ADX says how strongly a name trends, not which way — which is exactly
+    why a breakout rule and a reversion rule want opposite readings of it."""
+    up = compute_feature_vector(ohlc_bars([100.0 * 1.01**i for i in range(80)]))
+    down = compute_feature_vector(ohlc_bars([100.0 * 0.99**i for i in range(80)]))
+
+    assert up.features["adx_14"] == pytest.approx(down.features["adx_14"], rel=0.25)
+    assert up.features["plus_di_14"] > up.features["minus_di_14"]
+    assert down.features["minus_di_14"] > down.features["plus_di_14"]
+
+
+def test_adx_is_higher_in_a_trend_than_in_a_range():
+    trending = compute_feature_vector(ohlc_bars([100.0 * 1.01**i for i in range(80)]))
+    ranging = compute_feature_vector(
+        ohlc_bars([100.0 + (2.0 if i % 2 else -2.0) for i in range(80)])
+    )
+    assert trending.features["adx_14"] > ranging.features["adx_14"]
+
+
+def test_keltner_position_is_zero_at_the_middle_band():
+    fv = compute_feature_vector(ohlc_bars([100.0] * 40))
+    assert fv.features["keltner_pos_20"] == pytest.approx(0.0)
+
+
+def test_every_new_family_is_a_CANDIDATE_not_a_model_input():
+    """The point of the stage: they are computed and measurable, not adopted."""
+    added = {
+        "stoch_k_14",
+        "stoch_d_14",
+        "cci_20",
+        "mfi_14",
+        "vwap_ratio_20",
+        "obv_slope_20",
+        "ad_slope_20",
+        "aroon_up_25",
+        "aroon_down_25",
+        "aroon_osc_25",
+        "plus_di_14",
+        "minus_di_14",
+        "adx_14",
+        "keltner_pos_20",
+    }
+    assert added <= RULE_ONLY_FEATURES
+    assert added <= TECHNICAL_FEATURES
+
+
+def test_short_series_do_not_crash_the_new_families():
+    """A negative slice start indexes from the END of the array in Python, so
+    "not enough history" became an empty window and a ValueError three
+    functions away. Every length from 1 up must yield a vector."""
+    for n in range(1, 40):
+        fv = compute_feature_vector(ohlc_bars([100.0 + i * 0.5 for i in range(n)]))
+        assert fv.features["close"] == pytest.approx(100.0 + (n - 1) * 0.5)
+
+
+def test_stoch_d_needs_a_longer_window_than_stoch_k():
+    """%D averages three %K readings, so it needs two more bars than %K — and
+    must be ABSENT rather than computed from a truncated window."""
+    short = compute_feature_vector(ohlc_bars([100.0 + i for i in range(15)]))
+    assert "stoch_k_14" in short.features
+    assert "stoch_d_14" not in short.features
+    longer = compute_feature_vector(ohlc_bars([100.0 + i for i in range(17)]))
+    assert "stoch_d_14" in longer.features

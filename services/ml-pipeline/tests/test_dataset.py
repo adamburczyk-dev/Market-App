@@ -6,7 +6,9 @@ import numpy as np
 from trading_common.schemas import Interval, OHLCVBar
 
 from src.core.dataset import (
+    CANDIDATE_FEATURES,
     EXCLUDED_FEATURES,
+    INADMISSIBLE_FEATURES,
     DatasetParams,
     build_dataset,
     drop_zero_variance_features,
@@ -219,8 +221,7 @@ def test_zero_variance_drop_keeps_the_label_diagnostics():
 
 def test_zero_variance_drop_keeps_informative_columns():
     regimes = {
-        (START + timedelta(days=i)).date(): "crisis" if i % 2 else "expansion"
-        for i in range(120)
+        (START + timedelta(days=i)).date(): "crisis" if i % 2 else "expansion" for i in range(120)
     }
     ds = build_dataset(universe(), PARAMS, regime_by_date=regimes)
     cleaned, dropped = drop_zero_variance_features(ds)
@@ -228,3 +229,36 @@ def test_zero_variance_drop_keeps_informative_columns():
     assert "macro_crisis" in cleaned.feature_names
     assert "macro_expansion" in cleaned.feature_names
     assert "macro_slowdown" in dropped  # never occurs → constant zero
+
+
+# --- candidates: measurable without being adopted --------------------------
+
+
+def test_candidates_are_out_of_the_model_input_by_default():
+    """Stage E2: a family joins when the IC table says so, never by existing."""
+    ds = build_dataset(universe(), PARAMS)
+    assert not set(ds.feature_names) & CANDIDATE_FEATURES
+    assert not set(ds.feature_names) & INADMISSIBLE_FEATURES
+
+
+def test_candidates_are_admitted_for_MEASUREMENT():
+    """The gap this closes: the only path that could rank a new indicator also
+    excluded it, so a candidate could never earn its way in."""
+    ds = build_dataset(universe(), PARAMS, include_candidates=True)
+    admitted = set(ds.feature_names) & CANDIDATE_FEATURES
+    assert admitted, "the classic-TA block must be visible to the study"
+
+
+def test_inadmissible_columns_stay_out_even_for_measurement():
+    """No measurement can turn a share-price proxy into a signal, so `close`
+    and the SMAs are excluded on BOTH paths — the two sets are not the same
+    kind of exclusion."""
+    ds = build_dataset(universe(), PARAMS, include_candidates=True)
+    assert not set(ds.feature_names) & INADMISSIBLE_FEATURES
+    assert "close" not in ds.feature_names
+    assert "momentum_20" not in ds.feature_names
+
+
+def test_the_two_exclusion_sets_are_disjoint_and_cover_the_old_one():
+    assert not (INADMISSIBLE_FEATURES & CANDIDATE_FEATURES)
+    assert EXCLUDED_FEATURES == INADMISSIBLE_FEATURES | CANDIDATE_FEATURES

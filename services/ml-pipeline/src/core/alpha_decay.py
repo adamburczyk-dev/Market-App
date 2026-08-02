@@ -251,6 +251,7 @@ def run_alpha_decay(
     delays: tuple[int, ...] = DEFAULT_DELAYS,
     max_features: int = 6,
     n_permutations: int = 3,
+    include_candidates: bool = False,
 ) -> dict[str, Any]:
     """Decay profile of the strongest raw features — holding period and urgency.
 
@@ -258,11 +259,19 @@ def run_alpha_decay(
     horizon and only the strongest handful are profiled: a decay curve for a
     feature that predicts nothing at any horizon is a plot of noise, and printing
     fifteen of them buries the two that matter.
+
+    With ``include_candidates`` the classic-TA block joins the comparison. That
+    is how stage E2's rule is actually executed: a family is adopted when the IC
+    table says so, which requires the table to have been able to see it.
     """
     if not bars_by_symbol:
         raise ValueError("no history for any requested symbol")
     p = params or DatasetParams()
-    ds = build_dataset(bars_by_symbol, p)
+    # `include_candidates` is the whole point of a candidate list: the study is
+    # model-free (raw-rank IC + t-stat), so measuring one costs nothing in the
+    # multiple-testing budget, and without this flag the only path that could
+    # rank a new indicator was also the path that excluded it.
+    ds = build_dataset(bars_by_symbol, p, include_candidates=include_candidates)
     if ds.n_samples == 0:
         raise ValueError("dataset is empty — not enough history for the feature window")
 
