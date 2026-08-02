@@ -6,7 +6,7 @@ System tradingowy oparty na mikroserwisach: event-driven, Kubernetes-ready od dn
 
 > Kontekst projektu, historia decyzji i bieżące priorytety: [`CLAUDE.md`](CLAUDE.md).
 > Architektura fazy ML (etykiety, walidacja, rejestr): [`docs/ml_integration_plan.md`](docs/ml_integration_plan.md).
-> Bieżący plan poprawy przewidywania: [`docs/plan_2026_07_28_prediction.md`](docs/plan_2026_07_28_prediction.md).
+> Bieżący plan poprawy przewidywania: [`docs/decisions/`](docs/decisions/).
 > Mapa całej dokumentacji: [`docs/README.md`](docs/README.md).
 
 ---
@@ -459,7 +459,7 @@ Market-App/
 │
 ├── docs/
 │   ├── README.md                    # Mapa dokumentacji — który plik obowiązuje
-│   ├── plan_2026_07_28_prediction.md# Bieżąca lista robocza (etapy E0–E5)
+│   ├── decisions/             # Dlaczego jest tak, a nie inaczej (7 plików + D1–D8)
 │   ├── ml_integration_plan.md       # Architektura fazy ML (ML-0…ML-4)
 │   ├── framework_supplement.md      # Referencja 12 komponentów + usunięty kod
 │   └── archive/                     # Zamrożone: brief, audyt, backlog po audycie

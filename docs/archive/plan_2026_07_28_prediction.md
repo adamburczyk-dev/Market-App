@@ -1,3 +1,21 @@
+> **ZARCHIWIZOWANY 2026-08-02.** Nie aktualizujemy.
+>
+> Etapy E0–E5 są **kodowo skończone**; dokument spełnił swoją rolę listy roboczej toru predykcji.
+> Zamrożony w chwili, w której powstał — jego liczby (m.in. „7 cech", „34 symbole", próg
+> wykrywalności IC 0.022) opisują stan z 2026-07-28 i **nie są aktualne**.
+>
+> Gdzie poszły jego niezamknięte pozycje:
+> - **P2-4** (historia makro vintage) i **P2-5** (fractional differentiation) → „Known issues"
+>   w [`../../CLAUDE.md`](../../CLAUDE.md)
+> - **decyzje D1–D8** → [`../decisions/06-walidacja-i-bramka.md`](../decisions/06-walidacja-i-bramka.md),
+>   sekcja na końcu
+> - **kampania pomiarowa** (§12.2) → [`../../README.md`](../../README.md)
+> - **uzasadnienia decyzji** → [`../decisions/`](../decisions/)
+>
+> Bieżący stan projektu i następny etap: [`../../CLAUDE.md`](../../CLAUDE.md).
+
+---
+
 # Plan poprawy przewidywania — 2026-07-28
 
 > **Cel:** doprowadzić do stanu, w którym jesteśmy w stanie **zmierzyć** przewagę predykcyjną, a
@@ -488,7 +506,7 @@ szczegółowa tabela per nazwa i werdykt. Bez niej dostajesz tabelę przy 1 mln 
 
 ### 12.2b Windows (PowerShell)
 
-Tabela wyżej używa `make`, którego Windows nie ma. Repo zawiera [`make.ps1`](../make.ps1) z tymi
+Tabela wyżej używa `make`, którego Windows nie ma. Repo zawiera [`make.ps1`](../../make.ps1) z tymi
 samymi celami — **argumenty przekazuje się wprost, bez opakowania `ARGS="…"`**:
 
 ```powershell

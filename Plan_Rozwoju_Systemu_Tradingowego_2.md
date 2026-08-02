@@ -1899,3 +1899,77 @@ Podejście wymaga **więcej pracy infrastrukturalnej na starcie** (Docker, NATS,
 ---
 
 *Dokument zaktualizowany | Architektura mikroserwisowa | Marzec 2026*
+
+---
+
+# Aneks: status realizacji (2026-08-02)
+
+> Dopisany, bo ten dokument był traktowany jako „faza budowy wykonana", podczas gdy checklisty
+> Faz 1–4 zawierają duże **niezbudowane** części. Właśnie dlatego przez tygodnie nie były widoczne.
+> Bieżący stan projektu i kolejny etap: `CLAUDE.md`. Proweniencja decyzji: `docs/decisions/`.
+
+Legenda: ✅ zrobione · ⚠️ częściowo · ❌ niezbudowane
+
+## Faza 0–1 — infrastruktura, dane, cechy, pierwsza strategia
+
+| Pozycja checklisty | Status | Gdzie / czego brakuje |
+|---|---|---|
+| Struktura repo, shared library, per-service `pyproject.toml` | ✅ | `shared/trading-common`, 14 komponentów |
+| Docker Compose (dev) + Dockerfile multi-stage | ✅ | `infrastructure/docker-compose.yml` |
+| CI/CD | ✅ | `.github/workflows/` — testy 14 komponentów + `scripts/`, audyt zależności |
+| Helm chart | ✅ | generyczny `templates/services.yaml`, 13 Deploymentów |
+| market-data: fetch → walidacja → TimescaleDB → cache → event | ✅ | + harmonogram przyrostowy z wykrywaniem restatementu |
+| **30+ wskaźników technicznych** | ❌ | mamy ~5 z ~20 nazwanych rodzin: SMA 10/20/50, RSI, ROC. Brak: EMA, MACD, ADX, Aroon, Stochastic, CCI, Williams %R, Bollinger, ATR, Keltner, OBV, VWAP, A/D, MFI, SMA-200, formacje świecowe. TA-Lib nie jest zależnością |
+| Cache wskaźników w Redis + subskrypcja NATS | ✅ | `feature-engine` |
+| **Testy porównujące wyniki z reference values** | ❌ | testy sprawdzają własności, nie wartości referencyjne |
+| Pierwsza strategia + backtest runner | ✅ | `momentum.py` + silnik wektorowy long/flat |
+
+**Powyżej planu (nie było w checkliście):** rangi przekrojowe `/ranked`, wzbogacenie Tier-2
+(fundamenty + styl), ceny skorygowane, kontrakt okna `FEATURE_LOOKBACK`/`FULL_HISTORY`.
+
+## Faza 2 — strategie i backtesting
+
+| Pozycja | Status | Uwaga |
+|---|---|---|
+| **5 strategii** (SMA/EMA crossover, RSI+Bollinger, MACD divergence, Donchian breakout, pair trading) | ❌ | jest **jedna** (`momentum.py`, 34 linie) |
+| **Strategy Registry** (pluggable pattern) | ❌ | reguła wpięta na sztywno w serwis |
+| Silnik backtestu + metryki | ✅ | Sharpe, maxDD, zwrot, liczba transakcji |
+| Walk-forward jako długie zadanie | ✅ | `ContinuousWalkForward` + tygodniowa rewalidacja |
+| Multi-timeframe | ❌ | tylko interwał dzienny |
+
+**To jest bieżący etap.** Blokada, której checklist nie przewidział: agregator kluczuje bufor
+sygnałów **samym symbolem**, więc druga strategia nadpisuje pierwszą.
+
+## Faza 3 — machine learning
+
+| Pozycja | Status | Uwaga |
+|---|---|---|
+| **100+ features** | ❌ | model dostaje **15** |
+| Purged K-Fold / time-series split | ✅ | + embargo, wagi unikalności, CPCV |
+| Random Forest, XGBoost, LSTM | ⚠️ | MLP (PyTorch) + LightGBM jako challenger. RF i LSTM nie powstały — świadomie: `docs/ml_integration_plan.md` argumentuje za płytkim modelem przekrojowym |
+| MLflow tracking | ✅ | sqlite backend, promocja przez alias |
+| **Raport feature importance** | ❌ | brak |
+| **FinBERT sentiment** | ❌ | `SentimentSnapshot` i `sentiment.updated` istnieją w kontraktach, **żaden serwis ich nie produkuje** |
+| Ensemble | ⚠️ | uśrednianie po ziarnach jest; stacking/voting wielu klas modeli nie |
+| Modele serwowane jako API | ✅ | `ml.signal_generated` + hot-reload po promocji |
+
+**Powyżej planu:** triple barrier z kalibracją barier, bramka G0–G5 z deflated Sharpe, sonda
+pojemności, studia model-free (cel, sektory, koszty, zanik alfy), monitoring driftu z pętlą wyników.
+
+## Faza 4 — risk & portfolio
+
+| Pozycja | Status | Uwaga |
+|---|---|---|
+| Sizing, limity, wyłącznik, bramka ryzyka na zdarzeniach | ✅ | + zatrzask wyłącznika, rejestr zleceń, limity sektorowe |
+| VaR, macierz korelacji | ❌ | nie liczone |
+| **Dashboard: 6 sekcji** | ⚠️ | ~1,5 sekcji, **zero wykresów**. Jest: liczby portfela, pozycje, alerty, lista modeli. Brak: krzywa kapitału i P&L, VaR i korelacje, atrybucja per strategia, wyniki backtestu, wydajność modelu, health/Grafana |
+
+## Faza 5 — produkcja
+
+| Pozycja | Status | Uwaga |
+|---|---|---|
+| Paper trading + abstrakcja brokera | ✅ | `PaperBroker`; realny broker niezaimplementowany (świadomie) |
+| Alerting | ✅ | 5 strumieni, 4 kanały |
+| Deployment K8s | ⚠️ | chart renderuje się i przechodzi lint; **nie uruchamiany na realnym klastrze** |
+| Prometheus + Grafana + Loki | ⚠️ | metryki są, dashboardy Grafany nie |
+| 30 dni papieru przed realnym kapitałem | ❌ | nie rozpoczęte — brak pełnego kryterium przejścia (FLOW-9) |

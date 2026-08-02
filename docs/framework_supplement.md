@@ -6,7 +6,7 @@
 > z repozytorium** — `vol_regime`, `earnings_decay`, `cross_asset` zostały skasowane
 > 2026-07-25 jako martwy kod i ich implementacje żyją już tylko tutaj oraz w historii gita.
 > „Tydzień implementacji" przy komponentach to relikt pierwotnego harmonogramu — kolejność prac
-> wyznacza dziś [`plan_2026_07_28_prediction.md`](plan_2026_07_28_prediction.md).
+> wyznacza dziś [`../CLAUDE.md`](../CLAUDE.md) („Next") i [`decisions/`](decisions/).
 
 ## Cel dokumentu
 

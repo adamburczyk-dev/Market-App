@@ -6,7 +6,7 @@
 > obowiązują i opisują działający kod. Zastąpione są **wybory ilościowe**:
 > §6 bramka aktywacji → `ml-pipeline/src/core/gate.py` (G0–G5, patrz banner w tamtej sekcji);
 > §4–§5 horyzont, szerokość barier, zestaw cech i metryka decyzyjna → są przedmiotem
-> [`plan_2026_07_28_prediction.md`](plan_2026_07_28_prediction.md) (etapy E1–E3).
+> [`decisions/04-etykiety-i-cel.md`](decisions/04-etykiety-i-cel.md) i [`decisions/05-cechy.md`](decisions/05-cechy.md) (etapy E1–E3).
 > Czytaj ten plik, gdy pytasz „jak to jest zbudowane i dlaczego"; tamten, gdy pytasz „co dalej".
 
 > Authoritative design for the ML phase, written **before** the deep ML work per the standing
