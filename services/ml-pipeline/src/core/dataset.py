@@ -18,7 +18,12 @@ from datetime import datetime
 
 import numpy as np
 import structlog
-from trading_common.features import FEATURE_LOOKBACK, FULL_HISTORY, compute_feature_vector
+from trading_common.features import (
+    FEATURE_LOOKBACK,
+    FULL_HISTORY,
+    RULE_ONLY_FEATURES,
+    compute_feature_vector,
+)
 from trading_common.fundamentals import (
     fundamental_features,
     latest_available_before,
@@ -39,8 +44,11 @@ logger = structlog.get_logger()
 #  - absolute-level features, whose cross-sectional rank proxies price level, not signal
 #  - momentum_20, a deprecated alias of return_20d (identical column — perfect
 #    collinearity gives the same information twice and inflates its influence)
-EXCLUDED_FEATURES: frozenset[str] = frozenset(
-    {"close", "sma_10", "sma_20", "sma_50", "momentum_20"}
+#  - RULE_ONLY_FEATURES: the classic-TA block computed for the rule strategies.
+#    It is imported rather than re-listed so a new indicator cannot join the
+#    model contract by being added in trading-common and forgotten here.
+EXCLUDED_FEATURES: frozenset[str] = (
+    frozenset({"close", "sma_10", "sma_20", "sma_50", "momentum_20"}) | RULE_ONLY_FEATURES
 )
 
 REGIMES = ("expansion", "recovery", "slowdown", "contraction", "crisis")

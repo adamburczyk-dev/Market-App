@@ -7,11 +7,13 @@ from fastapi import FastAPI
 from trading_common.cost_filter import CostAwareFilter
 from trading_common.risk_envelope import RiskEnvelope
 
+# Importing the package registers every built-in rule — the service does not
+# keep its own list of what exists.
+from trading_common.strategies import StrategyRule, all_strategies, get_strategy
+
 from src.api import router as api_router
 from src.config import settings
 from src.core.feature_client import HttpFeatureClient
-from src.core.health import StrategyHealthTracker
-from src.core.momentum import MomentumParams
 from src.core.observability import setup_observability
 from src.core.portfolio_client import HttpPortfolioClient
 from src.core.service import PortfolioSnapshot, StrategyService
@@ -21,13 +23,27 @@ from src.events.subscriber import EventSubscriber
 logger = structlog.get_logger()
 
 
+def selected_rules() -> list[StrategyRule]:
+    """Rules named by ENABLED_STRATEGIES, or every registered rule when empty.
+
+    An unknown name raises: a misspelled strategy that merely does not run is
+    indistinguishable from one that ran and found no setup, and this service's
+    whole job is to be the thing that fires.
+    """
+    names = settings.enabled_strategies
+    if not names:
+        return all_strategies()
+    return [get_strategy(name) for name in names]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting service", service=settings.SERVICE_NAME)
 
     client = HttpFeatureClient(settings.FEATURE_ENGINE_URL)
     portfolio_client = HttpPortfolioClient(settings.RISK_MGMT_URL)
-    health = StrategyHealthTracker(settings.STRATEGY_NAME)
+    rules = selected_rules()
+    logger.info("Strategies enabled", strategies=[r.name for r in rules])
 
     publisher: Publisher
     nats_client = None
@@ -48,24 +64,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     service = StrategyService(
         client,
         publisher,
-        health,
+        rules,
         RiskEnvelope(),
         CostAwareFilter(),
-        MomentumParams(
-            buy_rank=settings.MOMENTUM_BUY_RANK,
-            sell_rank=settings.MOMENTUM_SELL_RANK,
-            rsi_overbought=settings.RSI_OVERBOUGHT,
-            rsi_oversold=settings.RSI_OVERSOLD,
-        ),
         PortfolioSnapshot(
             value=settings.PORTFOLIO_VALUE,
             exposure_pct=settings.CURRENT_EXPOSURE_PCT,
             drawdown_pct=settings.CURRENT_DRAWDOWN_PCT,
             daily_loss_pct=settings.DAILY_LOSS_PCT,
         ),
-        strategy_name=settings.STRATEGY_NAME,
-        stop_loss_pct=settings.STOP_LOSS_PCT,
-        take_profit_rr=settings.TAKE_PROFIT_RR,
+        rule_params=settings.STRATEGY_PARAMS,
+        fallback_stop_pct=settings.STOP_LOSS_PCT,
         expected_edge_bps=settings.EXPECTED_EDGE_BPS,
         market_cap_tier=settings.MARKET_CAP_TIER,
         portfolio_client=portfolio_client,

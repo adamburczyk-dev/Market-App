@@ -85,7 +85,7 @@ Kluczowe zasady, które ta ścieżka realizuje:
 |--------|------|------|
 | [`market-data`](services/market-data/) | 8001 | Pobieranie OHLCV (Yahoo → Alpha Vantage), walidacja, TimescaleDB, cache Redis, publikacja zdarzeń |
 | [`feature-engine`](services/feature-engine/) | 8002 | Cechy techniczne + wzbogacenie fundamentami/stylem, **rangi przekrojowe** (`/ranked`) |
-| [`strategy`](services/strategy/) | 8003 | Reguła momentum na rangach, `RiskEnvelope`, filtr kosztów, monitor degradacji strategii |
+| [`strategy`](services/strategy/) | 8003 | 5 reguł z registry (`trading_common.strategies`), `RiskEnvelope`, filtr kosztów, monitor degradacji per strategia |
 | [`backtest`](services/backtest/) | 8004 | Silnik long/flat bez podglądania przyszłości, walk-forward, cotygodniowa rewalidacja |
 | [`ml-pipeline`](services/ml-pipeline/) | 8005 | Trening (PyTorch), rejestr MLflow, serwowanie głosu ML, dzienny monitoring driftu |
 | [`risk-mgmt`](services/risk-mgmt/) | 8006 | Wielkość pozycji, limity reżimowe i sektorowe, wyłącznik bezpieczeństwa, stan portfela |
@@ -341,22 +341,23 @@ make test-market-data     # pojedynczy serwis
 cd services/ml-pipeline && python -m pytest tests/ -v
 ```
 
-Stan na 2026-07-25: **847 testów, wszystkie zielone** na Pythonie 3.12; `ruff` + `ruff format` + `mypy` czyste (`--strict` dla `trading-common`). Rozkład:
+Stan na 2026-08-02: **1311 testów, wszystkie zielone** na Pythonie 3.12; `ruff` + `ruff format` + `mypy` czyste (`--strict` dla `trading-common`). Rozkład:
 
 | Komponent | Testów | Co jest testowane |
 |-----------|:---:|-------------------|
-| `trading-common` | 181 | Kontrakty, zdarzenia, `RiskEnvelope`, `CostAwareFilter`, cechy, rangi, scheduler |
-| `ml-pipeline` | 162 | Etykiety triple-barrier, podziały purged, trening, bramka, rejestr MLflow, serwowanie, monitoring |
-| `risk-mgmt` | 104 | Wielkość pozycji, limity reżimowe/sektorowe, wyłącznik, trwałość stanu |
-| `signal-aggregator` | 80 | Łączenie sygnałów, wagi adaptacyjne, bufory TTL, filtr kosztów |
-| `strategy` | 56 | Reguła momentum, brama ryzyka, degradacja, rewalidacja z backtestu |
-| `execution` | 44 | Wypełnienia, idempotencja, wyjścia ochronne, tylko long, trwałość |
-| `backtest` | 41 | Silnik bez podglądania przyszłości, walk-forward, rewalidacja |
+| `ml-pipeline` | 315 | Etykiety triple-barrier, podziały purged, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring, badania |
+| `trading-common` | 289 | Kontrakty, zdarzenia, `RiskEnvelope`, `CostAwareFilter`, cechy, rangi, fundamenty, scheduler, **registry strategii** |
+| `risk-mgmt` | 133 | Wielkość pozycji, limity reżimowe/sektorowe, wyłącznik z zatrzaskiem, trwałość stanu |
+| `signal-aggregator` | 97 | Łączenie sygnałów per strategia, wagi adaptacyjne, bufory TTL, wybór poziomów, filtr kosztów |
+| `market-data` | 71 | Fetchery, masowy upsert i deduplikacja, cache, harmonogram przyrostowy, wykrywanie restatementu |
+| `strategy` | 60 | Reguły z registry (sygnał per strategia), brama ryzyka, degradacja, rewalidacja z backtestu |
+| `backtest` | 56 | Punktacja ścieżki pozycji bez podglądania przyszłości, ocena reguły z registry, walk-forward |
+| `fundamental-data` | 54 | F-Score Piotroskiego (9 sygnałów), klient EDGAR, panel point-in-time, czynniki §5 |
+| `execution` | 48 | Wypełnienia, idempotencja, wyjścia ochronne, tylko long, trwałość |
 | `macro-data` | 41 | Detekcja reżimu, klient FRED, zdarzenia przejścia |
 | `feature-engine` | 38 | Orkiestracja cech, wzbogacanie atrybutami, magazyn, API rang |
-| `fundamental-data` | 36 | F-Score Piotroskiego (9 sygnałów), klient EDGAR, ingest |
 | `notification` | 33 | Mapowanie zdarzeń na alerty, kanały, izolacja awarii |
-| `market-data` | 30 | Fetchery, upsert, cache, publikacja zdarzeń |
+| `scripts/` | 33 | Bootstrap uniwersum, kontrola pokrycia, diagnostyka, audyt zależności |
 | `company-classifier` | 25 | Klasyfikacja stylu, routing modeli |
 | `dashboard` | 18 | Agregacja z 4 źródeł, tolerancja braku serwisu |
 
@@ -367,6 +368,7 @@ Serwisy z wymaganym `DB_PASSWORD` potrzebują env **przed** importem `src.*`:
 ```python
 # tests/conftest.py
 import os
+
 os.environ.setdefault("DB_PASSWORD", "test_password")
 os.environ.setdefault("REDIS_PASSWORD", "test_redis")
 

@@ -5,13 +5,14 @@ import nats
 import structlog
 from fastapi import FastAPI
 from trading_common.cost_filter import CostAwareFilter
+from trading_common.strategies import strategy_names
 
 from src.api import router as api_router
 from src.config import settings
 from src.core.adaptive_weights import AdaptiveWeightOptimizer
 from src.core.company_client import HttpCompanyClient
 from src.core.observability import setup_observability
-from src.core.service import SignalAggregatorService
+from src.core.service import SignalAggregatorService, strategy_source
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
 from src.events.subscriber import EventSubscriber
 
@@ -22,12 +23,17 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting service", service=settings.SERVICE_NAME)
 
+    # One weighting source per registered strategy, plus the non-strategy ones.
+    # Taking the list from the registry is what lets the adaptive loop learn
+    # per rule instead of scoring them all as a single "strategy" source.
+    sources = [strategy_source(name) for name in strategy_names()] + settings.sources
     optimizer = AdaptiveWeightOptimizer(
-        settings.sources,
+        sources,
         lookback_days=settings.WEIGHT_LOOKBACK_DAYS,
         min_weight=settings.WEIGHT_MIN,
         max_weight=settings.WEIGHT_MAX,
     )
+    logger.info("Weighting sources", sources=sources)
 
     publisher: Publisher
     nats_client = None

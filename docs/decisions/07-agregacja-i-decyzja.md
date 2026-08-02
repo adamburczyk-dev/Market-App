@@ -65,9 +65,23 @@ kierunku trafia do `POST /outcomes`.
 **Otwarte (FLOW-5):** źródło „strategy" nadal rozlicza się wynikiem modelowanym — powinno dostać
 to samo traktowanie.
 
-## Znane ograniczenie: bufor jest kluczowany samym symbolem
+## Bufor jest kluczowany PARĄ (symbol, strategia)
 
-**Status: naprawiane w bieżącym etapie (strategie + registry).**
-`self._buffer: dict[str, BufferedSignal]` — druga strategia dla tego samego symbolu **nadpisuje**
-pierwszą, a wszystkie sygnały wchodzą jako jedno źródło `"strategy"`, więc wagi adaptacyjne nie mogą
-rozróżnić strategii. Dopóki reguła jest jedna, jest to niewidoczne — i dokładnie dlatego przetrwało.
+**Kiedy:** 2026-08-02 (etap strategii + registry)
+**Co było:** `dict[str, BufferedSignal]` kluczowany samym symbolem — druga strategia dla tego samego
+symbolu **nadpisywała** pierwszą, a zwycięzcą była ta, którą NATS dostarczył ostatnią. Wszystkie
+sygnały wchodziły też jako jedno źródło `"strategy"`, więc `AdaptiveWeightOptimizer` — generyczny po
+nazwach źródeł — nie miał czego rozróżniać. Przy jednej regule oba defekty były **nieodróżnialne od
+poprawnego działania** i dokładnie dlatego przetrwały.
+**Rozstrzygnięcie:** `dict[str, dict[str, BufferedSignal]]`, źródło `strategy:{nazwa}` brane
+z registry (`strategy_names()`), wygasanie **per wpis** (jedna reguła, która zamilkła, nie wycofuje
+świeżego sygnału innej), a lista komponentów sortowana po nazwie — `components_present` nie może
+zależeć od kolejności dostarczenia.
+**Wybór poziomów przy wielu strategiach:** poziomy wybierane są **po** głosowaniu, spośród wpisów
+**zgodnych z końcowym kierunkiem** (stop policzony dla BUY jest bez sensu na SELL); wygrywa
+najwyższa `confidence`, remis rozstrzyga **nazwa strategii**. Bez deterministycznego remisu ten sam
+zestaw wejść dawałby różne zlecenia.
+**Dowód:** 5 testów regresyjnych pada na kodzie sprzed poprawki; na żywym `nats-server` jedno
+`features.ready` daje 4 zdarzenia `signal.generated` (BUY/BUY/BUY/SELL), jedną decyzję
+z `components_present` = 4 nazwane źródła, a wagi adaptacyjne rozjeżdżają się 0.667 vs 0.056 ze
+wspólnego startu 0.143.

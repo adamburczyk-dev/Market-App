@@ -16,9 +16,10 @@ class Settings(BaseSettings):
     NATS_BACKTEST_STREAM: str = "BACKTEST"
     NATS_BACKTEST_SUBJECTS: str = "backtest.>"
 
-    # Backtest engine defaults (time-series momentum, long/flat)
-    BACKTEST_LOOKBACK: int = 20
-    BACKTEST_ENTRY_MOMENTUM: float = 0.0
+    # Execution cost only. The strategy's own thresholds belong to the rule
+    # (trading_common.strategies) — the service-level lookback/entry_momentum
+    # knobs were parameters of a price-momentum engine that no longer exists;
+    # keeping them would have implied this service still defines a strategy.
     BACKTEST_COST_BPS: float = 5.0
     BACKTEST_DEFAULT_LIMIT: int = 500
 
@@ -34,7 +35,12 @@ class Settings(BaseSettings):
     SCHEDULE_REVALIDATION_ENABLED: bool = False
     REVALIDATION_WEEKDAY: int = 5  # Monday=0 … Saturday=5
     REVALIDATION_HOUR_UTC: int = 6
-    REVALIDATION_STRATEGY: str = "momentum_rank"
+    # NOT momentum_rank: it reads cross-sectional ranks, which a single-symbol
+    # backtest cannot produce, so this job would now refuse it outright. It used
+    # to "succeed" by grading a price-momentum proxy instead — i.e. by
+    # revalidating a strategy that was not the one running. Revalidating
+    # momentum_rank needs a universe backtest (open decision D7).
+    REVALIDATION_STRATEGY: str = "sma_ema_crossover"
     REVALIDATION_SYMBOL: str = "AAPL"
     REVALIDATION_INTERVAL: str = "1d"
     REVALIDATION_ORIGINAL_OOS_SHARPE: float = 1.0  # activation-time OOS Sharpe

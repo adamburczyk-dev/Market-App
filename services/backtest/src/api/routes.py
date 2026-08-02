@@ -1,16 +1,40 @@
 """Backtest HTTP API — run backtests and walk-forward revalidation on demand."""
 
+from contextlib import contextmanager
+
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from trading_common.constants import MAX_OHLCV_LIMIT
 from trading_common.schemas import Interval
+from trading_common.strategies import strategy_names
 
 from src.api.deps import get_service
+from src.core.rule_engine import CrossSectionalRuleError
 from src.core.service import BacktestService
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+
+@contextmanager
+def _named_errors():
+    """Turn the two ways a strategy request can be un-runnable into 4xx.
+
+    Both used to be invisible: an unknown name silently produced the built-in
+    engine's numbers under whatever label was passed, and a cross-sectional rule
+    had no way to say it needs a universe. A 500 would be no better — the caller
+    has to learn WHICH name and WHY.
+    """
+    try:
+        yield
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown strategy (known: {strategy_names()})",
+        ) from exc
+    except CrossSectionalRuleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class BacktestRequest(BaseModel):
@@ -42,10 +66,11 @@ async def run_backtest(
     req: BacktestRequest,
     service: BacktestService = Depends(get_service),
 ) -> dict:
-    """Run a full-sample momentum backtest and publish BacktestCompletedEvent."""
-    result = await service.run_backtest(
-        req.strategy_name, req.symbol, req.interval, limit=req.limit, params=req.params
-    )
+    """Backtest the named registered rule; publishes BacktestCompletedEvent."""
+    with _named_errors():
+        result = await service.run_backtest(
+            req.strategy_name, req.symbol, req.interval, limit=req.limit, params=req.params
+        )
     return {"strategy_name": req.strategy_name, "symbol": req.symbol, **result.as_dict()}
 
 
@@ -55,14 +80,15 @@ async def revalidate(
     service: BacktestService = Depends(get_service),
 ) -> dict:
     """Walk-forward revalidation; publishes StrategyRevalidatedEvent with a recommendation."""
-    result = await service.revalidate(
-        req.strategy_name,
-        req.symbol,
-        req.original_oos_sharpe,
-        req.interval,
-        limit=req.limit,
-        params=req.params,
-    )
+    with _named_errors():
+        result = await service.revalidate(
+            req.strategy_name,
+            req.symbol,
+            req.original_oos_sharpe,
+            req.interval,
+            limit=req.limit,
+            params=req.params,
+        )
     return {
         "strategy_name": result.strategy_name,
         "original_oos_sharpe": result.original_oos_sharpe,

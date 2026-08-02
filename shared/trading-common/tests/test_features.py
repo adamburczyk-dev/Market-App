@@ -8,6 +8,8 @@ import pytest
 from trading_common.features import (
     FEATURE_LOOKBACK,
     FULL_HISTORY,
+    RULE_ONLY_FEATURES,
+    TECHNICAL_FEATURES,
     compute_feature_vector,
 )
 from trading_common.schemas import Interval, OHLCVBar
@@ -210,3 +212,158 @@ def test_the_serving_window_covers_every_feature():
     build-time failure here rather than a quiet neutral-0.5 fill in production.
     """
     assert FEATURE_LOOKBACK >= FULL_HISTORY
+
+
+# --- S4: the classic-TA block (rule strategies only) ----------------------
+
+
+def ohlc_bars(
+    closes: list[float], highs: list[float] | None = None, lows: list[float] | None = None
+) -> list[OHLCVBar]:
+    """Bars with explicit highs/lows — needed to assert ATR and Donchian."""
+    base = datetime(2020, 1, 1, tzinfo=UTC)
+    hs = highs if highs is not None else [c + 1.0 for c in closes]
+    ls = lows if lows is not None else [c - 1.0 for c in closes]
+    return [
+        OHLCVBar(
+            symbol="TEST",
+            timestamp=base + timedelta(days=i),
+            interval=Interval.D1,
+            open=c,
+            high=h,
+            low=lo,
+            close=c,
+            volume=1_000_000.0,
+            source="test",
+        )
+        for i, (c, h, lo) in enumerate(zip(closes, hs, ls, strict=True))
+    ]
+
+
+def test_declared_technical_features_match_what_is_produced():
+    """TECHNICAL_FEATURES is hand-written; this is what stops it drifting.
+
+    The registry validates rule inputs against that set, so a feature added
+    without declaring it would make a legitimate rule un-registrable — and a
+    name declared without being produced would let a rule register and then
+    HOLD forever.
+    """
+    produced = set(compute_feature_vector(make_bars(FULL_HISTORY)).features)
+    assert produced == set(TECHNICAL_FEATURES)
+
+
+def test_rule_only_features_are_all_produced_and_none_are_model_inputs():
+    produced = set(compute_feature_vector(make_bars(FULL_HISTORY)).features)
+    assert produced >= RULE_ONLY_FEATURES
+    # The classic-TA block must not silently join the model's feature contract.
+    assert TECHNICAL_FEATURES >= RULE_ONLY_FEATURES
+
+
+def test_classic_indicators_are_degenerate_on_a_flat_series():
+    """Reference values that need no arithmetic: on a constant series every
+    trend indicator is zero and the bands collapse."""
+    fv = compute_feature_vector(ohlc_bars([100.0] * 60))
+    assert fv.features["ema_12"] == pytest.approx(100.0)
+    assert fv.features["ema_26"] == pytest.approx(100.0)
+    assert fv.features["macd"] == pytest.approx(0.0)
+    assert fv.features["macd_hist"] == pytest.approx(0.0)
+    assert fv.features["bb_width"] == pytest.approx(0.0)
+    # Zero-width band → %B is undefined and must be ABSENT, not 0.5: a
+    # made-up band position would put a reversion rule at a fake extreme.
+    assert "bb_pct_b" not in fv.features
+    # high/low are ±1 around a flat close, so the true range is exactly 2.
+    assert fv.features["atr_14"] == pytest.approx(2.0)
+    assert fv.features["atr_pct_14"] == pytest.approx(0.02)
+
+
+def test_ema_matches_the_textbook_recursion():
+    closes = [100.0 + i for i in range(60)]
+    fv = compute_feature_vector(ohlc_bars(closes))
+
+    def reference(period: int) -> float:
+        alpha = 2.0 / (period + 1.0)
+        ema = sum(closes[:period]) / period
+        for value in closes[period:]:
+            ema = alpha * value + (1.0 - alpha) * ema
+        return ema
+
+    assert fv.features["ema_12"] == pytest.approx(reference(12))
+    assert fv.features["ema_26"] == pytest.approx(reference(26))
+    # In a rising series the faster EMA leads, so MACD is positive.
+    assert fv.features["macd"] == pytest.approx(reference(12) - reference(26))
+    assert fv.features["macd"] > 0
+
+
+def test_macd_signal_is_an_ema_of_the_macd_series_not_of_price():
+    """The signal line starts where MACD does; feeding it the leading NaNs
+    would poison the seed and drop the whole family without an error."""
+    fv = compute_feature_vector(ohlc_bars([100.0 + i for i in range(60)]))
+    assert "macd_signal" in fv.features
+    assert fv.features["macd_hist"] == pytest.approx(
+        fv.features["macd"] - fv.features["macd_signal"]
+    )
+    # 26 bars give a MACD value but not yet the 9 needed for its EMA.
+    short = compute_feature_vector(ohlc_bars([100.0 + i for i in range(30)]))
+    assert "macd" in short.features
+    assert "macd_signal" not in short.features
+
+
+def test_bollinger_percent_b_locates_the_close_in_the_band():
+    closes = [100.0, 102.0] * 30
+    fv = compute_feature_vector(ohlc_bars(closes))
+    middle = sum(closes[-20:]) / 20
+    sd = (sum((c - middle) ** 2 for c in closes[-20:]) / 20) ** 0.5
+    upper, lower = middle + 2 * sd, middle - 2 * sd
+    assert fv.features["bb_upper"] == pytest.approx(upper)
+    assert fv.features["bb_pct_b"] == pytest.approx((closes[-1] - lower) / (upper - lower))
+    assert fv.features["bb_width"] == pytest.approx((upper - lower) / middle)
+
+
+def test_donchian_excludes_todays_bar_so_a_breakout_can_happen():
+    """A channel containing today's own high can never be broken — the rule
+    keyed on it would be silent forever without ever erroring."""
+    closes = [100.0] * 30 + [110.0]
+    highs = [100.5] * 30 + [110.5]
+    lows = [99.5] * 30 + [109.5]
+    fv = compute_feature_vector(ohlc_bars(closes, highs, lows))
+    assert fv.features["donchian_high_20"] == pytest.approx(100.5)
+    # 110 is above the prior 20-day high → position > 1.0 = breakout.
+    assert fv.features["donchian_pos_20"] > 1.0
+    # And a break below the prior low goes negative.
+    down = compute_feature_vector(
+        ohlc_bars([100.0] * 30 + [90.0], [100.5] * 30 + [90.5], [99.5] * 30 + [89.5])
+    )
+    assert down.features["donchian_pos_20"] < 0.0
+
+
+def test_atr_counts_the_overnight_gap():
+    """The reason ATR beats high-minus-low for stops: a gap IS range."""
+    flat = compute_feature_vector(ohlc_bars([100.0] * 40))
+    # Same intraday range, but each bar opens 3 above the previous close.
+    gapped = compute_feature_vector(ohlc_bars([100.0 + 3.0 * i for i in range(40)]))
+    assert flat.features["atr_14"] == pytest.approx(2.0)
+    assert gapped.features["atr_14"] > flat.features["atr_14"]
+
+
+def test_indicators_use_the_adjusted_scale():
+    """All of them must move together with the adjustment, or a rule comparing
+    two of them would compare prices from two different scales."""
+    closes = [100.0 + i for i in range(60)]
+    bars = ohlc_bars(closes)
+    halved = [b.model_copy(update={"adj_close": b.close / 2.0}) for b in bars]
+    plain = compute_feature_vector(bars)
+    adjusted = compute_feature_vector(halved)
+    assert adjusted.features["ema_12"] == pytest.approx(plain.features["ema_12"] / 2.0)
+    assert adjusted.features["atr_14"] == pytest.approx(plain.features["atr_14"] / 2.0)
+    # ...while the scale-free forms are invariant, which is what makes them
+    # safe to apply to the RAW execution price.
+    assert adjusted.features["atr_pct_14"] == pytest.approx(plain.features["atr_pct_14"])
+    assert adjusted.features["bb_pct_b"] == pytest.approx(plain.features["bb_pct_b"])
+    assert adjusted.features["close"] == pytest.approx(plain.features["close"])
+
+
+def test_the_classic_block_does_not_raise_the_required_window():
+    """MACD warms up in ~35 sessions, well inside the year momentum_12_1 needs.
+    If a future indicator changes that, FULL_HISTORY has to move with it."""
+    assert compute_feature_vector(make_bars(FULL_HISTORY)).features.keys() >= RULE_ONLY_FEATURES
+    assert FULL_HISTORY == 253

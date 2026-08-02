@@ -264,7 +264,7 @@ async def test_ml_vote_joins_strategy_component():
     assert len(publisher.published) == 1, "one session must produce one decision"
     event = publisher.published[-1]
     assert event.components_count == 2  # strategy + ml
-    assert set(event.components_present) == {"strategy", "ml"}
+    assert set(event.components_present) == {"strategy:momentum_rank", "ml"}
     assert event.final_signal == "BUY"
     assert event.price == 100.0  # levels still come from the strategy component
 

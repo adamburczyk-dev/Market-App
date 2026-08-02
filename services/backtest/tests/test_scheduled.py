@@ -24,7 +24,7 @@ async def test_scheduled_revalidation_publishes_event():
     service = BacktestService(FakeMarketDataClient(make_bars(trending_closes())), publisher)
 
     async def weekly_revalidation() -> None:
-        await service.revalidate("momentum_rank", "AAPL", 1.0, Interval.D1)
+        await service.revalidate("sma_ema_crossover", "AAPL", 1.0, Interval.D1)
 
     task = PeriodicTask(
         "weekly-revalidation", interval_s=60.0, job=weekly_revalidation, initial_delay_s=0.01
@@ -35,7 +35,7 @@ async def test_scheduled_revalidation_publishes_event():
 
     revalidated = [e for e in publisher.published if e.event_type == EventType.STRATEGY_REVALIDATED]
     assert len(revalidated) == 1  # fired once, next run a minute away
-    assert revalidated[0].strategy_name == "momentum_rank"
+    assert revalidated[0].strategy_name == "sma_ema_crossover"
     assert revalidated[0].recommended_status in {"active", "probation", "deactivate"}
 
 
@@ -51,7 +51,7 @@ async def test_failing_market_data_does_not_kill_the_schedule():
     service = BacktestService(DownMarket(), NullPublisher())
 
     async def weekly_revalidation() -> None:
-        await service.revalidate("momentum_rank", "AAPL", 1.0, Interval.D1)
+        await service.revalidate("sma_ema_crossover", "AAPL", 1.0, Interval.D1)
 
     task = PeriodicTask(
         "weekly-revalidation", interval_s=0.02, job=weekly_revalidation, initial_delay_s=0.0

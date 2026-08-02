@@ -221,6 +221,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+
 class EventType(str, Enum):
     MARKET_DATA_UPDATED = "market_data.updated"
     FEATURES_COMPUTED = "features.computed"
@@ -231,11 +232,13 @@ class EventType(str, Enum):
     MODEL_TRAINED = "ml.model_trained"
     ALERT_TRIGGERED = "alert.triggered"
 
+
 class BaseEvent(BaseModel):
     event_type: EventType
     timestamp: datetime
     source_service: str
     correlation_id: Optional[str] = None
+
 
 class MarketDataUpdatedEvent(BaseEvent):
     event_type: EventType = EventType.MARKET_DATA_UPDATED
@@ -243,11 +246,12 @@ class MarketDataUpdatedEvent(BaseEvent):
     interval: str
     rows_count: int
 
+
 class SignalGeneratedEvent(BaseEvent):
     event_type: EventType = EventType.SIGNAL_GENERATED
     symbol: str
     strategy_name: str
-    signal: str          # "BUY" | "SELL" | "HOLD"
+    signal: str  # "BUY" | "SELL" | "HOLD"
     confidence: float
     price: float
     metadata: dict = {}
@@ -287,28 +291,31 @@ from prometheus_client import Counter, Histogram, Gauge, Info
 from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
 
+
 def setup_observability(app: FastAPI, service_name: str):
     """Konfiguracja observability — wywołaj w main.py każdego serwisu."""
-    
+
     # Structured logging
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer() if app.debug else structlog.processors.JSONRenderer(),
+            structlog.dev.ConsoleRenderer()
+            if app.debug
+            else structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(20),
     )
-    
+
     # Prometheus auto-instrumentation
     Instrumentator().instrument(app).expose(app, endpoint="/metrics")
-    
+
     # Health endpoint
     @app.get("/health")
     async def health():
         return {"status": "healthy", "service": service_name}
-    
+
     @app.get("/ready")
     async def readiness():
         # Tu sprawdź zależności (DB, Redis, NATS)
@@ -389,10 +396,12 @@ packages = ["src/trading_common"]
 Shared Pydantic models — kontrakt między serwisami.
 Każdy serwis importuje te modele: pip install -e ../../shared/trading-common
 """
+
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional
 from enum import Enum
+
 
 class Interval(str, Enum):
     M1 = "1m"
@@ -401,6 +410,7 @@ class Interval(str, Enum):
     H1 = "1h"
     D1 = "1d"
     W1 = "1wk"
+
 
 class OHLCVBar(BaseModel):
     symbol: str
@@ -420,10 +430,12 @@ class OHLCVBar(BaseModel):
             raise ValueError("high must be >= low")
         return v
 
+
 class Signal(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
+
 
 class TradingSignal(BaseModel):
     symbol: str
@@ -435,6 +447,7 @@ class TradingSignal(BaseModel):
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     metadata: dict = {}
+
 
 class PortfolioMetrics(BaseModel):
     timestamp: datetime
@@ -890,6 +903,7 @@ jobs:
 from pydantic_settings import BaseSettings
 from typing import Optional
 
+
 class ServiceSettings(BaseSettings):
     """Konfiguracja market-data-svc. Wartości z env vars."""
 
@@ -929,6 +943,7 @@ class ServiceSettings(BaseSettings):
 
     model_config = {"env_file": ".env", "case_sensitive": True}
 
+
 settings = ServiceSettings()
 ```
 
@@ -945,6 +960,7 @@ from src.api import router as api_router
 
 logger = structlog.get_logger()
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown hooks."""
@@ -953,6 +969,7 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down market-data service")
     # TODO: cleanup
+
 
 app = FastAPI(
     title="Market Data Service",
@@ -984,6 +1001,7 @@ import structlog
 logger = structlog.get_logger()
 router = APIRouter()
 
+
 @router.get("/ohlcv/{symbol}", response_model=list[OHLCVBar])
 async def get_ohlcv(
     symbol: str,
@@ -997,12 +1015,14 @@ async def get_ohlcv(
     # TODO: implementacja w tygodniu 2
     raise HTTPException(501, "Not implemented yet")
 
+
 @router.post("/fetch/{symbol}")
 async def trigger_fetch(symbol: str, interval: Interval = Interval.D1):
     """Trigger pobrania nowych danych (async — publish event po zakończeniu)."""
     logger.info("Triggering fetch", symbol=symbol, interval=interval)
     # TODO: implementacja w tygodniu 2
     return {"status": "accepted", "symbol": symbol}
+
 
 @router.get("/symbols")
 async def list_symbols():
@@ -1203,6 +1223,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = structlog.get_logger()
 
+
 class BaseFetcher(ABC):
     """
     Abstract fetcher z:
@@ -1232,8 +1253,7 @@ class BaseFetcher(ABC):
             return validated
 
     @abstractmethod
-    async def _fetch_impl(self, symbol: str, **kwargs) -> pd.DataFrame:
-        ...
+    async def _fetch_impl(self, symbol: str, **kwargs) -> pd.DataFrame: ...
 
     def _validate(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         if df.empty:
@@ -1253,7 +1273,7 @@ class BaseFetcher(ABC):
         df = df.ffill().bfill()
 
         # OHLC sanity
-        mask = (df["high"] < df["low"])
+        mask = df["high"] < df["low"]
         if mask.any():
             self._logger.warning("Invalid OHLC rows", count=int(mask.sum()))
             df.loc[mask, ["high", "low"]] = df.loc[mask, ["close", "close"]].values
@@ -1273,6 +1293,7 @@ import structlog
 from trading_common.events import MarketDataUpdatedEvent
 
 logger = structlog.get_logger()
+
 
 class EventPublisher:
     def __init__(self, nats_url: str):
@@ -1363,9 +1384,14 @@ class StrategyResult(BaseModel):
     signals: list[TradingSignal]
     metadata: dict = {}
 
+
 # API
-POST /api/v1/strategy/evaluate
-Body: { "strategy_name": "sma_cross", "symbol": "AAPL", "params": {"fast": 10, "slow": 50} }
+POST / api / v1 / strategy / evaluate
+Body: {
+    "strategy_name": "sma_cross",
+    "symbol": "AAPL",
+    "params": {"fast": 10, "slow": 50},
+}
 Response: StrategyResult
 ```
 
@@ -1373,7 +1399,7 @@ Response: StrategyResult
 
 ```python
 # API
-POST /api/v1/backtest/run
+POST / api / v1 / backtest / run
 Body: {
     "strategy_name": "sma_cross",
     "symbols": ["AAPL"],
@@ -1381,7 +1407,7 @@ Body: {
     "end_date": "2024-12-31",
     "initial_capital": 100000,
     "commission": 0.001,
-    "params": {"fast": 10, "slow": 50}
+    "params": {"fast": 10, "slow": 50},
 }
 Response: {
     "total_return": 0.45,
@@ -1390,7 +1416,7 @@ Response: {
     "trades_count": 48,
     "win_rate": 0.56,
     "equity_curve": [...],
-    "trades": [...]
+    "trades": [...],
 }
 ```
 
@@ -1425,19 +1451,28 @@ Rozbudowa `strategy-svc` o pluggable strategy pattern: każda strategia to osobn
 # services/strategy/src/core/registry.py
 from typing import Protocol, Type
 
+
 class StrategyProtocol(Protocol):
     name: str
-    def generate_signals(self, data: pd.DataFrame, params: dict) -> list[TradingSignal]: ...
+
+    def generate_signals(
+        self, data: pd.DataFrame, params: dict
+    ) -> list[TradingSignal]: ...
+
 
 _registry: dict[str, Type[StrategyProtocol]] = {}
+
 
 def register(cls: Type[StrategyProtocol]):
     _registry[cls.name] = cls
     return cls
 
+
 def get_strategy(name: str) -> StrategyProtocol:
     if name not in _registry:
-        raise ValueError(f"Unknown strategy: {name}. Available: {list(_registry.keys())}")
+        raise ValueError(
+            f"Unknown strategy: {name}. Available: {list(_registry.keys())}"
+        )
     return _registry[name]()
 ```
 
@@ -1645,11 +1680,14 @@ class BrokerProtocol(Protocol):
     async def get_positions(self) -> list[Position]: ...
     async def get_account(self) -> AccountInfo: ...
 
+
 class PaperBroker(BrokerProtocol):
     """Symulacja — slippage, partial fills, market hours."""
 
+
 class AlpacaBroker(BrokerProtocol):
     """Alpaca API — paper + live."""
+
 
 class IBKRBroker(BrokerProtocol):
     """Interactive Brokers TWS API."""
@@ -1931,14 +1969,19 @@ Legenda: ✅ zrobione · ⚠️ częściowo · ❌ niezbudowane
 
 | Pozycja | Status | Uwaga |
 |---|---|---|
-| **5 strategii** (SMA/EMA crossover, RSI+Bollinger, MACD divergence, Donchian breakout, pair trading) | ❌ | jest **jedna** (`momentum.py`, 34 linie) |
-| **Strategy Registry** (pluggable pattern) | ❌ | reguła wpięta na sztywno w serwis |
-| Silnik backtestu + metryki | ✅ | Sharpe, maxDD, zwrot, liczba transakcji |
-| Walk-forward jako długie zadanie | ✅ | `ContinuousWalkForward` + tygodniowa rewalidacja |
+| **5 strategii** (SMA/EMA crossover, RSI+Bollinger, MACD divergence, Donchian breakout, pair trading) | ⚠️ | **4 z 5 zbudowane** 2026-08-02 + przeniesiona `momentum_rank`. Dwa świadome odstępstwa: `macd_divergence` → **`macd_confirmation`** (dywergencja porównuje swingi w CZASIE, a reguła widzi jeden wektor cech bez historii — nazwa musiała opisywać to, co reguła robi); **pair trading odłożony** — wymaga drugiej serii, ta sama blokada strukturalna co `beta_60` |
+| **Strategy Registry** (pluggable pattern) | ✅ | `trading_common.strategies` — protokół + `register`/`get_strategy`/`all_strategies`, walidacja `required_features` przy rejestracji. W **trading-common**, nie w serwisie, bo backtest musi oceniać tę samą regułę |
+| Silnik backtestu + metryki | ✅ | Sharpe, maxDD, zwrot, liczba transakcji. Od 2026-08-02 ocenia **regułę z registry**, nie własną kopię momentum |
+| Walk-forward jako długie zadanie | ✅ | `ContinuousWalkForward` + tygodniowa rewalidacja (`RuleWalkForward`) |
 | Multi-timeframe | ❌ | tylko interwał dzienny |
+| Wskaźniki dla tych strategii | ✅ | EMA 12/26, MACD(12,26,9)+histogram, Bollinger(20,2)+%B+szerokość, Donchian(20), ATR(14). Wszystkie w `RULE_ONLY_FEATURES` → wykluczone z wejścia modelu do czasu pomiaru IC |
 
-**To jest bieżący etap.** Blokada, której checklist nie przewidział: agregator kluczuje bufor
-sygnałów **samym symbolem**, więc druga strategia nadpisuje pierwszą.
+**Zamknięte 2026-08-02.** Blokada, której checklist nie przewidział, też: agregator kluczował bufor
+**samym symbolem**, więc druga strategia nadpisywała pierwszą — teraz kluczem jest para
+(symbol, strategia), a każda reguła jest osobnym źródłem wag adaptacyjnych.
+**Nie zamknięte i nazwane:** `momentum_rank` czyta rangę przekrojową, więc backtest jednosymbolowy
+**nie może** go odtworzyć — zwraca jawny błąd zamiast podstawiać proxy na cenie (to było dokładnie
+dzisiejsze zachowanie, tylko nienazwane). Backtest przekrojowy z transzami `1/h` to **D7**.
 
 ## Faza 3 — machine learning
 

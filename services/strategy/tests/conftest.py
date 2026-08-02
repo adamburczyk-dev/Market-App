@@ -9,10 +9,9 @@ from httpx import ASGITransport, AsyncClient
 from trading_common.cost_filter import CostAwareFilter
 from trading_common.risk_envelope import RiskEnvelope
 from trading_common.schemas import FeatureVector, Interval
+from trading_common.strategies import get_strategy, momentum_rank
 
 from src.api.deps import get_service
-from src.core.health import StrategyHealthTracker
-from src.core.momentum import MomentumParams
 from src.core.service import PortfolioSnapshot, StrategyService
 from src.events.publisher import NullPublisher
 from src.main import app
@@ -55,21 +54,23 @@ def build_service(
     publisher=None,
     portfolio=None,
     expected_edge_bps: float = 200.0,
-    name: str = "momentum_rank",
+    rules=None,
     portfolio_client=None,
 ) -> StrategyService:
     return StrategyService(
         client,
         publisher or NullPublisher(),
-        StrategyHealthTracker(name),
+        list(rules) if rules is not None else [momentum_rank],
         RiskEnvelope(),
         CostAwareFilter(),
-        MomentumParams(),
         portfolio or PortfolioSnapshot(),
-        strategy_name=name,
         expected_edge_bps=expected_edge_bps,
         portfolio_client=portfolio_client,
     )
+
+
+def rules_named(*names: str) -> list:
+    return [get_strategy(name) for name in names]
 
 
 class FakePortfolioClient:

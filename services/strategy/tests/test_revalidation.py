@@ -10,7 +10,7 @@ from trading_common.events import EventType, StrategyRevalidatedEvent
 
 from src.core.health import StrategyHealthTracker
 
-from .conftest import build_service, buy_client
+from .conftest import build_service, buy_client, rules_named
 
 
 def revalidation(name: str = "momentum_rank", recommended: str = "probation", **kwargs):
@@ -63,7 +63,7 @@ async def test_probation_recommendation_changes_status_and_publishes():
     assert changed.new_status == "probation"
     assert changed.sharpe_90d == 0.4  # current OOS sharpe carried into the audit event
     assert changed.profit_factor_30d is None  # revalidation has no PF to report
-    assert service.health.status == "probation"
+    assert service.health_of("momentum_rank").status == "probation"
     assert publisher.published == [changed]
 
 
@@ -76,20 +76,20 @@ async def test_deactivate_recommendation_suppresses_signals():
     # a deactivated strategy stops emitting signals
     from trading_common.schemas import Interval
 
-    assert await service.evaluate_symbol("AAPL", Interval.D1) is None
+    assert await service.evaluate_symbol("AAPL", Interval.D1) == []
 
 
 @pytest.mark.asyncio
 async def test_active_recommendation_reactivates():
     service = build_service(buy_client())
-    service.health.apply_status("probation")
+    service.health_of("momentum_rank").apply_status("probation")
     changed = await service.apply_revalidation(
         revalidation(recommended="active", current_oos_sharpe=1.1, degradation_pct=0.0)
     )
     assert changed is not None
     assert changed.old_status == "probation"
     assert changed.new_status == "active"
-    assert service.health.is_active
+    assert service.health_of("momentum_rank").is_active
 
 
 @pytest.mark.asyncio
@@ -109,7 +109,7 @@ async def test_other_strategys_revalidation_is_ignored():
         revalidation(name="sma_crossover", recommended="deactivate")
     )
     assert result is None
-    assert service.health.is_active  # untouched
+    assert service.health_of("momentum_rank").is_active  # untouched
 
 
 @pytest.mark.asyncio
@@ -124,4 +124,19 @@ async def test_handle_revalidated_event_parses_bytes():
     service = build_service(buy_client())
     payload = revalidation(recommended="probation").model_dump_json().encode()
     await service.handle_revalidated_event(payload)
-    assert service.health.status == "probation"
+    assert service.health_of("momentum_rank").status == "probation"
+
+
+@pytest.mark.asyncio
+async def test_revalidation_is_routed_to_ONE_trackers_status():
+    """S2: with several rules running, a revalidation must not move the others.
+    A single shared tracker made every recommendation apply to whatever the
+    service happened to be running."""
+    service = build_service(buy_client(), rules=rules_named("momentum_rank", "donchian_breakout"))
+    changed = await service.apply_revalidation(
+        revalidation(name="donchian_breakout", recommended="deactivate")
+    )
+    assert changed is not None
+    assert changed.strategy_name == "donchian_breakout"
+    assert service.health_of("donchian_breakout").status == "deactivated"
+    assert service.health_of("momentum_rank").is_active

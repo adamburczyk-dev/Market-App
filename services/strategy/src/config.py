@@ -29,14 +29,23 @@ class Settings(BaseSettings):
     NATS_BACKTEST_SUBJECT: str = "backtest.strategy_revalidated"
     NATS_BACKTEST_DURABLE: str = "strategy-revalidation"
 
-    # Strategy: momentum-on-ranks
-    STRATEGY_NAME: str = "momentum_rank"
-    MOMENTUM_BUY_RANK: float = 0.80
-    MOMENTUM_SELL_RANK: float = 0.20
-    RSI_OVERBOUGHT: float = 70.0
-    RSI_OVERSOLD: float = 30.0
-    STOP_LOSS_PCT: float = 0.05  # stop distance as fraction of price
-    TAKE_PROFIT_RR: float = 2.0  # take-profit distance = stop_distance * RR
+    # Which registered rules this instance runs. Empty = every rule registered
+    # in trading_common.strategies. Naming a subset is how a rule is retired
+    # without a deployment; an UNKNOWN name fails startup rather than being
+    # skipped, because a silently-not-running strategy looks exactly like one
+    # that ran and found nothing.
+    ENABLED_STRATEGIES: str = ""
+    # Per-rule parameter overrides as JSON, e.g.
+    # STRATEGY_PARAMS='{"momentum_rank": {"buy_rank": 0.85}}'.
+    # Overrides are merged over the rule's own defaults at call time — the
+    # registry keeps ONE instance per name, so a tuned copy cannot drift into
+    # being a second strategy answering to the same name.
+    STRATEGY_PARAMS: dict[str, dict[str, float]] = {}
+
+    # Fallback stop distance (fraction of price) for a symbol too young to have
+    # an ATR. Rules normally size their stop in ATR multiples — see
+    # StrategyService._protective_levels.
+    STOP_LOSS_PCT: float = 0.05
 
     # Cost filter
     EXPECTED_EDGE_BPS: float = 200.0  # baseline expected edge at full confidence
@@ -47,6 +56,10 @@ class Settings(BaseSettings):
     CURRENT_EXPOSURE_PCT: float = 0.0
     CURRENT_DRAWDOWN_PCT: float = 0.0
     DAILY_LOSS_PCT: float = 0.0
+
+    @property
+    def enabled_strategies(self) -> list[str]:
+        return [s.strip() for s in self.ENABLED_STRATEGIES.split(",") if s.strip()]
 
     @property
     def redis_url(self) -> str:

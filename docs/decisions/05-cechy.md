@@ -86,6 +86,27 @@ wyrazić.
 przekrój wolno; przy horyzoncie 10 sesji nie może nic znaczyć, przy 63 może.
 **Status: zbudowana, NIE w modelu** — wchodzi, gdy tabela IC per cecha to potwierdzi.
 
+## Blok klasycznej analizy technicznej — dla REGUŁ, nie dla modelu
+
+**Kiedy:** 2026-08-02 (etap strategii)
+**Co doszło:** EMA 12/26, MACD(12,26,9) + linia sygnału + histogram, Bollinger(20,2) + %B
+i szerokość, Donchian(20) + pozycja w kanale, ATR(14) + `atr_pct_14`.
+**Dlaczego akurat tyle:** każdy z nich ma **konsumenta** — konkretną regułę z registry. Reszta
+checklisty „30+" zostaje niezbudowana, bo wskaźnik bez konsumenta to kolumna do policzenia
+i utrzymania, która niczego nie rozstrzyga.
+**Twarda granica:** wszystkie te nazwy są w `RULE_ONLY_FEATURES` w `trading_common.features`,
+a ml-pipeline **importuje** ten zbiór do `EXCLUDED_FEATURES`. Zbiór mieszka przy kodzie, który je
+produkuje, więc wskaźnik dodany po jednej stronie nie może wejść do kontraktu cech modelu przez
+zapomnienie po drugiej. Ranga przekrojowa EMA to i tak proxy na cenę akcji.
+**Dwie decyzje warte zapamiętania:**
+- **Donchian liczony z POPRZEDNICH 20 barów.** Kanał zawierający dzisiejszy bar nie może zostać
+  przebity (jego maksimum jest z definicji ≥ dzisiejszego zamknięcia), więc reguła wybicia byłaby
+  cicha na zawsze i **nigdy nie zgłosiłaby błędu**.
+- **`atr_pct_14` obok `atr_14`.** Wskaźniki liczą się na cenach **skorygowanych** (jedna skala, więc
+  wolno je porównywać między sobą), a zlecenie wychodzi po cenie **surowej**. Reguły konsumują
+  wyłącznie postaci bezwymiarowe (`atr_pct_14`, `bb_pct_b`, `donchian_pos_20`, znak `macd_hist`),
+  więc wynik wolno przyłożyć do ceny wykonania bez mieszania skal.
+
 ## Reguła etapu E2: rodzina wchodzi do modelu po POMIARZE
 
 **Kiedy:** 2026-07-28, stosowane konsekwentnie od tego czasu

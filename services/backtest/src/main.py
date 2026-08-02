@@ -40,11 +40,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     service = BacktestService(
         market_client,
         publisher,
-        default_params=BacktestParams(
-            lookback=settings.BACKTEST_LOOKBACK,
-            entry_momentum=settings.BACKTEST_ENTRY_MOMENTUM,
-            cost_bps=settings.BACKTEST_COST_BPS,
-        ),
+        default_params=BacktestParams(cost_bps=settings.BACKTEST_COST_BPS),
         oos_window_days=settings.OOS_WINDOW_DAYS,
         is_window_days=settings.IS_WINDOW_DAYS,
         degradation_threshold=settings.DEGRADATION_THRESHOLD,

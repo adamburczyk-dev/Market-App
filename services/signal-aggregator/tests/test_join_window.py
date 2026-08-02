@@ -26,7 +26,7 @@ async def test_window_merges_components_into_one_decision():
     assert publisher.published == []
     await service.drain_pending()
     assert len(publisher.published) == 1
-    assert set(publisher.published[0].components_present) == {"strategy", "ml"}
+    assert set(publisher.published[0].components_present) == {"strategy:momentum_rank", "ml"}
 
 
 @pytest.mark.asyncio
@@ -43,7 +43,7 @@ async def test_component_after_the_window_decides_again():
     await service.handle_ml_signal(ml_event(side="BUY").model_dump_json().encode())
     await service.drain_pending()
     assert len(publisher.published) == 2
-    assert set(publisher.published[-1].components_present) == {"strategy", "ml"}
+    assert set(publisher.published[-1].components_present) == {"strategy:momentum_rank", "ml"}
 
 
 @pytest.mark.asyncio

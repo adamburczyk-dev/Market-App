@@ -35,15 +35,15 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (test counts measured 2026-08-02 on Python 3.12, not from memory —
-**1236 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
+**1311 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
 
 | Komponent | Port | Rola | Testy |
 |---|---|---|---|
-| `shared/trading-common` | — | Kontrakty i **wszystko, co musi być identyczne po obu stronach granicy serwisów** | 244 |
+| `shared/trading-common` | — | Kontrakty, wspólne obliczenia i **registry strategii** — wszystko, co musi być identyczne po obu stronach granicy serwisów | 289 |
 | `market-data` | 8001 | OHLCV: pobranie (Yahoo/Alpha Vantage), walidacja, TimescaleDB, cache, harmonogram przyrostowy | 71 |
 | `feature-engine` | 8002 | Wskaźniki Tier-1 + wzbogacenie Tier-2, rangi przekrojowe (`/ranked`) | 38 |
-| `strategy` | 8003 | Reguła momentum-on-ranks → `RiskEnvelope` → `CostAwareFilter` → sygnał; monitor degradacji | 56 |
-| `backtest` | 8004 | Silnik wektorowy long/flat + walk-forward, tygodniowa rewalidacja | 41 |
+| `strategy` | 8003 | **Każda aktywna reguła** z registry → `RiskEnvelope` → `CostAwareFilter` → własny sygnał; monitor degradacji per strategia | 60 |
+| `backtest` | 8004 | Ocena **reguły z registry** na historii symbolu + walk-forward, tygodniowa rewalidacja | 56 |
 | `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania | 315 |
 | `risk-mgmt` | 8006 | Sizing adaptacyjny, limity reżimowe i sektorowe, wyłącznik z zatrzaskiem, rejestr zleceń | 133 |
 | `execution` | 8007 | Paper broker, wyjścia ochronne SL/TP, likwidacja na BLACK, feedback portfela | 48 |
@@ -51,7 +51,7 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 | `fundamental-data` | 8009 | SEC EDGAR, Piotroski 9/9, **panel point-in-time** (`filed_at`) | 54 |
 | `macro-data` | 8010 | FRED + detekcja reżimu → `macro.regime_changed` | 41 |
 | `company-classifier` | 8011 | Profil → styl inwestycyjny + routing stosu modeli | 25 |
-| `signal-aggregator` | 8012 | **Węzeł decyzyjny**: strategia + ML + makro → jedna decyzja z poziomami i sektorem | 86 |
+| `signal-aggregator` | 8012 | **Węzeł decyzyjny**: każda strategia osobno + ML + makro → jedna decyzja z poziomami i sektorem | 97 |
 | `dashboard` | 8501 | BFF nad HTTP pozostałych serwisów + prosta strona | 18 |
 | `scripts/` | — | Bootstrap uniwersum, diagnostyka stacku, audyt zależności | 33 |
 
@@ -60,7 +60,9 @@ Co z tego jest **wiążące**, a nie tylko opisowe:
 - **`trading-common` jest granicą.** Leży w nim wszystko, co musi dać ten sam wynik w treningu i na
   produkcji: `features` (+ `FEATURE_LOOKBACK=300` / `FULL_HISTORY=253` jako jedna stała okna),
   `ranking`, `fundamentals` (reguła as-of + wyprowadzenie czynników), `sectors`, `prices`,
-  `RiskEnvelope`, `CostAwareFilter`, `sizing`, `scheduler`, `timeutil`, `constants.MAX_OHLCV_LIMIT`.
+  `RiskEnvelope`, `CostAwareFilter`, `sizing`, `scheduler`, `timeutil`, `constants.MAX_OHLCV_LIMIT`
+  oraz **`strategies` (registry reguł)** — backtest musi oceniać dokładnie tę regułę, którą handluje
+  serwis strategii, a serwisy nie mogą się nawzajem importować.
   Duplikat tej arytmetyki po dwóch stronach granicy to rozjazd train/serve czekający na wystąpienie.
 - **Serwis A nigdy nie importuje serwisu B.** Wspólne typy idą do `trading-common`.
 - **Wszystkie 13 serwisów są funkcjonalne** — `/health` `/ready` `/metrics`, żadnych szkieletów.
@@ -475,10 +477,60 @@ danych (414 symboli × 20 lat) i seria defektów operacyjnych znalezionych dopie
   robią round-trip przez realny store, pięć czynników liczy się as-of z dokładnością do 1e-9,
   a sesja sprzed drugiego filingu **nie wymyśla** wzrostu aktywów.
 
+- 2026-08-02 — **Faza 2: pięć strategii, registry i trzy defekty, które przy JEDNEJ regule były
+  nieodróżnialne od poprawnego działania.** Cała warstwa decyzyjna jest zbudowana dla WIELU źródeł
+  regułowych; przy jednym mechanizmy nie były „brakujące", tylko **bezczynne**, i dlatego przetrwały.
+  **(1) Registry mieszka w `trading-common`, nie w serwisie** — bo backtest musi oceniać tę samą
+  regułę, którą handluje serwis, a serwisy nie mogą się importować. Protokół deklaruje
+  `required_features` (wektor własny) **osobno od** `required_ranks` (percentyle przekrojowe), i ten
+  podział nie jest kosmetyczny: decyduje, gdzie regułę **da się w ogóle ocenić**. Rejestracja odmawia
+  reguły czytającej cechę, której nikt nie liczy — zamiast `KeyError` na pierwszym symbolu pierwszej
+  sesji. **(2) Bufor agregatora kluczowany PARĄ (symbol, strategia)**: dotąd druga strategia dla
+  AAPL **nadpisywała** pierwszą, a zwycięzcą była ta dostarczona ostatnia; wszystkie sygnały wchodziły
+  jako jedno źródło `"strategy"`, więc `AdaptiveWeightOptimizer` — generyczny po nazwach źródeł — nie
+  miał czego rozróżniać. Teraz źródło to `strategy:{nazwa}` brane z registry, wygasanie działa **per
+  wpis**, a lista komponentów jest sortowana po nazwie (`components_present` nie może zależeć od
+  kolejności dostarczenia). **Poziomy wybierane są PO głosowaniu**, spośród wpisów zgodnych
+  z końcowym kierunkiem, najwyższą pewnością, remis po nazwie strategii — bez determinizmu ten sam
+  zestaw wejść dawałby różne zlecenia. **(3) Backtest w ogóle nie czytał `strategy_name`**: odpalał
+  zaszytą regułę momentum na cenach i stemplował wynik przekazaną nazwą, więc „rewalidacja
+  momentum_rank" oceniała kod, który nigdy nie działał na produkcji — a dowolna nazwa dawała te same
+  liczby. Silnik ocenia teraz regułę z registry na tym samym oknie cech co serwowanie
+  (`FEATURE_LOOKBACK`), a **`momentum_rank` dostaje jawny błąd 422** („wymaga backtestu uniwersum")
+  zamiast proxy na cenie — to było dokładnie dotychczasowe zachowanie, tylko nienazwane. Przy okazji
+  wyszło, że `run_backtest` liczył na cenach **surowych**, a `revalidate` na **skorygowanych**: dwie
+  ścieżki tego samego serwisu mierzyły różne aktywa. Domyślna `REVALIDATION_STRATEGY` zmieniona
+  z `momentum_rank` na `sma_ema_crossover`, bo tamta z definicji nie przejdzie.
+  **Reguły:** `sma_ema_crossover`, `rsi_bollinger_reversion` (zamyka **D5** — to przeciwny zakład do
+  momentum, więc osobna reguła, nie doklejka), `macd_confirmation`, `donchian_breakout`. **Nazwa
+  `macd_divergence` z planu została świadomie zmieniona**: dywergencja porównuje swingi ceny
+  i oscylatora w CZASIE, a reguła widzi JEDEN wektor cech bez historii — wysłanie reguły potwierdzenia
+  pod nazwą dywergencji unieważniłoby każdy późniejszy raport o niej. **Pair trading odłożony** (druga
+  seria — ta sama blokada co `beta_60`). **Stop skalowany zmiennością (P5-3 dla ścieżki regułowej)**:
+  reguła zwraca szerokość w **wielokrotnościach ATR** (rewersja 1.5, trend 2.0, wybicie 2.5), bo wie,
+  ile miejsca potrzebuje jej własny pomysł, a nie zna ceny wykonania; przeliczenie idzie przez
+  `atr_pct_14` — **bezwymiarowy**, bo ATR liczy się na skali skorygowanej, a zlecenie na surowej.
+  **Wskaźniki** (EMA 12/26, MACD+histogram, Bollinger+%B+szerokość, Donchian(20), ATR(14)) trafiają do
+  `RULE_ONLY_FEATURES` w `trading-common`, a ml-pipeline **importuje** ten zbiór do
+  `EXCLUDED_FEATURES` — wskaźnik dodany po jednej stronie nie może wejść do kontraktu cech modelu
+  przez zapomnienie po drugiej. Donchian liczony jest z **POPRZEDNICH** 20 barów: kanał zawierający
+  dzisiejszy bar nie może zostać przebity, więc reguła byłaby cicha na zawsze, nigdy nie zgłaszając
+  błędu. Liczniki: shared 289 (+45), strategy 60 (+4), signal-aggregator 97 (+11), backtest 56 (+15)
+  → **bateria 1311**; ruff + format + mypy (`--strict` na shared) czyste, `check-dependencies` OK.
+  **Kontrola anty-szczęściowa**: po przywróceniu dwóch defektów agregatora (klucz = symbol, źródło =
+  `"strategy"`) **5 z 11** nowych testów pada — dwa z nich przechodziły w pierwszej wersji i zostały
+  wzmocnione (zwycięzca poziomów przychodzi teraz PIERWSZY, bo przy nadpisywaniu ostatni i tak wygrywał).
+  **Zweryfikowane na żywo (15/15)** na realnym `nats-server` + dwóch realnych serwisach na uvicornie
+  (podmieniony wyłącznie feature-engine, prawdziwym serwerem HTTP — egress jest zablokowany): jedno
+  `features.ready` → **4 zdarzenia `signal.generated`** (BUY/BUY/BUY/SELL — reguły faktycznie się nie
+  zgadzają), **jedna** decyzja z `components_present` = 4 nazwane źródła i **zero** `"strategy"`,
+  wagi adaptacyjne rozjeżdżają się **0.667 vs 0.056** ze wspólnego startu 0.143, rewalidacja jednej
+  strategii zmienia status **tylko** jej, a wyłączona reguła przestaje emitować, gdy reszta emituje dalej.
+
 **Next (2026-08-02): tor predykcji zablokowany na pomiarze — pracujemy poza nim.**
 
-Kod toru predykcji (E0–E5) jest skończony i **nie ma tam sensownego następnego zadania
-programistycznego**: każda pozostała decyzja jest bramkowana liczbami, których nie mamy (t-stat
+Etap **strategii + registry jest zamknięty** (wpis z 2026-08-02 na końcu logu). Kod toru predykcji
+(E0–E5) jest skończony i **nie ma tam sensownego następnego zadania programistycznego**: każda pozostała decyzja jest bramkowana liczbami, których nie mamy (t-stat
 IC ≥ 2). Trening #3 na 414 symbolach × 20 lat skończył się zapadnięciem modelu do stałej i
 odrzuceniem przez bramkę na 5 z 6 warunków, a sonda pojemności wymaga powtórzenia po naprawie jej
 kontroli (permutacja wewnątrz sesji). To czeka na bieg u użytkownika.
@@ -488,8 +540,8 @@ udokumentowanej specyfikacji jest niezbudowana. Otwarte fronty, w kolejności do
 
 | Front | Stan | Źródło wymagania |
 |---|---|---|
-| **Strategie + registry** ← **BIEŻĄCY ETAP** | 1 reguła zamiast 5, brak registry; agregator kluczuje bufor samym symbolem, więc druga strategia nadpisuje pierwszą | `Plan_Rozwoju` Faza 2 |
-| Dashboard / frontend | ~1,5 z 6 sekcji, zero wykresów | `Plan_Rozwoju` Faza 4, Tydzień 21 |
+| ~~Strategie + registry~~ | ✅ **zamknięte 2026-08-02** — 5 reguł w registry, agregator kluczowany parą, backtest ocenia regułę z registry | `Plan_Rozwoju` Faza 2 |
+| **Dashboard / frontend** ← **BIEŻĄCY ETAP** | ~1,5 z 6 sekcji, zero wykresów | `Plan_Rozwoju` Faza 4, Tydzień 21 |
 | Historia makro (P2-4) | macro-data nie ma warstwy trwałości → 5 kolumn `macro_*` wypada z każdego treningu | plan predykcji §13 (T2-2) |
 | Wskaźniki techniczne | ~5 z ~20 rodzin z checklisty „30+" | `Plan_Rozwoju` Faza 1, Tydzień 3 |
 | Sentyment / FinBERT | kontrakt i event istnieją, **producenta nie ma** | `Plan_Rozwoju` Faza 3, Tydzień 17–18 |

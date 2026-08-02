@@ -30,13 +30,26 @@ universe-level stage:
 There is deliberately no `reversal_1m`: the one-month return is already
 `return_20d`, and adding a second name for the same column is exactly the
 `momentum_20` duplication that was removed from the model input.
+
+The classic-TA block (EMA/MACD/Bollinger/Donchian/ATR) exists for the RULE
+strategies, not for the model: every name it produces is listed in
+ml-pipeline's `EXCLUDED_FEATURES`. A rule needs a level to compare against;
+the model gets cross-sectional ranks, where the rank of an EMA is a proxy for
+share price. Whether any of these earns a place in the model input is decided
+by the per-feature IC table (stage E2), never by having been computed.
+
+Every indicator here reads the ADJUSTED series, so all of them live on one
+scale and can be compared with each other. The rules consume only the
+scale-free derivatives (`bb_pct_b`, `donchian_pos_20`, `atr_pct_14`, and the
+sign of `macd_hist`), which is what lets them apply a result to the RAW
+execution price without mixing scales.
 """
 
 import math
 
 import numpy as np
 
-from trading_common.prices import adjusted_closes
+from trading_common.prices import adjusted_ohlc
 from trading_common.schemas import FeatureVector, OHLCVBar
 
 _TRADING_DAYS = 252
@@ -48,6 +61,77 @@ _YEAR = 252
 # (`momentum_12_1`: a year plus the skipped month). Below this a vector is
 # legal but incomplete, and the missing columns get the neutral rank 0.5.
 FULL_HISTORY = _YEAR + 1
+
+# Every technical name `compute_feature_vector` can produce given FULL_HISTORY
+# bars. Declared rather than derived (deriving it would mean running the whole
+# computation at import time) and pinned by a test that computes a full vector
+# and asserts equality — so a feature cannot be added without landing here.
+# `trading_common.strategies` validates rule inputs against this set, which is
+# what turns "this rule reads a feature nobody computes" from a KeyError in
+# production into a refusal at registration.
+TECHNICAL_FEATURES: frozenset[str] = frozenset(
+    {
+        "close",
+        "return_1d",
+        "return_5d",
+        "return_20d",
+        "momentum_20",
+        "sma_10",
+        "sma_20",
+        "sma_50",
+        "price_to_sma50",
+        "rsi_14",
+        "realized_vol_20",
+        "volume_ratio",
+        "max_ret_1m",
+        "downside_vol_20",
+        "dollar_volume_20",
+        "amihud_20",
+        "skew_60",
+        "momentum_6_1",
+        "momentum_12_1",
+        "dist_52w_high",
+        "ema_12",
+        "ema_26",
+        "macd",
+        "macd_signal",
+        "macd_hist",
+        "bb_upper",
+        "bb_lower",
+        "bb_pct_b",
+        "bb_width",
+        "donchian_high_20",
+        "donchian_low_20",
+        "donchian_pos_20",
+        "atr_14",
+        "atr_pct_14",
+    }
+)
+
+# Names produced for the RULE strategies only. They are price levels or band
+# descriptors, so their cross-sectional rank proxies share price, not signal.
+# The set lives HERE, next to the code that produces them, and ml-pipeline folds
+# it into EXCLUDED_FEATURES — so an indicator added in this file cannot enter the
+# model's feature contract merely by someone forgetting to exclude it there.
+# A family joins the model when the per-feature IC table says so (stage E2).
+RULE_ONLY_FEATURES: frozenset[str] = frozenset(
+    {
+        "ema_12",
+        "ema_26",
+        "macd",
+        "macd_signal",
+        "macd_hist",
+        "bb_upper",
+        "bb_lower",
+        "bb_pct_b",
+        "bb_width",
+        "donchian_high_20",
+        "donchian_low_20",
+        "donchian_pos_20",
+        "atr_14",
+        "atr_pct_14",
+    }
+)
 
 # The trailing window both paths feed this function. It lives here — next to the
 # definitions it constrains — because training (ml-pipeline `DatasetParams`) and
@@ -76,6 +160,45 @@ def _rsi(closes: np.ndarray, period: int = 14) -> float:
     return float(100.0 - 100.0 / (1.0 + rs))
 
 
+def _ema(values: np.ndarray, period: int) -> np.ndarray:
+    """EMA series aligned with `values`; the first `period - 1` entries are NaN.
+
+    Seeded with the SMA of the first `period` values (the textbook seed) rather
+    than with values[0], which would leave the level dependent on how much
+    history the caller happened to pass — the same skew `FEATURE_LOOKBACK`
+    exists to prevent.
+    """
+    out = np.full(len(values), np.nan)
+    if len(values) < period:
+        return out
+    alpha = 2.0 / (period + 1.0)
+    ema = float(values[:period].mean())
+    out[period - 1] = ema
+    for i in range(period, len(values)):
+        ema = alpha * float(values[i]) + (1.0 - alpha) * ema
+        out[i] = ema
+    return out
+
+
+def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> float | None:
+    """Wilder's ATR over the whole series, or None when history is too short.
+
+    True range uses the PREVIOUS close, so it counts an overnight gap as range
+    — that is the whole reason ATR is preferred to high-minus-low for stops.
+    """
+    if len(close) < period + 1:
+        return None
+    prev_close = close[:-1]
+    tr = np.maximum(
+        high[1:] - low[1:],
+        np.maximum(np.abs(high[1:] - prev_close), np.abs(low[1:] - prev_close)),
+    )
+    atr = float(tr[:period].mean())
+    for i in range(period, len(tr)):
+        atr = (atr * (period - 1) + float(tr[i])) / period
+    return atr
+
+
 def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
     """Compute a Tier-1 FeatureVector from chronologically-sorted bars.
 
@@ -86,7 +209,7 @@ def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
     # Returns are measured on the ADJUSTED close (dividends + splits); the raw
     # close stays the execution price and is exposed separately below. Mixing
     # the two silently biases every dividend payer's momentum downward.
-    closes = adjusted_closes(bars)
+    _, highs, lows, closes = adjusted_ohlc(bars)
     raw_close = float(bars[-1].close)
     # Dollar volume is the amount of money that actually changed hands, so it
     # is the RAW close times the raw volume — adjusting the price here would
@@ -177,6 +300,60 @@ def compute_feature_vector(bars: list[OHLCVBar]) -> FeatureVector:
         high_52w = float(closes[-_YEAR:].max())
         if high_52w > 0:
             feats["dist_52w_high"] = float(closes[-1] / high_52w)
+
+    # --- Classic TA, for the RULE strategies only (see the module docstring).
+    # Every name below is in ml-pipeline's EXCLUDED_FEATURES. ---
+
+    if n >= 26:
+        ema_12 = _ema(closes, 12)
+        ema_26 = _ema(closes, 26)
+        feats["ema_12"] = float(ema_12[-1])
+        feats["ema_26"] = float(ema_26[-1])
+        macd_line = ema_12 - ema_26
+        feats["macd"] = float(macd_line[-1])
+        # The signal line is an EMA *of the MACD series*, so it has to start
+        # where that series does: feeding it the leading NaNs would poison the
+        # SMA seed and drop the whole family without an error.
+        defined = macd_line[~np.isnan(macd_line)]
+        signal_line = _ema(defined, 9)
+        if not math.isnan(signal_line[-1]):
+            feats["macd_signal"] = float(signal_line[-1])
+            feats["macd_hist"] = float(macd_line[-1] - signal_line[-1])
+
+    if n >= 20:
+        band_window = closes[-20:]
+        middle = float(band_window.mean())
+        # Population std is the Bollinger convention — the band describes the
+        # window itself, it does not estimate a wider population.
+        sd = float(band_window.std())
+        upper, lower = middle + 2.0 * sd, middle - 2.0 * sd
+        feats["bb_upper"] = upper
+        feats["bb_lower"] = lower
+        if upper > lower:
+            feats["bb_pct_b"] = float((closes[-1] - lower) / (upper - lower))
+        if middle > 0:
+            feats["bb_width"] = float((upper - lower) / middle)
+
+    if n >= 21:
+        # Donchian channel from the PRIOR 20 bars — today's own bar is excluded
+        # on purpose. A channel containing today could never be broken (its high
+        # is by construction >= today's close), so the breakout rule reading
+        # `donchian_pos_20 > 1.0` would never fire.
+        prior_high = float(highs[-21:-1].max())
+        prior_low = float(lows[-21:-1].min())
+        feats["donchian_high_20"] = prior_high
+        feats["donchian_low_20"] = prior_low
+        if prior_high > prior_low:
+            feats["donchian_pos_20"] = float((closes[-1] - prior_low) / (prior_high - prior_low))
+
+    atr = _atr(highs, lows, closes, 14)
+    if atr is not None:
+        feats["atr_14"] = atr
+        if closes[-1] > 0:
+            # The FRACTION is what a rule may apply to the raw execution price.
+            # `atr_14` itself is on the adjusted scale; multiplying a raw price
+            # by an adjusted distance is the scale mix this pair avoids.
+            feats["atr_pct_14"] = float(atr / closes[-1])
 
     return FeatureVector(
         symbol=last.symbol,

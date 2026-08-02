@@ -1,14 +1,17 @@
-"""Vectorized time-series momentum backtest engine.
+"""Position-path scoring — the one definition of what a backtest result means.
 
-A deliberately simple long/flat momentum rule over a single symbol's closes:
-go long when trailing momentum is positive, otherwise hold cash. Positions are
-decided at a bar's close and earn the *next* bar's return (no look-ahead);
-position changes pay a per-turn cost in bps.
+This module used to also *decide* positions, with its own trailing-momentum
+rule over a price series. That made "momentum" two different strategies: the
+live one on cross-sectional ranks and this one on price. A revalidation of the
+live strategy therefore graded code that was never running. Deciding positions
+now belongs to the registered rules (`core/rule_engine.py`); what stays here is
+the arithmetic both sides must share.
 
-Sharpe is annualized assuming daily bars (sqrt(252)). ``start_index`` lets the
-caller measure performance over only the out-of-sample tail while still using
-the earlier bars to warm up the momentum lookback — the basis for walk-forward
-revalidation (``core/walk_forward.py``).
+Positions are decided at a bar's close and earn the *next* bar's return (no
+look-ahead); position changes pay a per-turn cost in bps. Sharpe is annualized
+assuming daily bars (sqrt(252)). ``first_bar`` lets the caller measure only the
+out-of-sample tail while earlier bars warm the indicators up — the basis for
+walk-forward revalidation (``core/walk_forward.py``).
 """
 
 from dataclasses import dataclass
@@ -20,8 +23,8 @@ TRADING_DAYS = 252
 
 @dataclass
 class BacktestParams:
-    lookback: int = 20  # bars used for the trailing-momentum signal
-    entry_momentum: float = 0.0  # go long when momentum > this threshold
+    """Execution assumptions. Rule parameters are per-rule and travel separately."""
+
     cost_bps: float = 5.0  # cost charged on every position change (basis points)
 
 
@@ -43,54 +46,40 @@ class BacktestResult:
         }
 
 
-def _empty() -> BacktestResult:
+def empty_result() -> BacktestResult:
     return BacktestResult(0.0, 0.0, 0.0, 0, 0)
 
 
-def run_backtest(
-    closes: list[float] | np.ndarray,
-    params: BacktestParams,
-    start_index: int | None = None,
+def score_positions(
+    prices: np.ndarray,
+    position: np.ndarray,
+    cost_bps: float,
+    first_bar: int,
 ) -> BacktestResult:
-    """Run the momentum long/flat backtest over ``closes``.
+    """Turn a long/flat position path into performance.
 
-    ``start_index`` (default: score from the first bar that has both a lookback
-    window and a prior position) restricts the scored window to ``[start_index,
-    end]`` so the out-of-sample tail can be measured in isolation.
+    ``position[t]`` is decided at the close of bar t and earns bar t+1's return.
+    Cost is charged when a position is *established*: the trade that set
+    ``held[i]`` is ``|position[i] - position[i-1]|`` (prepend 0 so the initial
+    entry counts).
     """
-    prices = np.asarray(closes, dtype=float)
+    prices = np.asarray(prices, dtype=float)
     n = prices.size
-    # Need at least lookback+2 bars: one to form momentum, one prior position, one return.
-    if n < params.lookback + 2:
-        return _empty()
+    if n < 2 or position.size != n:
+        return empty_result()
 
-    # Trailing momentum: price[t] / price[t - lookback] - 1, defined for t >= lookback.
-    lb = params.lookback
-    momentum = np.full(n, np.nan)
-    momentum[lb:] = prices[lb:] / prices[:-lb] - 1.0
-
-    # Position decided at close of bar t (long/flat); NaN momentum → flat.
-    position = np.where(momentum > params.entry_momentum, 1.0, 0.0)
-    position[:lb] = 0.0
-
-    # Asset simple returns, aligned so r[t] is the return from t-1 to t.
     asset_ret = np.zeros(n)
     asset_ret[1:] = prices[1:] / prices[:-1] - 1.0
 
-    # No look-ahead: the position held into bar t is position[t-1].
     held = position[:-1]  # length n-1, index i ↔ bar t=i+1
     gross = held * asset_ret[1:]
-    # Cost is charged when a position is *established*: the trade that set held[i]
-    # is |position[i] - position[i-1]| (prepend 0 so the initial entry counts).
     trade = np.abs(np.diff(position, prepend=0.0))[:-1]  # aligned to held
-    strat_ret = gross - trade * (params.cost_bps / 10_000.0)
+    strat_ret = gross - trade * (cost_bps / 10_000.0)
 
-    # Scored window: first scorable bar is t=lb+1 (first bar earning under a real position).
-    first = lb + 1 if start_index is None else max(start_index, lb + 1)
-    # bar t maps to index t-1 in the length-(n-1) arrays.
-    scored = strat_ret[first - 1 :]
+    first = max(first_bar, 1)
+    scored = strat_ret[first - 1 :]  # bar t maps to index t-1
     if scored.size == 0:
-        return _empty()
+        return empty_result()
 
     n_trades = int(np.count_nonzero(trade[first - 1 :] > 0))
     equity = np.cumprod(1.0 + scored)

@@ -118,7 +118,7 @@ Jego niezamknięte decyzje żyją tutaj, żeby nie zniknęły razem z dokumentem
 | **D1** | Źródło uniwersum point-in-time | rekomendacja przyjęta (rekonstrukcja po obrocie, `03-dane.md`), ale **lista kandydatów nadal jest listą ocalałych** | dostawca składu indeksu albo dane spółek wycofanych; `survivorship_report` mierzy, ile brakuje |
 | **D2** | Horyzont 10 / 21 / 63 | **rozstrzygnięty pomiarem na 63** (`04-etykiety-i-cel.md`), niewdrożony | zmiana `LabelParams.horizon` + ponowna ocena transz i rebalansu |
 | **D3** | Makro liczone dwa razy (nastawienie w agregatorze + limity w risk-mgmt) | **otwarta** — patrz `07-agregacja-i-decyzja.md` | decyzja człowieka; rekomendacja: limity zostają, nastawienie znika |
-| **D5** | Filtr RSI jako osobna reguła czy doklejka do momentum | **otwarta** → wchodzi jako `rsi_bollinger_reversion` w etapie strategii | pomiar per strategia po wdrożeniu registry |
+| **D5** | Filtr RSI jako osobna reguła czy doklejka do momentum | **zamknięta 2026-08-02: osobna reguła** (`rsi_bollinger_reversion`). Są to przeciwne zakłady — momentum kupuje szczyt przekroju, rewersja kupuje wyprzedaną nazwę — więc sklejenie ich uśredniłoby dokładnie tę niezgodę, którą agregator ma ważyć. Zmierzalne: reguły są teraz osobnymi źródłami wag | — |
 | **D7** | Backtest na nakładających się transzach | **otwarta** — silnik nadal rebalansuje dziennie, więc backtest i ocena ML mierzą różne obiekty | przepisanie silnika na przekrojowy z transzami `1/h` |
 | **D8** | Reżim jako cecha czy jako warunkowanie modelu | **otwarta** → wraca razem z P2-4 | historia makro vintage |
 
