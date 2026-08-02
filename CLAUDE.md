@@ -35,24 +35,24 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
 **Verified ground truth** (test counts measured 2026-08-02 on Python 3.12, not from memory —
-**1311 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
+**1352 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
 
 | Komponent | Port | Rola | Testy |
 |---|---|---|---|
-| `shared/trading-common` | — | Kontrakty, wspólne obliczenia i **registry strategii** — wszystko, co musi być identyczne po obu stronach granicy serwisów | 289 |
+| `shared/trading-common` | — | Kontrakty, wspólne obliczenia, **registry strategii** i **statystyki ryzyka** — wszystko, co musi być identyczne po obu stronach granicy serwisów | 308 |
 | `market-data` | 8001 | OHLCV: pobranie (Yahoo/Alpha Vantage), walidacja, TimescaleDB, cache, harmonogram przyrostowy | 71 |
 | `feature-engine` | 8002 | Wskaźniki Tier-1 + wzbogacenie Tier-2, rangi przekrojowe (`/ranked`) | 38 |
 | `strategy` | 8003 | **Każda aktywna reguła** z registry → `RiskEnvelope` → `CostAwareFilter` → własny sygnał; monitor degradacji per strategia | 60 |
-| `backtest` | 8004 | Ocena **reguły z registry** na historii symbolu + walk-forward, tygodniowa rewalidacja | 56 |
+| `backtest` | 8004 | Ocena **reguły z registry** na historii symbolu + walk-forward, tygodniowa rewalidacja, krzywa kapitału | 58 |
 | `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania | 315 |
 | `risk-mgmt` | 8006 | Sizing adaptacyjny, limity reżimowe i sektorowe, wyłącznik z zatrzaskiem, rejestr zleceń | 133 |
-| `execution` | 8007 | Paper broker, wyjścia ochronne SL/TP, likwidacja na BLACK, feedback portfela | 48 |
+| `execution` | 8007 | Paper broker, wyjścia ochronne SL/TP, likwidacja na BLACK, feedback portfela, **historia kapitału** | 60 |
 | `notification` | 8008 | 5 strumieni → alerty (log/Slack/Telegram/e-mail) | 33 |
 | `fundamental-data` | 8009 | SEC EDGAR, Piotroski 9/9, **panel point-in-time** (`filed_at`) | 54 |
 | `macro-data` | 8010 | FRED + detekcja reżimu → `macro.regime_changed` | 41 |
 | `company-classifier` | 8011 | Profil → styl inwestycyjny + routing stosu modeli | 25 |
 | `signal-aggregator` | 8012 | **Węzeł decyzyjny**: każda strategia osobno + ML + makro → jedna decyzja z poziomami i sektorem | 97 |
-| `dashboard` | 8501 | BFF nad HTTP pozostałych serwisów + prosta strona | 18 |
+| `dashboard` | 8501 | BFF nad HTTP pozostałych serwisów + **6 sekcji z wykresami** (kapitał, ryzyko, strategie, backtest, ML, zdrowie) | 34 |
 | `scripts/` | — | Bootstrap uniwersum, diagnostyka stacku, audyt zależności | 33 |
 
 Co z tego jest **wiążące**, a nie tylko opisowe:
@@ -60,7 +60,9 @@ Co z tego jest **wiążące**, a nie tylko opisowe:
 - **`trading-common` jest granicą.** Leży w nim wszystko, co musi dać ten sam wynik w treningu i na
   produkcji: `features` (+ `FEATURE_LOOKBACK=300` / `FULL_HISTORY=253` jako jedna stała okna),
   `ranking`, `fundamentals` (reguła as-of + wyprowadzenie czynników), `sectors`, `prices`,
-  `RiskEnvelope`, `CostAwareFilter`, `sizing`, `scheduler`, `timeutil`, `constants.MAX_OHLCV_LIMIT`
+  `RiskEnvelope`, `CostAwareFilter`, `sizing`, `scheduler`, `timeutil`, `constants.MAX_OHLCV_LIMIT`,
+  **`risk_metrics`** (VaR/obsunięcie/korelacje — dashboard renderuje, risk-mgmt rozumuje, a dwie
+  definicje „obsunięcia" w końcu poróżniłyby się co do tego, czy limit został przekroczony)
   oraz **`strategies` (registry reguł)** — backtest musi oceniać dokładnie tę regułę, którą handluje
   serwis strategii, a serwisy nie mogą się nawzajem importować.
   Duplikat tej arytmetyki po dwóch stronach granicy to rozjazd train/serve czekający na wystąpienie.
@@ -527,9 +529,49 @@ danych (414 symboli × 20 lat) i seria defektów operacyjnych znalezionych dopie
   wagi adaptacyjne rozjeżdżają się **0.667 vs 0.056** ze wspólnego startu 0.143, rewalidacja jednej
   strategii zmienia status **tylko** jej, a wyłączona reguła przestaje emitować, gdy reszta emituje dalej.
 
+- 2026-08-02 — **Dashboard: 6 sekcji ze spec — i szereg czasowy, którego NIKT nie trzymał.**
+  Sekcje 1, 2 i 4 planu (krzywa kapitału, VaR, wykresy backtestu) padały wszystkie na tym samym:
+  broker przeliczał equity przy każdym fillu i marku **i wyrzucał je**, risk-mgmt trzymał snapshot,
+  a backtest liczył tablicę `equity` w `score_positions` i jej nie zwracał. Można było narysować
+  te wykresy tylko fałszywie, więc najpierw powstały dane. **Punkt na SESJĘ, nie na mutację**:
+  zapisywanie każdej zmiany uzależniłoby okno historii od tego, ile symboli akurat tego dnia
+  odświeżono (pracowity dzień wypchnąłby spokojny tydzień z „ośmiu lat"), a system i tak handluje
+  na barach dziennych; punkt dnia jest nadpisywany, więc niesie najnowszą wartość. Utrwalony
+  w snapshotcie, przywracany, tolerancyjny na snapshot sprzed zmiany układu.
+  **`trading_common.risk_metrics`** — VaR **historyczny, nie parametryczny** (rozkład normalny na
+  zwrotach dziennych zaniża dokładnie ten ogon, który liczba ma opisywać, a mamy realną ścieżkę),
+  CVaR, seria obsunięcia, korelacje. Każda funkcja **odmawia przy zbyt małej próbie** — VaR z 12
+  obserwacji to nie konserwatywny VaR, tylko liczba bez rozkładu z próby, a wykres narysowałby ją
+  bez mrugnięcia. **Defekt złapany własnym testem**: `(1.0 - 0.95) * 100` to w binarnym floacie
+  `5.000000000000004`, więc `ceil` dawał 6 i kwantyl lądował **za** ogonem — na kanonicznej wartości
+  95%, akurat. Efekt: VaR 0.0 na serii, która straciła w pięciu dniach. Test przypina ten przypadek.
+  **Trzy defekty znalezione dopiero na biegu na żywo**, nie w testach: (1) `resp.json()` na
+  nie-JSON-owym ciele rzuca `JSONDecodeError`, który **nie jest** `httpx.HTTPError`, więc uciekał
+  z obsługi i zamieniał 500 upstreamu w 500 dashboardu — ta sama klasa, co dawne `HTTP 500: {}`;
+  (2) backtest przy nieosiągalnej market-dacie oddawał goły tekstowy 500 (mapowanie `httpx` dodane,
+  502 z nazwą upstreamu); (3) reguła przekrojowa była odrzucana **po** pobraniu danych, więc przy
+  padniętej market-dacie zwracała zły błąd — `ensure_single_symbol_evaluable` idzie teraz przed
+  fetchem. Do tego pusta siatka korelacji przy niedostępnej market-dacie wyglądała identycznie jak
+  brak pozycji: sekcja raportuje teraz `held_symbols` obok `correlated_symbols`.
+  **UI**: wykresy to **inline SVG** liczone w kilkunastu liniach vanilla JS — kontener nie ma
+  dostępu do CDN-u ani bundlera w toolchainie, więc biblioteka oznaczałaby ręczne wendorowanie
+  i pinowanie wersji dla czterech typów wykresu. Odświeżana jest **tylko widoczna sekcja** (sonda
+  zdrowia i siatka korelacji kosztują realną pracę u sąsiadów). Backtest jest **na żądanie**, a jego
+  status przechodzi na wylot: 404 i 422 to odpowiedzi, nie awarie. Feature importance świadomie
+  **nie ma wykresu** — pusty wykres sugerowałby, że model nie ma ważnych cech, a nie że nikt tego
+  nie zmierzył. Liczniki: shared 308 (+19), execution 60 (+12), backtest 58 (+2), dashboard 34 (+16)
+  → **bateria 1352**; ruff + format + mypy czyste, `check-dependencies` OK, compose i Helm
+  zsynchronizowane (render + `helm lint` sprawdzone). **Zweryfikowane na żywo (19/19)** na pięciu
+  realnych serwisach na uvicornie: transakcje przez prawdziwy `POST /execute` → krzywa w sekcji 1,
+  VaR **odmawia** przy jednej sesji zamiast zmyślać, wszystkie 5 reguł z wagami w sekcji 3,
+  `momentum_rank` odrzucony 422 zamiast fałszywego wykresu, 12 serwisów odpytanych z pomiarem
+  opóźnienia. Przy okazji harness: `ss -lntp` nie pokazuje PID-ów bez uprawnień, więc skrypt
+  zatrzymujący po porcie **po cichu nic nie ubijał** i stare procesy trzymały porty — zabijanie idzie
+  teraz po linii poleceń.
+
 **Next (2026-08-02): tor predykcji zablokowany na pomiarze — pracujemy poza nim.**
 
-Etap **strategii + registry jest zamknięty** (wpis z 2026-08-02 na końcu logu). Kod toru predykcji
+Etapy **strategii + registry** oraz **dashboardu** są zamknięte (wpisy z 2026-08-02 na końcu logu). Kod toru predykcji
 (E0–E5) jest skończony i **nie ma tam sensownego następnego zadania programistycznego**: każda pozostała decyzja jest bramkowana liczbami, których nie mamy (t-stat
 IC ≥ 2). Trening #3 na 414 symbolach × 20 lat skończył się zapadnięciem modelu do stałej i
 odrzuceniem przez bramkę na 5 z 6 warunków, a sonda pojemności wymaga powtórzenia po naprawie jej
@@ -541,8 +583,8 @@ udokumentowanej specyfikacji jest niezbudowana. Otwarte fronty, w kolejności do
 | Front | Stan | Źródło wymagania |
 |---|---|---|
 | ~~Strategie + registry~~ | ✅ **zamknięte 2026-08-02** — 5 reguł w registry, agregator kluczowany parą, backtest ocenia regułę z registry | `Plan_Rozwoju` Faza 2 |
-| **Dashboard / frontend** ← **BIEŻĄCY ETAP** | ~1,5 z 6 sekcji, zero wykresów | `Plan_Rozwoju` Faza 4, Tydzień 21 |
-| Historia makro (P2-4) | macro-data nie ma warstwy trwałości → 5 kolumn `macro_*` wypada z każdego treningu | plan predykcji §13 (T2-2) |
+| ~~Dashboard / frontend~~ | ✅ **zamknięte 2026-08-02** — 6 sekcji, wykresy SVG, historia kapitału w execution | `Plan_Rozwoju` Faza 4, Tydzień 21 |
+| **Historia makro (P2-4)** ← **BIEŻĄCY ETAP** | macro-data nie ma warstwy trwałości → 5 kolumn `macro_*` wypada z każdego treningu | plan predykcji §13 (T2-2) |
 | Wskaźniki techniczne | ~5 z ~20 rodzin z checklisty „30+" | `Plan_Rozwoju` Faza 1, Tydzień 3 |
 | Sentyment / FinBERT | kontrakt i event istnieją, **producenta nie ma** | `Plan_Rozwoju` Faza 3, Tydzień 17–18 |
 | Raport feature importance | brak | `Plan_Rozwoju` Faza 3, checklist |

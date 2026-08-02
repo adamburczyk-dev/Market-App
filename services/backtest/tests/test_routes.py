@@ -94,3 +94,34 @@ async def test_cross_sectional_strategy_is_422_saying_why(
     )
     assert resp.status_code == 422
     assert "momentum_20" in resp.json()["detail"]
+
+
+def test_downsample_keeps_the_endpoints():
+    """The last point IS the total return reported as a scalar; dropping it
+    would let the chart and the number disagree."""
+    from src.api.routes import downsample
+
+    curve = [1.0 + i * 0.001 for i in range(5000)]
+    thin = downsample(curve, max_points=100)
+    assert len(thin) == 100
+    assert thin[0] == curve[0]
+    assert thin[-1] == curve[-1]
+    # A short curve is passed through untouched.
+    assert downsample([1.0, 1.1, 1.2], max_points=100) == [1.0, 1.1, 1.2]
+
+
+@pytest.mark.asyncio
+async def test_run_returns_an_equity_curve_matching_the_reported_return(
+    wired: tuple[AsyncClient, BacktestService],
+):
+    """Sections of the dashboard need the shape, not just the scalar — a single
+    lucky quarter is only visible in the path."""
+    client, _ = wired
+    resp = await client.post(
+        "/api/v1/backtest/run",
+        json={"strategy_name": "sma_ema_crossover", "symbol": "AAPL", "interval": "1d"},
+    )
+    body = resp.json()
+    curve = body["equity_curve"]
+    assert len(curve) > 1
+    assert curve[-1] == pytest.approx(1.0 + body["total_return"])

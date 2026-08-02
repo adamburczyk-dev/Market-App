@@ -1,5 +1,5 @@
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from trading_common.events import OrderRequestedEvent
 
@@ -8,6 +8,10 @@ from src.core.service import ExecutionService
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+# Read ceiling for the equity series. Matches the broker's retention default so
+# a caller cannot ask for a window the broker was never going to keep.
+MAX_EQUITY_POINTS = 2000
 
 
 class OrderInput(BaseModel):
@@ -36,6 +40,21 @@ async def portfolio(service: ExecutionService = Depends(get_service)) -> dict:
 @router.get("/positions")
 async def positions(service: ExecutionService = Depends(get_service)) -> dict:
     return {"positions": service.broker.positions()}
+
+
+@router.get("/equity")
+async def equity(
+    limit: int = Query(default=500, ge=2, le=MAX_EQUITY_POINTS),
+    service: ExecutionService = Depends(get_service),
+) -> dict:
+    """Realized equity, one point per session — the series nothing kept before.
+
+    Deliberately raw: execution owns the broker's history, not the risk
+    semantics. VaR, drawdown and the rest are computed by the consumer from
+    `trading_common.risk_metrics`, so there is one definition of each.
+    """
+    points = service.broker.equity_curve(limit=limit)
+    return {"points": points, "count": len(points)}
 
 
 @router.post("/execute")

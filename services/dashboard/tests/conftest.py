@@ -6,6 +6,36 @@ from httpx import ASGITransport, AsyncClient
 from src.api.deps import get_service
 from src.core.service import DashboardService
 
+# 25 sessions: enough for the VaR floor (20) so the risk section has something
+# to measure, with a real drawdown in the middle.
+_EQUITY = [
+    100_000.0,
+    101_000.0,
+    102_500.0,
+    101_800.0,
+    103_000.0,
+    104_200.0,
+    103_100.0,
+    99_800.0,
+    97_500.0,
+    98_900.0,
+    100_400.0,
+    101_100.0,
+    102_900.0,
+    104_800.0,
+    103_700.0,
+    105_100.0,
+    106_300.0,
+    105_200.0,
+    107_000.0,
+    108_400.0,
+    107_100.0,
+    109_000.0,
+    110_200.0,
+    109_400.0,
+    111_000.0,
+]
+
 _DEFAULTS: dict[str, dict] = {
     "rp": {
         "value": 100000.0,
@@ -19,6 +49,32 @@ _DEFAULTS: dict[str, dict] = {
     "pos": {"positions": {"AAPL": {"quantity": 50, "last_price": 100.0}}},
     "al": {"alerts": [{"severity": "critical", "title": "Circuit breaker RED"}]},
     "ml": {"models": ["m1"]},
+    "eq": {
+        "points": [
+            {"date": f"2024-01-{d:02d}", "equity": e}
+            for d, e in zip(range(1, 26), _EQUITY, strict=True)
+        ],
+        "count": 25,
+    },
+    "runs": {"runs": {"train": {"version": 3}}},
+    "serving": {"model": "m1", "paused": False},
+    "strat": {
+        "strategies": [
+            {
+                "name": "momentum_rank",
+                "status": "active",
+                "required_features": ["rsi_14"],
+                "required_ranks": ["momentum_20"],
+            },
+            {
+                "name": "donchian_breakout",
+                "status": "probation",
+                "required_features": ["donchian_pos_20"],
+                "required_ranks": [],
+            },
+        ]
+    },
+    "weights": {"weights": {"strategy:momentum_rank": 0.4, "ml": 0.35, "macro": 0.25}},
 }
 
 
@@ -46,6 +102,52 @@ class FakeSource:
 
     async def models(self) -> dict | None:
         return self._data["ml"]
+
+    async def equity_curve(self) -> dict | None:
+        return self._data["eq"]
+
+    async def ml_runs(self) -> dict | None:
+        return self._data["runs"]
+
+    async def ml_serving(self) -> dict | None:
+        return self._data["serving"]
+
+    async def strategies(self) -> dict | None:
+        return self._data["strat"]
+
+    async def signal_weights(self) -> dict | None:
+        return self._data["weights"]
+
+    async def ohlcv(self, symbol: str, limit: int = 120) -> list[dict] | None:
+        """Deterministic per-symbol closes, long enough to correlate."""
+        seed = sum(ord(c) for c in symbol)
+        return [
+            {"timestamp": f"day{i}", "close": 100.0 + (i * 0.5) + ((i + seed) % 7) * 0.3}
+            for i in range(60)
+        ]
+
+    async def health_all(self) -> dict[str, dict]:
+        return {
+            "market-data": {"status": "up", "latency_ms": 4.2, "http_status": 200},
+            "execution": {"status": "up", "latency_ms": 11.5, "http_status": 200},
+            "ml-pipeline": {"status": "down", "latency_ms": 2000.0, "error": "ConnectError"},
+        }
+
+    async def run_backtest(self, strategy: str, symbol: str, limit: int = 500):
+        if strategy == "nie_ma":
+            return 404, {"detail": "unknown strategy (known: ['sma_ema_crossover'])"}
+        if strategy == "momentum_rank":
+            return 422, {"detail": "reads cross-sectional ranks ['momentum_20']"}
+        return 200, {
+            "strategy_name": strategy,
+            "symbol": symbol,
+            "total_return": 0.21,
+            "sharpe_ratio": 1.3,
+            "max_drawdown": 0.08,
+            "n_trades": 12,
+            "n_bars": 480,
+            "equity_curve": [1.0, 1.05, 1.12, 1.21],
+        }
 
     async def aclose(self) -> None:
         return None

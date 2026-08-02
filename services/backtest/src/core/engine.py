@@ -14,7 +14,7 @@ out-of-sample tail while earlier bars warm the indicators up — the basis for
 walk-forward revalidation (``core/walk_forward.py``).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -35,8 +35,14 @@ class BacktestResult:
     max_drawdown: float
     n_trades: int
     n_bars: int  # number of return observations actually scored
+    # Equity path over the scored window, starting at 1.0. It was already
+    # computed here and discarded, so a backtest could report "Sharpe 1.4" and
+    # nothing could draw the shape that produced it — and the shape is where a
+    # single lucky quarter is visible.
+    equity_curve: list[float] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, float | int]:
+        """Scalars only — the curve is a series and travels separately."""
         return {
             "total_return": self.total_return,
             "sharpe_ratio": self.sharpe_ratio,
@@ -47,7 +53,7 @@ class BacktestResult:
 
 
 def empty_result() -> BacktestResult:
-    return BacktestResult(0.0, 0.0, 0.0, 0, 0)
+    return BacktestResult(0.0, 0.0, 0.0, 0, 0, [])
 
 
 def score_positions(
@@ -97,4 +103,5 @@ def score_positions(
         max_drawdown=max_dd,
         n_trades=n_trades,
         n_bars=int(scored.size),
+        equity_curve=[float(x) for x in equity],
     )

@@ -2005,7 +2005,7 @@ pojemności, studia model-free (cel, sektory, koszty, zanik alfy), monitoring dr
 |---|---|---|
 | Sizing, limity, wyłącznik, bramka ryzyka na zdarzeniach | ✅ | + zatrzask wyłącznika, rejestr zleceń, limity sektorowe |
 | VaR, macierz korelacji | ❌ | nie liczone |
-| **Dashboard: 6 sekcji** | ⚠️ | ~1,5 sekcji, **zero wykresów**. Jest: liczby portfela, pozycje, alerty, lista modeli. Brak: krzywa kapitału i P&L, VaR i korelacje, atrybucja per strategia, wyniki backtestu, wydajność modelu, health/Grafana |
+| **Dashboard: 6 sekcji** | ✅ | zamknięte 2026-08-02. Wszystkie sześć: kapitał+P&L, VaR/obsunięcie/korelacje, atrybucja per strategia, backtest na żądanie, ML, zdrowie z opóźnieniami. Wykresy to inline SVG (brak CDN i bundlera w kontenerze). **Warunkiem był szereg czasowy, którego żaden serwis nie trzymał** — execution zapisuje teraz kapitał per sesja. Feature importance świadomie bez wykresu: nie jest zmierzony (pozycja audytu luk) |
 
 ## Faza 5 — produkcja
 

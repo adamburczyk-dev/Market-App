@@ -23,6 +23,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         execution_url=settings.EXECUTION_URL,
         notification_url=settings.NOTIFICATION_URL,
         ml_url=settings.ML_PIPELINE_URL,
+        strategy_url=settings.STRATEGY_URL,
+        aggregator_url=settings.SIGNAL_AGGREGATOR_URL,
+        market_data_url=settings.MARKET_DATA_URL,
+        backtest_url=settings.BACKTEST_URL,
+        health_urls=settings.health_urls,
+        health_timeout_s=settings.HEALTH_TIMEOUT_SECONDS,
     )
     service = DashboardService(source)
     app.state.service = service

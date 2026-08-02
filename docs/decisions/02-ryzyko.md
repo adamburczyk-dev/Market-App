@@ -85,3 +85,27 @@ ze znacznika **emisji** zdarzenia, żeby redelivery durable'a nie otworzyło poz
 **Status: otwarta (FLOW-9).** Jest reguła „30 dni papieru z dodatnim Sharpe'em", ale brak pełnej
 listy: maksymalne zaobserwowane obsunięcie, realizm wypełnień, próba generalna wyłącznika.
 Do napisania, zanim ktokolwiek pomyśli o pieniądzach.
+
+## Statystyki ryzyka liczy WSPÓLNY moduł, z realnej ścieżki kapitału
+
+**Kiedy:** 2026-08-02 (etap dashboardu)
+**Warunek wstępny, którego nie było:** żaden serwis nie trzymał **szeregu czasowego**. Broker
+przeliczał equity przy każdym fillu i marku i je wyrzucał, risk-mgmt miał snapshot, backtest liczył
+tablicę `equity` i jej nie zwracał. VaR, krzywa kapitału i obsunięcie w czasie były więc niemożliwe
+do policzenia — nie brakowało kodu, brakowało danych.
+**Rozstrzygnięcie:** `PaperBroker` zapisuje **jeden punkt na sesję** (nadpisywany w ciągu dnia, więc
+niesie najnowszą wartość), utrwalany w snapshotcie. Punkt na mutację uzależniłby okno historii od
+tego, ile symboli akurat odświeżono danego dnia.
+**Gdzie mieszka matematyka:** `trading_common.risk_metrics`. Execution jest właścicielem historii,
+ale nie semantyki ryzyka; risk-mgmt jest właścicielem limitów, ale nie ma szeregu. Jedna wspólna
+implementacja, wołana przez konsumenta, który wyświetla — dwie definicje „obsunięcia" w końcu
+poróżniłyby się co do tego, czy limit został przekroczony.
+**VaR jest HISTORYCZNY, nie parametryczny:** rozkład normalny na zwrotach dziennych zaniża dokładnie
+ten ogon, który liczba ma opisywać, a mamy realną ścieżkę — nie ma powodu modelować tego, co da się
+policzyć.
+**Każda statystyka odmawia przy zbyt małej próbie** (VaR: 20 obserwacji, korelacja: 20 nakładających
+się). VaR z 12 obserwacji to nie konserwatywny VaR, tylko liczba bez rozkładu z próby — a wykres
+narysowałby ją bez mrugnięcia.
+**Defekt złapany testem:** `(1.0 - 0.95) * 100` to w binarnym floacie `5.000000000000004`, więc
+`ceil` zwracał 6 i kwantyl lądował **za** ogonem. Efekt: **VaR 0.0 na serii, która straciła w pięciu
+dniach** — i to dokładnie na kanonicznej wartości 95%.

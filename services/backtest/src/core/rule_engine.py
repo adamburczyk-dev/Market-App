@@ -37,6 +37,19 @@ class CrossSectionalRuleError(ValueError):
     """Raised for a rule that cannot be evaluated one symbol at a time."""
 
 
+def ensure_single_symbol_evaluable(rule: StrategyRule) -> None:
+    """Raise if `rule` needs a universe. Cheap enough to call before fetching.
+
+    Separated from `rule_positions` so a caller can reach the verdict without
+    spending an upstream call on data that cannot change it.
+    """
+    if rule.required_ranks:
+        raise CrossSectionalRuleError(
+            f"strategy {rule.name} reads cross-sectional ranks {sorted(rule.required_ranks)}, "
+            "which do not exist for a single symbol — a universe backtest is required"
+        )
+
+
 def rule_positions(
     bars: list[OHLCVBar],
     rule: StrategyRule,
@@ -50,12 +63,7 @@ def rule_positions(
     function under the same name — the exact class of drift this module exists
     to remove.
     """
-    if rule.required_ranks:
-        raise CrossSectionalRuleError(
-            f"strategy {rule.name} reads cross-sectional ranks {sorted(rule.required_ranks)}, "
-            "which do not exist for a single symbol — a universe backtest is required"
-        )
-
+    ensure_single_symbol_evaluable(rule)
     position = np.zeros(len(bars))
     current = 0.0
     for t in range(len(bars)):

@@ -365,6 +365,14 @@ services:
       EXECUTION_URL: http://execution:8000
       NOTIFICATION_URL: http://notification:8000
       ML_PIPELINE_URL: http://ml-pipeline:8000
+      STRATEGY_URL: http://strategy:8000
+      SIGNAL_AGGREGATOR_URL: http://signal-aggregator:8000
+      MARKET_DATA_URL: http://market-data:8000
+      BACKTEST_URL: http://backtest:8000
+      FEATURE_ENGINE_URL: http://feature-engine:8000
+      FUNDAMENTAL_DATA_URL: http://fundamental-data:8000
+      MACRO_DATA_URL: http://macro-data:8000
+      COMPANY_CLASSIFIER_URL: http://company-classifier:8000
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     ports:
       - "8501:8000"

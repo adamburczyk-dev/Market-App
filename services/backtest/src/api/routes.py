@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -35,6 +36,18 @@ def _named_errors():
         ) from exc
     except CrossSectionalRuleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        # Name the upstream, its status and its URL. Letting this escape gives
+        # Starlette's plain-text 500 with no body — the failure mode that once
+        # made six different ml-pipeline errors look identical as `HTTP 500: {}`.
+        raise HTTPException(
+            status_code=502,
+            detail=(f"upstream {exc.response.status_code} from {exc.request.url}"),
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"market-data unreachable: {type(exc).__name__}"
+        ) from exc
 
 
 class BacktestRequest(BaseModel):
@@ -71,7 +84,33 @@ async def run_backtest(
         result = await service.run_backtest(
             req.strategy_name, req.symbol, req.interval, limit=req.limit, params=req.params
         )
-    return {"strategy_name": req.strategy_name, "symbol": req.symbol, **result.as_dict()}
+    return {
+        "strategy_name": req.strategy_name,
+        "symbol": req.symbol,
+        **result.as_dict(),
+        "equity_curve": downsample(result.equity_curve),
+    }
+
+
+# A chart cannot show more points than it has pixels, and a 20-year run is
+# 5000 of them. Downsampling here rather than in the browser keeps the payload
+# proportional to what is being asked for.
+MAX_CURVE_POINTS = 500
+
+
+def downsample(curve: list[float], max_points: int = MAX_CURVE_POINTS) -> list[float]:
+    """Evenly thin a series, ALWAYS keeping the first and last point.
+
+    The last point is the total return the caller is also being told as a
+    scalar; dropping it would let the chart and the number disagree.
+    """
+    if len(curve) <= max_points:
+        return curve
+    stride = len(curve) / max_points
+    sampled = [curve[int(i * stride)] for i in range(max_points)]
+    if sampled[-1] != curve[-1]:
+        sampled[-1] = curve[-1]
+    return sampled
 
 
 @router.post("/revalidate")

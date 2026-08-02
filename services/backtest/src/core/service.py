@@ -11,7 +11,7 @@ from trading_common.strategies import get_strategy
 from src.core.continuous_validation import WalkForwardResult
 from src.core.engine import BacktestParams, BacktestResult
 from src.core.market_data_client import MarketDataClient
-from src.core.rule_engine import run_rule_backtest
+from src.core.rule_engine import ensure_single_symbol_evaluable, run_rule_backtest
 from src.core.walk_forward import RuleWalkForward
 from src.events.publisher import Publisher
 
@@ -61,6 +61,11 @@ class BacktestService:
         dividends.
         """
         rule = get_strategy(strategy_name)
+        # Refuse BEFORE fetching: a cross-sectional rule cannot be evaluated on
+        # one symbol no matter what the data says, so querying market-data first
+        # spends an upstream call to reach a conclusion already known — and
+        # returns the wrong error entirely when market-data happens to be down.
+        ensure_single_symbol_evaluable(rule)
         bars = await self._market.get_ohlcv(symbol, interval, limit=limit)
         prices = adjusted_closes(bars)
         result = run_rule_backtest(
@@ -100,6 +105,7 @@ class BacktestService:
         assets.
         """
         rule = get_strategy(strategy_name)
+        ensure_single_symbol_evaluable(rule)
         bars = await self._market.get_ohlcv(symbol, interval, limit=limit)
         # Whole bars, not just closes: the rules need highs/lows/volume.
         ohlcv = [bar.model_dump() for bar in bars]
