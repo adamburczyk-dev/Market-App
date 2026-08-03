@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from trading_common.schemas import Interval, OHLCVBar
 
+from src.core.dataset import EXCLUDED_FEATURES, INADMISSIBLE_FEATURES
 from src.core.labels import LabelParams, excess_barrier_label, triple_barrier_label
 from src.core.target_study import (
     calibrate_barriers,
@@ -139,3 +140,61 @@ def test_label_params_default_to_the_calibrated_width():
     assert LabelParams().pt_mult == pytest.approx(1.0)
     assert LabelParams().sl_mult == pytest.approx(1.0)
     assert LabelParams().excess is False  # absolute stays the default until measured
+
+
+def test_the_target_ranking_ignores_columns_the_model_can_never_consume():
+    """A target chosen on `close` is chosen on evidence the model never sees.
+
+    `_score_one_target` ranked EVERY feature, price levels included, and
+    reported the strongest as `best_feature`. Training consumes neither set:
+    `INADMISSIBLE_FEATURES` because no measurement can rescue a share-price
+    proxy, `CANDIDATE_FEATURES` because a family enters the contract only after
+    it is measured (E2). So the headline mean |IC| that resolved D2 was computed
+    over a column set wider than the model's input.
+
+    Reverting the filter puts `sma_50` back in reach of `best_feature`.
+    """
+    # A panel where price LEVEL predicts the label by construction: the
+    # expensive names are the ones that go up. `close` therefore has near
+    # perfect cross-sectional IC and wins `best_feature` outright — unless it
+    # is excluded. On a signal-free GBM panel the winner is whichever column
+    # noise favours, so this fixture is what makes the assertion bite.
+    rng = np.random.default_rng(7)
+    rigged = {}
+    for i in range(22):
+        drift = 0.0006 * (i - 10)
+        noise = rng.normal(0.0, 0.004, 240)
+        closes = 10.0 * (i + 1) * np.exp(np.cumsum(drift + noise))
+        rigged[f"S{i}"] = to_bars(f"S{i}", closes)
+
+    result = score_targets(
+        rigged,
+        horizons=(10,),
+        multipliers=(1.0,),
+        excess_options=(False,),
+        min_history=60,
+        min_universe=20,
+        max_sessions=60,
+    )
+    assert result["candidates"], "no candidate produced enough labeled sessions"
+    assert result["feature_scope"] == "model contract only"
+    for candidate in result["candidates"]:
+        # EXCLUDED, not just INADMISSIBLE: `donchian_low_20` is a price level
+        # too, it just lives in CANDIDATE_FEATURES — and training never admits
+        # candidates either, so it cannot decide a target.
+        assert candidate["best_feature"] not in EXCLUDED_FEATURES
+
+    # The candidate block is still MEASURABLE when asked for explicitly (E2).
+    with_candidates = score_targets(
+        rigged,
+        horizons=(10,),
+        multipliers=(1.0,),
+        excess_options=(False,),
+        min_history=60,
+        min_universe=20,
+        max_sessions=60,
+        include_candidates=True,
+    )
+    assert with_candidates["feature_scope"] == "candidates included"
+    for candidate in with_candidates["candidates"]:
+        assert candidate["best_feature"] not in INADMISSIBLE_FEATURES

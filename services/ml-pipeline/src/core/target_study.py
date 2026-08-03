@@ -29,6 +29,7 @@ from trading_common.prices import adjusted_ohlc
 from trading_common.ranking import cross_sectional_rank
 from trading_common.schemas import OHLCVBar
 
+from src.core.dataset import EXCLUDED_FEATURES, INADMISSIBLE_FEATURES
 from src.core.evaluation import spearman
 from src.core.labels import (
     LABEL_HORIZON,
@@ -199,6 +200,7 @@ def score_targets(
     min_history: int = FULL_HISTORY,
     min_universe: int = 20,
     max_sessions: int = 500,
+    include_candidates: bool = False,
 ) -> dict:
     """Rank candidate targets by how well RAW FEATURES already predict them.
 
@@ -222,6 +224,7 @@ def score_targets(
                 min_history=min_history,
                 min_universe=min_universe,
                 max_sessions=max_sessions,
+                include_candidates=include_candidates,
             )
             if score is not None:
                 results.append(score)
@@ -236,6 +239,7 @@ def score_targets(
             "indistinguishable from zero across every candidate means the "
             "features, not the target, are the problem."
         ),
+        "feature_scope": ("candidates included" if include_candidates else "model contract only"),
     }
 
 
@@ -247,7 +251,13 @@ def _score_one_target(
     min_history: int,
     min_universe: int,
     max_sessions: int,
+    include_candidates: bool = False,
 ) -> TargetScore | None:
+    # Mirrors build_dataset: candidates are computed but not adopted, and
+    # training never admits them, so by default they cannot decide a target
+    # either. Setting the flag measures them deliberately (rule E2) — the study
+    # is model-free, so it costs no trials against the gate.
+    excluded = INADMISSIBLE_FEATURES if include_candidates else EXCLUDED_FEATURES
     ordered_bars = {s: sorted(b, key=lambda x: x.timestamp) for s, b in bars_by_symbol.items()}
     prices = {s: adjusted_ohlc(b) for s, b in ordered_bars.items()}
     index_by_date = {
@@ -289,7 +299,17 @@ def _score_one_target(
         y = np.asarray(labels, dtype=float)
         n_samples += len(y)
         positives += int(y.sum())
+        # Only columns the MODEL could consume — the SAME two-set rule
+        # `build_dataset` applies, for the same reason. This loop used to rank
+        # every feature, so a target could win on `close` or `donchian_low_20`:
+        # price levels whose cross-sectional rank is a proxy for share price,
+        # and which training removes from the input on every path. A target
+        # chosen because a level proxy ranks it well is a target chosen on
+        # evidence the model will never see. `docs/decisions/04` records this as
+        # a caveat under D2; it belongs in the code, not in a footnote.
         for name in ranked[0].features:
+            if name in excluded:
+                continue
             column = np.array([r.features.get(name, 0.5) for r in ranked], dtype=float)
             per_session_ic.setdefault(name, []).append(spearman(column, y))
 
