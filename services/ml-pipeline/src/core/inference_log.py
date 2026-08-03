@@ -15,7 +15,28 @@ from datetime import UTC, datetime, timedelta
 
 import numpy as np
 
+from src.core.labels import LABEL_HORIZON
+
 TRADING_DAYS = 252
+
+# What the log must hold for the outcome loop to work at all. Every served
+# symbol appends a record per session — HOLDs included — so a vote survives
+# until it matures only if the deque is at least universe x horizon deep.
+# The bound this replaced was 2000, which on the 414-name universe retained
+# 4.8 sessions: a `deque(maxlen=...)` evicts the OLDEST first, which is
+# precisely the votes about to mature. Nothing failed — `pending()` simply
+# returned a small, healthy-looking set forever.
+PLANNED_UNIVERSE = 500  # headroom over the 414 names the campaign runs
+
+
+def retention_for(universe_size: int = PLANNED_UNIVERSE, horizon: int = LABEL_HORIZON) -> int:
+    """How many records must be kept for every vote to reach maturity.
+
+    Doubled: a monitor run can be late, and the margin costs a dict of ~15
+    floats per record — tens of MB at these sizes, against a loop that does not
+    otherwise work.
+    """
+    return 2 * universe_size * horizon
 
 
 @dataclass
@@ -34,7 +55,7 @@ class InferenceRecord:
 
 @dataclass
 class InferenceLog:
-    maxlen: int = 2000
+    maxlen: int = field(default_factory=retention_for)
     _records: dict[str, deque[InferenceRecord]] = field(init=False)
 
     def __post_init__(self) -> None:

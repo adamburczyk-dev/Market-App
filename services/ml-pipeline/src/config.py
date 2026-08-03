@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 # is read from the label definition rather than declared again here. Deliberately
 # NOT surfaced in docker-compose or Helm: an operator knob that can disagree with
 # the model being served is a train/serve divergence with no symptom.
+from src.core.inference_log import retention_for
 from src.core.labels import LABEL_HORIZON, outcome_drop_after_days
 
 
@@ -42,7 +43,10 @@ class Settings(BaseSettings):
     SIGNAL_AGGREGATOR_URL: str = "http://signal-aggregator:8000"
     MONITOR_INTERVAL_S: float = 86_400.0  # daily, per the monitoring requirements
     MONITOR_INITIAL_DELAY_S: float = 3_600.0  # first run 1h after boot
-    INFERENCE_LOG_MAXLEN: int = 2000
+    # Derived: universe x horizon, doubled. At 2000 the log retained under 5
+    # sessions of a 414-name universe and evicted votes BEFORE they matured —
+    # oldest first, which is exactly the ones about to resolve.
+    INFERENCE_LOG_MAXLEN: int = retention_for()
     # Derived, not typed: a literal here silently outlives the next horizon
     # change, and this particular literal going stale kills the whole ML-3 loop
     # without logging anything (votes resolve as label=None forever).
