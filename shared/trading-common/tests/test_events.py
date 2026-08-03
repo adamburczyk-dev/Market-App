@@ -556,6 +556,40 @@ class TestMlSignalGeneratedEvent:
         assert restored.probability_up == 0.31
         assert restored.horizon_days == 10
 
+    def test_label_kind_defaults_to_absolute(self):
+        """A message published before the field existed must still parse.
+
+        Every such message was absolute, so the default states a fact rather
+        than guessing one.
+        """
+        assert self.make().label_kind == "absolute"
+
+    def test_label_kind_survives_the_roundtrip(self):
+        """`probability_up` means a different thing under each label.
+
+        Absolute: P(the price rises). Excess: P(the name beats the universe).
+        In a falling market those are opposite claims about the same number,
+        so the referent has to travel WITH it.
+        """
+        e = self.make(label_kind="excess", probability_up=0.62)
+        restored = MlSignalGeneratedEvent.model_validate_json(e.model_dump_json())
+        assert restored.label_kind == "excess"
+
+    def test_a_message_without_the_field_still_parses(self):
+        """Old messages replay from JetStream after this deploy, not before it."""
+        legacy = {
+            "event_type": "ml.signal_generated",
+            "symbol": "AAPL",
+            "model_id": "global_v1@v3",
+            "model_stack": "global_v1",
+            "signal": "BUY",
+            "confidence": 0.4,
+            "probability_up": 0.7,
+            "horizon_days": 10,
+        }
+        restored = MlSignalGeneratedEvent.model_validate(legacy)
+        assert restored.label_kind == "absolute"
+
 
 def test_order_intent_defaults_to_new_and_liquidation_is_explicit():
     """N1/FLOW-6: a halt must never trap a liquidation.

@@ -302,6 +302,14 @@ class MlSignalGeneratedEvent(BaseEvent):
     strategy-led decisions rather than trading alone. ``probability_up`` is the
     calibrated P(up-barrier-first); ``confidence`` = 2·|p − 0.5| after the
     dead-zone mapping to BUY/SELL/HOLD.
+
+    ``horizon_days`` and ``label_kind`` together name WHAT the probability is
+    about, and neither is enough alone. Under ``"absolute"`` the up barrier is
+    a move in the symbol's own price; under ``"excess"`` it is a move relative
+    to the cross-section, so the same 0.6 means "likely to rise" in one case
+    and "likely to beat the universe" in the other — which in a falling market
+    are opposite claims. A consumer that reads ``probability_up`` without its
+    referent cannot tell the two apart, and nothing would fail loudly.
     """
 
     event_type: EventType = EventType.ML_SIGNAL_GENERATED
@@ -312,6 +320,9 @@ class MlSignalGeneratedEvent(BaseEvent):
     confidence: float
     probability_up: float
     horizon_days: int
+    # Defaulted so messages published before this field existed still parse —
+    # they were all absolute, so the default is not a guess.
+    label_kind: str = "absolute"  # "absolute" | "excess"
     source_service: str = "ml-pipeline"
 
 

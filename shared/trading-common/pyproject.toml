@@ -19,6 +19,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    # tests/test_scheduler.py uses @pytest.mark.asyncio; without the plugin the
+    # mark is unknown and those 5 tests FAIL rather than skip — a fresh machine
+    # saw a red battery for a missing dev dep, not for broken code.
+    "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "ruff>=0.5",
     "mypy>=1.10",
