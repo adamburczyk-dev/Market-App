@@ -34,7 +34,13 @@ from trading_common.prices import adjusted_ohlc
 from trading_common.ranking import cross_sectional_rank, sector_neutralize
 from trading_common.schemas import FinancialStatements, OHLCVBar
 
-from src.core.labels import BarrierOutcome, LabelParams, triple_barrier_label
+from src.core.labels import (
+    BarrierOutcome,
+    LabelParams,
+    excess_barrier_label,
+    triple_barrier_label,
+)
+from src.core.market_path import market_levels, project_levels
 from src.core.uniqueness import average_uniqueness
 from src.core.universe import Universe
 
@@ -223,6 +229,17 @@ def build_dataset(
         }
         index_by_date[symbol] = {b.timestamp: i for i, b in enumerate(ordered)}
 
+    # The benchmark leg, only when the label needs one. Built once over the whole
+    # panel and projected onto each symbol's own index, so a name that listed
+    # halfway through gets a real excess label instead of falling through to the
+    # absolute one — which is what the length-matched predecessor did, silently.
+    market_by_symbol: dict[str, np.ndarray] = {}
+    if p.label.excess:
+        levels = market_levels(bars_by_symbol, universe)
+        market_by_symbol = {
+            symbol: project_levels(levels, ordered) for symbol, ordered in bars_sorted.items()
+        }
+
     all_dates = sorted({b.timestamp for bars in bars_by_symbol.values() for b in bars})
 
     resolution = {"upper": 0, "lower": 0, "vertical": 0, "unlabeled": 0}
@@ -293,22 +310,26 @@ def build_dataset(
         if sector_by_symbol is not None:
             snapshot = sector_neutralize(snapshot, sector_by_symbol)
         for ranked, (symbol, i) in zip(cross_sectional_rank(snapshot), members, strict=True):
-            outcome: BarrierOutcome | None = triple_barrier_label(
-                series[symbol]["closes"],
-                series[symbol]["highs"],
-                series[symbol]["lows"],
-                i,
-                p.label,
-            )
+            outcome: BarrierOutcome | None
+            if p.label.excess:
+                outcome = excess_barrier_label(
+                    series[symbol]["closes"], market_by_symbol[symbol], i, p.label
+                )
+            else:
+                outcome = triple_barrier_label(
+                    series[symbol]["closes"],
+                    series[symbol]["highs"],
+                    series[symbol]["lows"],
+                    i,
+                    p.label,
+                )
             if outcome is None:
                 resolution["unlabeled"] += 1
                 continue
-            if outcome.touch_index - i >= p.label.horizon:
-                resolution["vertical"] += 1
-            elif outcome.label == 1:
-                resolution["upper"] += 1
-            else:
-                resolution["lower"] += 1
+            # Read the barrier the label REPORTS rather than re-deriving it from
+            # the touch index: the label functions already decided, and two
+            # definitions of one thing eventually disagree.
+            resolution[outcome.barrier] += 1
             closes = series[symbol]["closes"]
             rows.append({**ranked.features, **macro})
             row_dates.append(session)
@@ -317,13 +338,16 @@ def build_dataset(
             # (symbol, first, last) index span the label actually occupied —
             # the input to the uniqueness weights below.
             row_spans.append((symbol, i, outcome.touch_index))
-            row_barriers.append(
-                "vertical"
-                if outcome.touch_index - i >= p.label.horizon
-                else ("upper" if outcome.label == 1 else "lower")
-            )
+            row_barriers.append(outcome.barrier)
             # a labeled row always has a next bar (labels need future data);
-            # the 1-session forward return feeds the daily-rebalance evaluation
+            # the 1-session forward return feeds the daily-rebalance evaluation.
+            #
+            # ABSOLUTE even under an excess label, deliberately. This return is
+            # the book's P&L, and the book is long-only cash equity — its money
+            # is absolute. `relative_metrics` already subtracts the equal-weight
+            # universe to produce sharpe_active, the decision metric (P3-4);
+            # making this excess too would subtract the benchmark twice, collapse
+            # sharpe_benchmark_ew toward zero and quietly change what G3 reads.
             row_next_returns.append(float(closes[i + 1] / closes[i] - 1.0))
 
     if feature_names is None:

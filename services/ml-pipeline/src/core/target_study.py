@@ -36,6 +36,7 @@ from src.core.labels import (
     excess_barrier_label,
     triple_barrier_label,
 )
+from src.core.market_path import market_levels, project_levels
 
 logger = structlog.get_logger()
 
@@ -65,21 +66,6 @@ class LabelProfile:
         return asdict(self)
 
 
-def _market_path(closes_by_symbol: dict[str, np.ndarray], length: int) -> np.ndarray:
-    """Equal-weight median index of the universe, rebased to 1.0.
-
-    The median rather than the mean: one name doubling should not redefine
-    "the market" for a 34-name cross-section.
-    """
-    normalized = []
-    for closes in closes_by_symbol.values():
-        if len(closes) == length and np.all(closes > 0):
-            normalized.append(closes / closes[0])
-    if not normalized:
-        return np.ones(length, dtype=float)
-    return np.median(np.vstack(normalized), axis=0)
-
-
 def profile_labels(
     bars_by_symbol: dict[str, list[OHLCVBar]],
     horizon: int,
@@ -101,22 +87,31 @@ def profile_labels(
         ordered = sorted(bars, key=lambda b: b.timestamp)
         _, _, _, adj_close = adjusted_ohlc(ordered)
         closes_by_symbol[symbol] = adj_close
-    lengths = {len(c) for c in closes_by_symbol.values()}
-    market = _market_path(closes_by_symbol, max(lengths)) if lengths else np.ones(1)
+    # One benchmark for the whole panel, projected onto each symbol's own index.
+    # The predecessor kept only full-length series and guarded each label with
+    # `len(market) == n`, so every shorter name fell through to the ABSOLUTE
+    # label inside what this function reports as an excess profile.
+    levels = market_levels(bars_by_symbol) if excess else {}
+    market_by_symbol = (
+        {
+            symbol: project_levels(levels, sorted(bars, key=lambda b: b.timestamp))
+            for symbol, bars in bars_by_symbol.items()
+        }
+        if excess
+        else {}
+    )
 
     counts = {"upper": 0, "lower": 0, "vertical": 0}
     unlabeled = 0
     positives = 0
-    for bars in bars_by_symbol.values():
+    for symbol, bars in bars_by_symbol.items():
         ordered = sorted(bars, key=lambda b: b.timestamp)
         _, highs, lows, closes = adjusted_ohlc(ordered)
         n = len(closes)
         start = max(sigma_window, n - max_samples_per_symbol)
         for i in range(start, n):
             if excess:
-                outcome = (
-                    excess_barrier_label(closes, market, i, params) if len(market) == n else None
-                )
+                outcome = excess_barrier_label(closes, market_by_symbol[symbol], i, params)
             else:
                 outcome = triple_barrier_label(closes, highs, lows, i, params)
             if outcome is None:
@@ -258,8 +253,12 @@ def _score_one_target(
     index_by_date = {
         s: {b.timestamp: i for i, b in enumerate(bars)} for s, bars in ordered_bars.items()
     }
-    lengths = {s: len(p[3]) for s, p in prices.items()}
-    market = _market_path({s: p[3] for s, p in prices.items()}, max(lengths.values()))
+    levels = market_levels(ordered_bars) if params.excess else {}
+    market_by_symbol = (
+        {symbol: project_levels(levels, bars) for symbol, bars in ordered_bars.items()}
+        if params.excess
+        else {}
+    )
 
     all_dates = sorted({b.timestamp for bars in ordered_bars.values() for b in bars})[
         -max_sessions:
@@ -276,8 +275,8 @@ def _score_one_target(
                 continue
             _, highs, lows, closes = prices[symbol]
             outcome = (
-                excess_barrier_label(closes, market, i, params)
-                if params.excess and len(market) == lengths[symbol]
+                excess_barrier_label(closes, market_by_symbol[symbol], i, params)
+                if params.excess
                 else triple_barrier_label(closes, highs, lows, i, params)
             )
             if outcome is None:
