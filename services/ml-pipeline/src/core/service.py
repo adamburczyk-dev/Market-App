@@ -35,6 +35,7 @@ from src.core.dataset import (
 from src.core.evaluation import effective_sample_size
 from src.core.fundamentals_client import FundamentalsClient
 from src.core.inference_log import InferenceLog
+from src.core.labels import LABEL_HORIZON
 from src.core.macro_client import MacroClient
 from src.core.market_data_client import MarketDataClient
 from src.core.model import TrainedModel
@@ -96,7 +97,7 @@ class MLPipelineService:
         inference_log: InferenceLog | None = None,
         resolver: OutcomeResolver | None = None,
         aggregator_client: Any = None,  # AggregatorClient protocol (record_outcome)
-        horizon_days: int = 10,
+        horizon_days: int = LABEL_HORIZON,
         data_contract: TrainingDataContract | None = None,
         dataset_params: DatasetParams | None = None,
     ) -> None:

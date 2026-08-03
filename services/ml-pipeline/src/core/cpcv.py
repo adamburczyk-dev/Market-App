@@ -33,6 +33,8 @@ from typing import Any
 import numpy as np
 import structlog
 
+from src.core.labels import LABEL_HORIZON
+
 logger = structlog.get_logger()
 
 
@@ -73,7 +75,7 @@ def cpcv_splits[T](
     dates: Sequence[T],
     n_groups: int = 6,
     test_groups: int = 2,
-    horizon: int = 10,
+    horizon: int = LABEL_HORIZON,
     embargo: int = 5,
 ) -> CpcvPaths[T]:
     """Every combination of `test_groups` groups as the test set, purged.

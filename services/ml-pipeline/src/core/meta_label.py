@@ -40,6 +40,7 @@ import numpy as np
 import structlog
 
 from src.core.evaluation import _annualized_sharpe, auc
+from src.core.labels import LABEL_HORIZON
 from src.core.model import TrainConfig, train_classifier
 from src.core.splits import purged_walk_forward
 
@@ -60,7 +61,7 @@ class MetaParams:
     # starting point; tuning it is another look at the data and must be paid
     # for in n_trials like any other.
     threshold: float = 0.5
-    horizon: int = 10
+    horizon: int = LABEL_HORIZON
     embargo: int = 5
     # Same shape as the base walk-forward, so the filter is judged over the same
     # kind of window the model it filters was judged over.

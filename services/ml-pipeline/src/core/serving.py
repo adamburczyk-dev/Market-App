@@ -20,6 +20,7 @@ from trading_common.schemas import Interval
 from src.core.dataset import REGIMES
 from src.core.feature_client import FeatureClient
 from src.core.inference_log import InferenceLog, InferenceRecord
+from src.core.labels import LABEL_HORIZON
 from src.core.macro_client import MacroClient
 from src.core.model import TrainedModel
 from src.core.model_store import MlflowModelStore
@@ -38,7 +39,7 @@ class ServingEngine:
         buy_threshold: float = 0.55,
         sell_threshold: float = 0.45,
         serve_interval: str = "1d",
-        horizon_days: int = 10,
+        horizon_days: int = LABEL_HORIZON,
         max_missing_fraction: float = 0.5,
         inference_log: InferenceLog | None = None,
     ) -> None:

@@ -39,6 +39,7 @@ from src.core.importance import (
     noise_control_column,
     permutation_importance,
 )
+from src.core.labels import LABEL_HORIZON
 from src.core.model import TrainConfig, train_classifier
 from src.core.splits import purged_walk_forward
 
@@ -51,7 +52,7 @@ class TrainingParams:
     test_size: int = 63  # ~3m
     holdout_size: int = 126  # ~6m, untouched during selection
     val_size: int = 63  # tail of each train window used for early stop + calibration
-    horizon: int = 10  # label horizon → purge width
+    horizon: int = LABEL_HORIZON  # label horizon → purge width
     embargo: int = 5
     quantile: float = 0.2
     cost_bps: float = 5.0

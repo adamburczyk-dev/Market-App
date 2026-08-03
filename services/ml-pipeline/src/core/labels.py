@@ -13,6 +13,28 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# The vertical barrier, declared ONCE. Four objects need this number to agree:
+# the label (how far the path is scanned), the walk-forward purge (how much of
+# the training window overlaps the test labels), the published event (what the
+# probability is about), and the outcome resolver (when a vote has matured).
+# They used to carry four independent defaults, and the dangerous disagreement
+# is silent: a label horizon LARGER than the purge horizon leaks label window
+# into every test block and makes the metrics look BETTER. Nothing raises.
+# Same class of defect as MAX_OHLCV_LIMIT declared twice in two values.
+LABEL_HORIZON = 10
+
+
+def outcome_drop_after_days(horizon: int = LABEL_HORIZON) -> int:
+    """Calendar days after which an unresolved vote is given up on.
+
+    Sessions are not days: `horizon` sessions span `horizon * 365.25/252`
+    calendar days, and the cutoff is expressed in days because that is what a
+    wall clock measures. Three horizons of slack absorbs holidays and a late
+    monitor run. Derived rather than typed — a literal here is the same trap
+    one horizon change later (at h=10 this returns 44, the 42 it replaces).
+    """
+    return math.ceil(3 * horizon * 365.25 / 252)
+
 
 @dataclass(frozen=True)
 class LabelParams:
@@ -24,7 +46,7 @@ class LabelParams:
     # 1.0 is what it picks (about half the labels touch a horizontal barrier).
     pt_mult: float = 1.0  # profit barrier, in sigma*sqrt(horizon) units
     sl_mult: float = 1.0  # loss barrier, in sigma*sqrt(horizon) units
-    horizon: int = 10  # vertical barrier (sessions)
+    horizon: int = LABEL_HORIZON  # vertical barrier (sessions)
     # E1/P1-3: label the return RELATIVE to the cross-section instead of the
     # absolute one. A cross-sectional model is asked "which names beat the
     # rest"; an absolute label asks it to predict the market too, and the

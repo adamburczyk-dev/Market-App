@@ -1,5 +1,11 @@
 from pydantic_settings import BaseSettings
 
+# The horizon is a property of the TRAINED MODEL, not of the deployment, so it
+# is read from the label definition rather than declared again here. Deliberately
+# NOT surfaced in docker-compose or Helm: an operator knob that can disagree with
+# the model being served is a train/serve divergence with no symptom.
+from src.core.labels import LABEL_HORIZON, outcome_drop_after_days
+
 
 class Settings(BaseSettings):
     SERVICE_NAME: str = "ml-pipeline"
@@ -30,14 +36,17 @@ class Settings(BaseSettings):
     SERVE_INTERVAL: str = "1d"
     BUY_PROBABILITY: float = 0.55  # dead zone between the two thresholds is silent
     SELL_PROBABILITY: float = 0.45
-    LABEL_HORIZON_DAYS: int = 10
+    LABEL_HORIZON_DAYS: int = LABEL_HORIZON
 
     # Daily monitoring loop (plan ML-3): resolve matured outcomes → drift check
     SIGNAL_AGGREGATOR_URL: str = "http://signal-aggregator:8000"
     MONITOR_INTERVAL_S: float = 86_400.0  # daily, per the monitoring requirements
     MONITOR_INITIAL_DELAY_S: float = 3_600.0  # first run 1h after boot
     INFERENCE_LOG_MAXLEN: int = 2000
-    OUTCOME_DROP_AFTER_DAYS: int = 42  # unresolved votes dropped past ~3× horizon
+    # Derived, not typed: a literal here silently outlives the next horizon
+    # change, and this particular literal going stale kills the whole ML-3 loop
+    # without logging anything (votes resolve as label=None forever).
+    OUTCOME_DROP_AFTER_DAYS: int = outcome_drop_after_days()
 
     @property
     def redis_url(self) -> str:

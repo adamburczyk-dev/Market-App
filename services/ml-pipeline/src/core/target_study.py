@@ -30,7 +30,12 @@ from trading_common.ranking import cross_sectional_rank
 from trading_common.schemas import OHLCVBar
 
 from src.core.evaluation import spearman
-from src.core.labels import LabelParams, excess_barrier_label, triple_barrier_label
+from src.core.labels import (
+    LABEL_HORIZON,
+    LabelParams,
+    excess_barrier_label,
+    triple_barrier_label,
+)
 
 logger = structlog.get_logger()
 
@@ -139,7 +144,7 @@ def profile_labels(
 
 def calibrate_barriers(
     bars_by_symbol: dict[str, list[OHLCVBar]],
-    horizon: int = 10,
+    horizon: int = LABEL_HORIZON,
     multipliers: tuple[float, ...] = DEFAULT_MULTIPLIERS,
     excess: bool = False,
 ) -> dict:
