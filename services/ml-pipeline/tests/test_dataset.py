@@ -47,7 +47,11 @@ def universe(n: int = 120) -> dict[str, list[OHLCVBar]]:
     }
 
 
-PARAMS = DatasetParams(label=LabelParams(), min_history=60, min_universe=2)
+# Horizon pinned EXPLICITLY: these exercise label/dataset mechanics, not the
+# production target, and a 120-bar fixture cannot resolve a 63-session label.
+# Pinning also makes them immune to the next D2 — what the model should aim
+# at is a decision, and a decision does not belong in an algorithm's test.
+PARAMS = DatasetParams(label=LabelParams(horizon=10), min_history=60, min_universe=2)
 
 
 def test_dataset_shapes_and_ranges():
@@ -98,7 +102,7 @@ def test_untouched_truncated_tail_is_dropped():
     }
     ds = build_dataset(calm, PARAMS)
     assert ds.n_samples > 0
-    assert sorted(set(ds.dates))[-1] <= START + timedelta(days=120 - 1 - 10)
+    assert sorted(set(ds.dates))[-1] <= START + timedelta(days=120 - 1 - PARAMS.label.horizon)
 
 
 def test_macro_one_hot_appended():

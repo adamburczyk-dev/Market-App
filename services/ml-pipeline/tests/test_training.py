@@ -18,6 +18,10 @@ from src.core.training import (
 
 from .test_dataset import make_bars, trending
 
+# Horizon pinned EXPLICITLY: these exercise label/dataset mechanics, not the
+# production target, and a 120-bar fixture cannot resolve a 63-session label.
+# Pinning also makes them immune to the next D2 — what the model should aim
+# at is a decision, and a decision does not belong in an algorithm's test.
 SMALL = TrainingParams(
     train_size=60,
     test_size=20,
@@ -37,7 +41,7 @@ def synthetic_dataset(n: int = 220):
         "FLATISH": make_bars("FLATISH", trending(n, 0.0005)),
     }
     return build_dataset(
-        universe, DatasetParams(label=LabelParams(), min_history=60, min_universe=2)
+        universe, DatasetParams(label=LabelParams(horizon=10), min_history=60, min_universe=2)
     )
 
 
@@ -161,7 +165,8 @@ def test_the_gate_is_passable_end_to_end():
     "gate FAILED" elsewhere becomes uninterpretable.
     """
     ds = build_dataset(
-        interaction_universe(), DatasetParams(label=LabelParams(), min_history=60, min_universe=20)
+        interaction_universe(),
+        DatasetParams(label=LabelParams(horizon=10), min_history=60, min_universe=20),
     )
     ds, _ = drop_zero_variance_features(ds)
     _, report = run_training(ds, WIDE)
@@ -212,7 +217,9 @@ def random_walk(n: int, seed: int) -> list[float]:
 def test_gate_fails_on_noise():
     """Driftless random walks must not pass the activation gate."""
     universe = {f"N{k}": make_bars(f"N{k}", random_walk(220, seed=k)) for k in range(3)}
-    ds = build_dataset(universe, DatasetParams(label=LabelParams(), min_history=60, min_universe=2))
+    ds = build_dataset(
+        universe, DatasetParams(label=LabelParams(horizon=10), min_history=60, min_universe=2)
+    )
     assert ds.n_samples > 0
     _, report = run_training(ds, SMALL)
     assert not report.passed, "pure noise cleared the activation gate"
@@ -260,7 +267,9 @@ def test_calibration_can_hide_a_collapsed_model():
     temperature grows and squeezes the post-calibration spread, so only the
     pre-calibration spread reveals what the network actually produced."""
     universe = {f"N{k}": make_bars(f"N{k}", random_walk(220, seed=100 + k)) for k in range(3)}
-    ds = build_dataset(universe, DatasetParams(label=LabelParams(), min_history=60, min_universe=2))
+    ds = build_dataset(
+        universe, DatasetParams(label=LabelParams(horizon=10), min_history=60, min_universe=2)
+    )
     _, report = run_training(ds, SMALL)
     row = report.as_dict()["holdout"]
     assert row["pred_std_pre_calibration"] >= row["pred_std_post_calibration"] or (

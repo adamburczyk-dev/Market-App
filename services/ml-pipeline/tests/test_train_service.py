@@ -6,6 +6,7 @@ from trading_common.schemas import Interval
 
 from src.core.data_contract import TrainingDataContract
 from src.core.dataset import DatasetParams
+from src.core.labels import LabelParams
 from src.core.model_store import MlflowModelStore
 from src.core.monitoring.drift_detector import DriftDetector
 from src.core.registry import ModelRegistry
@@ -18,7 +19,11 @@ from .test_training import SMALL
 # Toy scale: 3 symbols, ~200 sessions. Production thresholds (20 names,
 # 1000 sessions) exist to reject exactly this shape, so the tests state their
 # assumptions explicitly instead of weakening the defaults.
-TOY_PARAMS = DatasetParams(min_history=60, min_universe=2)
+# Horizon pinned EXPLICITLY: these exercise label/dataset mechanics, not the
+# production target, and a 120-bar fixture cannot resolve a 63-session label.
+# Pinning also makes them immune to the next D2 — what the model should aim
+# at is a decision, and a decision does not belong in an algorithm's test.
+TOY_PARAMS = DatasetParams(label=LabelParams(horizon=10), min_history=60, min_universe=2)
 TOY_CONTRACT = TrainingDataContract(
     min_sessions=50, min_symbols_per_session=2, min_samples=50, max_missing_rate_per_feature=1.0
 )
