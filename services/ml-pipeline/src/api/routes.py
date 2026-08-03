@@ -116,6 +116,16 @@ class AlphaDecayRequest(TrainRequest):
     include_candidates: bool = False
 
 
+class ImportanceRequest(TrainRequest):
+    # Permutations per feature. More repeats average out the permutation draw;
+    # they do NOT buy statistical power, which comes from the number of
+    # holdout sessions the paired difference is taken over.
+    n_repeats: int = Field(default=5, ge=1, le=20)
+    # Admit the classic-TA block, so the study can answer whether the model
+    # would USE it — the conditional counterpart to alpha-decay's marginal IC.
+    include_candidates: bool = False
+
+
 class CostStudyRequest(TrainRequest):
     # The reference book size the per-name table is priced at. The capacity
     # curve spans several sizes regardless — a single size cannot answer
@@ -244,6 +254,28 @@ async def alpha_decay(
             include_candidates=req.include_candidates,
         )
         return service.record_run("alpha-decay", result)
+
+
+@router.post("/models/feature-importance")
+async def feature_importance(
+    req: ImportanceRequest, service: MLPipelineService = Depends(get_service)
+) -> dict:
+    """Which inputs the model uses, measured by within-session permutation on
+    the untouched holdout, with a planted noise column as the empirical floor.
+    Read `groups` alongside `features`: permutation splits credit between
+    correlated columns, so a family can matter while none of its members does.
+    Diagnostic only — the fitted model carries a column serving cannot
+    produce, so nothing here is registered or promotable."""
+    with _mapped_errors("feature-importance"):
+        result = await service.feature_importance(
+            req.symbols,
+            Interval(req.interval),
+            limit=req.limit,
+            n_repeats=req.n_repeats,
+            include_candidates=req.include_candidates,
+            fundamentals=req.fundamentals,
+        )
+        return service.record_run("feature-importance", result)
 
 
 @router.post("/models/cost-study")

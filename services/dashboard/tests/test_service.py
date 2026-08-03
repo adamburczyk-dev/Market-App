@@ -140,8 +140,59 @@ async def test_strategy_section_joins_status_with_the_learned_weight():
 async def test_ml_section_carries_runs_and_serving():
     d = await build_service().ml_section()
     assert d["available"] is True
-    assert d["runs"]["train"]["version"] == 3
+    # the run index is a LIST of {operation, completed_at}, as ml-pipeline answers
+    assert [r["operation"] for r in d["runs"]] == ["train"]
     assert d["serving"]["paused"] is False
+
+
+@pytest.mark.asyncio
+async def test_ml_section_shows_the_importance_table_and_names_its_source():
+    d = (await build_service().ml_section())["importance"]
+    assert [row["feature"] for row in d["table"]["features"]] == [
+        "return_20d",
+        "momentum_12_1",
+        "rsi_14",
+    ]
+    assert d["table"]["groups"][0]["feature"] == "momentum"
+    # An importance table read against the wrong model is worse than none, so
+    # the model it describes travels with it.
+    assert "training run" in d["source"]
+    assert d["measured_at"] == "2026-08-03T09:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_the_study_is_used_only_when_the_training_run_has_no_table():
+    """The study fits a DIAGNOSTIC model carrying a planted noise column."""
+    study = {
+        "operation": "feature-importance",
+        "completed_at": "2026-08-03T10:00:00+00:00",
+        "result": {"importance": {"features": [], "groups": [], "noise_control": {"t": 0.4}}},
+    }
+    both = await build_service(FakeSource(**{"run_feature-importance": study})).ml_section()
+    assert "training run" in both["importance"]["source"]  # production model wins
+
+    only_study = await build_service(
+        FakeSource(**{"run_train": None, "run_feature-importance": study})
+    ).ml_section()
+    assert "DIAGNOSTIC" in only_study["importance"]["source"]
+    assert only_study["importance"]["table"]["noise_control"]["t"] == 0.4
+
+
+@pytest.mark.asyncio
+async def test_every_missing_table_says_which_kind_of_missing_it_is():
+    """ "nobody measured", "measurement switched off" and "service down" are
+    three situations; a blank panel says the same nothing for all three."""
+    nothing_ran = await build_service(FakeSource(**{"run_train": None})).ml_section()
+    assert nothing_ran["importance"]["table"] is None
+    assert "no training run" in nothing_ran["importance"]["reason"]
+
+    measured_off = await build_service(
+        FakeSource(**{"run_train": {"completed_at": "x", "result": {"gate": {}}}})
+    ).ml_section()
+    assert "switched off" in measured_off["importance"]["reason"]
+
+    down = await build_service(FakeSource(ml=None, **{"run_train": None})).ml_section()
+    assert down["importance"]["reason"] == "ml-pipeline unavailable"
 
 
 @pytest.mark.asyncio

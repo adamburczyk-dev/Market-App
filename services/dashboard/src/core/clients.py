@@ -46,6 +46,7 @@ class DashboardSource(Protocol):
     async def recent_alerts(self) -> dict | None: ...
     async def models(self) -> dict | None: ...
     async def ml_runs(self) -> dict | None: ...
+    async def ml_run(self, operation: str) -> dict | None: ...
     async def ml_serving(self) -> dict | None: ...
     async def strategies(self) -> dict | None: ...
     async def signal_weights(self) -> dict | None: ...
@@ -118,6 +119,17 @@ class HttpDashboardSource:
 
     async def ml_runs(self) -> dict | None:
         return await self._get(f"{self._ml}/api/v1/ml-pipeline/runs")
+
+    async def ml_run(self, operation: str) -> dict | None:
+        """The full payload of one completed run.
+
+        404 here means "that operation has not finished in this container",
+        which `_get` turns into None — the same value an unreachable
+        ml-pipeline yields. The section that reads this distinguishes the two
+        by whether ANY ml-pipeline call answered, so a stopped service is never
+        reported as a measurement that came back empty.
+        """
+        return await self._get(f"{self._ml}/api/v1/ml-pipeline/runs/{operation}")
 
     async def ml_serving(self) -> dict | None:
         return await self._get(f"{self._ml}/api/v1/ml-pipeline/serving")

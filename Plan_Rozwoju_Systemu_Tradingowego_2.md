@@ -1991,7 +1991,7 @@ dzisiejsze zachowanie, tylko nienazwane). Backtest przekrojowy z transzami `1/h`
 | Purged K-Fold / time-series split | ✅ | + embargo, wagi unikalności, CPCV |
 | Random Forest, XGBoost, LSTM | ⚠️ | MLP (PyTorch) + LightGBM jako challenger. RF i LSTM nie powstały — świadomie: `docs/ml_integration_plan.md` argumentuje za płytkim modelem przekrojowym |
 | MLflow tracking | ✅ | sqlite backend, promocja przez alias |
-| **Raport feature importance** | ❌ | brak |
+| **Raport feature importance** | ✅ | zamknięte 2026-08-03. Permutacyjna, mierzona **na holdoucie** (permutacja w oknie fitowania raportuje to, co model zapamiętał) i **wewnątrz sesji** — globalne tasowanie przenosi wartości między datami, więc daje cesze STAŁEJ w sesji (kształt każdego one-hota `macro_*`) zmierzone `ΔIC +0.236, t +3.55` zamiast prawidłowego zera. Spadek IC parowany sesja po sesji, próg Šidáka na liczbę cech, wiersze także per RODZINA (permutacja dzieli zasługę między bliźniaki: na biegu na żywo ŻADNA pojedyncza cecha nie przeszła progu, a rodzina `liquidity` przeszła z t +4.18). `POST /models/feature-importance` sadzi kolumnę czystego szumu jako mierzoną podłogę i jest wyłącznie diagnostyczna; `gate.importance` w raporcie treningu mierzy model produkcyjny |
 | **FinBERT sentiment** | ❌ | `SentimentSnapshot` i `sentiment.updated` istnieją w kontraktach, **żaden serwis ich nie produkuje** |
 | Ensemble | ⚠️ | uśrednianie po ziarnach jest; stacking/voting wielu klas modeli nie |
 | Modele serwowane jako API | ✅ | `ml.signal_generated` + hot-reload po promocji |

@@ -34,8 +34,8 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback) 
 monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All 13 services (9 core +
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
-**Verified ground truth** (test counts measured 2026-08-02 on Python 3.12, not from memory —
-**1400 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
+**Verified ground truth** (test counts measured 2026-08-03 on Python 3.12, not from memory —
+**1418 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
 
 | Komponent | Port | Rola | Testy |
 |---|---|---|---|
@@ -44,7 +44,7 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 | `feature-engine` | 8002 | Wskaźniki Tier-1 + wzbogacenie Tier-2, rangi przekrojowe (`/ranked`) | 38 |
 | `strategy` | 8003 | **Każda aktywna reguła** z registry → `RiskEnvelope` → `CostAwareFilter` → własny sygnał; monitor degradacji per strategia | 60 |
 | `backtest` | 8004 | Ocena **reguły z registry** na historii symbolu + walk-forward, tygodniowa rewalidacja, krzywa kapitału | 58 |
-| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania | 325 |
+| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania, **ważność cech** | 340 |
 | `risk-mgmt` | 8006 | Sizing adaptacyjny, limity reżimowe i sektorowe, wyłącznik z zatrzaskiem, rejestr zleceń | 133 |
 | `execution` | 8007 | Paper broker, wyjścia ochronne SL/TP, likwidacja na BLACK, feedback portfela, **historia kapitału** | 60 |
 | `notification` | 8008 | 5 strumieni → alerty (log/Slack/Telegram/e-mail) | 33 |
@@ -52,7 +52,7 @@ monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All
 | `macro-data` | 8010 | FRED + detekcja reżimu → `macro.regime_changed`, **panel vintage (ALFRED)** | 54 |
 | `company-classifier` | 8011 | Profil → styl inwestycyjny + routing stosu modeli | 25 |
 | `signal-aggregator` | 8012 | **Węzeł decyzyjny**: każda strategia osobno + ML + makro → jedna decyzja z poziomami i sektorem | 97 |
-| `dashboard` | 8501 | BFF nad HTTP pozostałych serwisów + **6 sekcji z wykresami** (kapitał, ryzyko, strategie, backtest, ML, zdrowie) | 34 |
+| `dashboard` | 8501 | BFF nad HTTP pozostałych serwisów + **6 sekcji z wykresami** (kapitał, ryzyko, strategie, backtest, ML z ważnością cech, zdrowie) | 37 |
 | `scripts/` | — | Bootstrap uniwersum, diagnostyka stacku, audyt zależności | 33 |
 
 Co z tego jest **wiążące**, a nie tylko opisowe:
@@ -632,9 +632,55 @@ danych (414 symboli × 20 lat) i seria defektów operacyjnych znalezionych dopie
   mypy (`--strict` na shared) czyste, `check-dependencies` OK. **Kontrola anty-szczęściowa**: po
   zlaniu obu zbiorów z powrotem w jeden pada test „kandydaci są wpuszczani do pomiaru".
 
-**Next (2026-08-02): tor predykcji zablokowany na pomiarze — pracujemy poza nim.**
+- 2026-08-03 — **Raport feature importance (Faza 3): co model UŻYWA, a nie co koreluje — i rodzina,
+  bez której wniosek byłby odwrotny.** `per_feature_ic` mierzy dowód **marginalny** (czy kolumna
+  przewiduje sama z siebie) i z zasady nie odpowiada na pytanie, które podejmuje decyzje o kontrakcie
+  cech: czy model **potrzebuje** tej kolumny, mając pozostałe czternaście. `core/importance.py`
+  mierzy to drugie, permutacyjnie, i cztery decyzje robią różnicę między liczbą a jej obrazkiem.
+  **(1) Poza próbą, na holdoucie** — permutacja w oknie, na którym model był fitowany, raportuje to,
+  co zapamiętał. **(2) Permutacja WEWNĄTRZ sesji** — ta sama lekcja co przy sondzie pojemności,
+  w innym pytaniu: globalne tasowanie przenosi wartości MIĘDZY datami, więc niszczy nie tylko
+  sparowanie nazwy z wartością, ale i rozkład brzegowy cechy w sesji, a miarą jest przekrojowe IC
+  per sesja. **Zmierzone**: cecha stała w obrębie sesji (kształt KAŻDEGO one-hota `macro_*`) dostaje
+  wewnątrzsesyjnie dokładnie `ΔIC 0.00000, t 0.00`, a globalnie **`ΔIC +0.236, t +3.55`** — połowa
+  ważności prawdziwego sygnału, wymyślona w całości. **(3) Spadek IC PAROWANY sesja po sesji** —
+  nieparowane porównanie ginie w zmienności samego IC; parowanie ją usuwa, bo oba człony widziały ten
+  sam dzień. Próg to skorygowana Šidákiem wartość dla liczby testowanych cech, żeby największe
+  z piętnastu losowań szumu nie zostało odczytane jako ulubione wejście modelu. **(4) Także dla
+  RODZIN** — permutacja dzieli zasługę między skorelowane kolumny, więc dwa bliźniaki wyglądają
+  każdy na nieważny; rodzina to zresztą jednostka, w której ten projekt podejmuje decyzje.
+  **Bieg na żywo pokazał dokładnie ten mechanizm i bez rodzin dałby odwrotny wniosek**: na 20 nazwach
+  × 1047 sesji **żadna pojedyncza cecha nie przeszła progu** (najwyżej `amihud_20`, t +1.63),
+  a rodzina **`liquidity` przeszła z t +4.18 i ΔIC +0.094** przy bazowym IC modelu 0.124 — trzy
+  czwarte całej mocy rankującej; `amihud_20` i `dollar_volume_20` są oznaczone jako swoje bliźniaki.
+  **Podłoga jest MIERZONA**: `POST /models/feature-importance` fituje własny model z **posadzoną
+  kolumną czystego szumu** (prawidłowa ranga przekrojowa, zero informacji z konstrukcji) i mówi, ile
+  ta kolumna zdobyła — na żywo `t = +0.16`. Studium jest **wyłącznie diagnostyczne**: ma kolumnę,
+  której serwowanie nie umie wytworzyć, więc nic z niego nie jest rejestrowane; bieg treningowy mierzy
+  model PRODUKCYJNY i posadzonej kolumny nie ma. `include_candidates` daje warunkową połowę etapu E2:
+  alpha-decay mówi, czy rodzina przewiduje sama, to — czy model by jej UŻYŁ. **Defekt złapany testem,
+  nie przeglądem**: model ignorujący kolumnę DOKŁADNIE (drzewo, które nigdy na niej nie dzieli) daje
+  identyczne predykcje, a powtórzenia są sumowane i dzielone — co w binarnym floacie nie jest
+  identycznością; spadek `1.7e-17` przy błędzie `5.2e-18` dał kolumnie nieczytanej przez model
+  **t = +3.23** i ogłoszenie jej jako istotnej. **Przy okazji, w dashboardzie**: `GET /runs` zwraca
+  LISTĘ `{operation, completed_at}`, a sekcja ML czytała ją jak mapę, więc w kolumnie „Operation"
+  stały pozycje tablicy (`0`, `1`); fixture testowy powielał ten sam błędny kształt. Sekcja ML rysuje
+  teraz tabelę ważności (słupki ze ZNAKIEM — permutacja cechy, na której model opiera się odwrotnie,
+  IC **poprawia**, a wykres modułów by to ukrył), nazywa **źródło** tabeli (bieg treningowy = model
+  serwowany vs studium = model diagnostyczny z posadzoną kolumną) i rozróżnia trzy rodzaje braku:
+  „nikt nie zmierzył", „pomiar wyłączony", „ml-pipeline nie odpowiada". Liczniki: ml-pipeline 340
+  (+15), dashboard 37 (+3) → **bateria 1418**; ruff + format + mypy czyste, `check-dependencies` OK.
+  **Kontrola anty-szczęściowa**: po zamianie permutacji na globalną i usunięciu progu na pył padają
+  dokładnie 2 nowe testy — ten o cesze stałej w sesji i ten o kolumnie kontrolnej.
+  **Zweryfikowane na żywo (15/15)** na realnej market-dacie (własny lifespan, sqlite, 26 000 świec
+  dla 20 symboli) + realnym ml-pipeline i realnym dashboardzie na uvicornie: studium 200 w 33 s,
+  trening 200 z wypełnionym `gate.importance`, wersja 1 w MLflow, indeks `/runs` z obiema operacjami,
+  a `measured_at` w dashboardzie zgadza się co do znacznika z `completed_at` biegu treningowego.
 
-Etapy **strategii + registry**, **dashboardu**, **historii makro (P2-4)** i **wskaźników** są zamknięte (wpisy z 2026-08-02 na końcu logu). Kod toru predykcji
+**Next (2026-08-03): tor predykcji zablokowany na pomiarze — pracujemy poza nim.**
+
+Etapy **strategii + registry**, **dashboardu**, **historii makro (P2-4)**, **wskaźników** i **raportu
+feature importance** są zamknięte (wpisy z 2026-08-02 i 2026-08-03 na końcu logu). Kod toru predykcji
 (E0–E5) jest skończony i **nie ma tam sensownego następnego zadania programistycznego**: każda pozostała decyzja jest bramkowana liczbami, których nie mamy (t-stat
 IC ≥ 2). Trening #3 na 414 symbolach × 20 lat skończył się zapadnięciem modelu do stałej i
 odrzuceniem przez bramkę na 5 z 6 warunków, a sonda pojemności wymaga powtórzenia po naprawie jej
@@ -649,8 +695,8 @@ udokumentowanej specyfikacji jest niezbudowana. Otwarte fronty, w kolejności do
 | ~~Dashboard / frontend~~ | ✅ **zamknięte 2026-08-02** — 6 sekcji, wykresy SVG, historia kapitału w execution | `Plan_Rozwoju` Faza 4, Tydzień 21 |
 | ~~Historia makro (P2-4)~~ | ✅ **zamknięte 2026-08-02** — panel vintage z ALFRED, odczyt as-of po dwóch osiach, `regime_by_date` wreszcie ma źródło. **Backfill u użytkownika** (egress do FRED zablokowany w piaskownicy) | plan predykcji §13 (T2-2) |
 | ~~Wskaźniki techniczne~~ | ✅ **zamknięte 2026-08-02** — ~17 z ~20 rodzin, a co ważniejsze: kandydat jest **mierzalny bez bycia zaadoptowanym** (`include_candidates`) | `Plan_Rozwoju` Faza 1, Tydzień 3 |
-| **Raport feature importance** ← **BIEŻĄCY ETAP** | brak; dashboard ma na niego miejsce i wprost mówi, że nie jest zmierzony | `Plan_Rozwoju` Faza 3, checklist |
-| Sentyment / FinBERT | kontrakt i event istnieją, **producenta nie ma** | `Plan_Rozwoju` Faza 3, Tydzień 17–18 |
+| ~~Raport feature importance~~ | ✅ **zamknięte 2026-08-03** — permutacja wewnątrz sesji na holdoucie, spadek IC parowany per sesja, próg Šidáka, wiersze per RODZINA i mierzona podłoga szumu; sekcja ML dashboardu rysuje tabelę i nazywa jej źródło | `Plan_Rozwoju` Faza 3, checklist |
+| **Sentyment / FinBERT** ← **BIEŻĄCY ETAP** | kontrakt i event istnieją, **producenta nie ma** | `Plan_Rozwoju` Faza 3, Tydzień 17–18 |
 
 Aneks statusu z mapowaniem checklist Faz 1–5 na kod: `Plan_Rozwoju_Systemu_Tradingowego_2.md`,
 sekcja „Aneks: status realizacji". Mapa dokumentów i zasada „który plik wygrywa": `docs/README.md`.

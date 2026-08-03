@@ -45,7 +45,7 @@ from src.core.registry import ModelBaseline, ModelRegistry
 from src.core.sector_study import run_sector_study
 from src.core.serving import ServingEngine
 from src.core.target_study import calibrate_barriers, score_targets
-from src.core.training import TrainingParams, run_training
+from src.core.training import TrainingParams, run_importance_study, run_training
 from src.core.tuning import SweepReport, run_sweep
 from src.core.universe import UniverseParams, build_universe, survivorship_report
 from src.events.publisher import Publisher
@@ -241,6 +241,7 @@ class MLPipelineService:
         limit: int,
         fundamentals: bool = False,
         universe_params: UniverseParams | None = None,
+        include_candidates: bool = False,
     ) -> tuple[Dataset, int, dict[str, Any]]:
         """Returns (dataset, sessions the bars received should have produced).
 
@@ -299,6 +300,7 @@ class MLPipelineService:
                 regime_by_date=regime_by_date or None,
                 fundamentals_by_symbol=panel,
                 universe=universe,
+                include_candidates=include_candidates,
             ),
             expected_sessions,
             selection,
@@ -508,6 +510,47 @@ class MLPipelineService:
             "selection": selection,
             "dropped_zero_variance": dropped,
             "probe": probe.as_dict(),
+        }
+
+    async def feature_importance(
+        self,
+        symbols: list[str],
+        interval: Interval,
+        limit: int = 1500,
+        n_repeats: int = 5,
+        include_candidates: bool = False,
+        fundamentals: bool = False,
+        params: TrainingParams | None = None,
+    ) -> dict[str, Any]:
+        """Which inputs a model actually uses — with a planted noise floor.
+
+        Faza 3's feature-importance report. A training run already carries the
+        table for the production model (``gate.importance``); this route exists
+        for the two questions that one cannot answer: what a column carrying
+        nothing scores on the same machinery, and — with
+        ``include_candidates`` — whether the model WOULD use the classic-TA
+        block if it were admitted. The second is the conditional half of
+        stage E2: ``per_feature_ic`` says whether a family predicts on its own,
+        this says whether it adds anything given the features already there.
+
+        Diagnostic only. The fitted model has a column serving cannot produce,
+        so nothing here is registered, logged to MLflow or promotable.
+        """
+        dataset, _, selection = await self.build_training_dataset(
+            symbols,
+            interval,
+            limit,
+            fundamentals=fundamentals,
+            include_candidates=include_candidates,
+        )
+        dataset, dropped = drop_zero_variance_features(dataset)
+        study = await asyncio.to_thread(run_importance_study, dataset, params, n_repeats=n_repeats)
+        return {
+            "dataset": _dataset_diagnostics(dataset, symbols),
+            "selection": selection,
+            "dropped_zero_variance": dropped,
+            "include_candidates": include_candidates,
+            **study,
         }
 
     async def tune(

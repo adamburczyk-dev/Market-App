@@ -190,3 +190,44 @@ async def test_train_refuses_a_truncated_dataset(tmp_path):
         await service.train(list(universe), Interval.D1, params=SMALL)
     assert exc.value.report["passed"] is False
     assert any("sessions" in v for v in exc.value.violations)
+
+
+@pytest.mark.asyncio
+async def test_feature_importance_study_admits_candidates_without_adopting_them():
+    """Faza 3 study: measurable, planted noise floor, and NOT a training run.
+
+    ``include_candidates`` is the conditional half of stage E2 — the classic-TA
+    block is admitted so the question "would the model USE it" can be asked at
+    all. Nothing about the production contract changes: the study fits its own
+    model and registers nothing.
+    """
+    universe = {
+        "UP": make_bars("UP", trending(220, 0.004)),
+        "DOWN": make_bars("DOWN", trending(220, -0.004)),
+        "FLATISH": make_bars("FLATISH", trending(220, 0.0005)),
+    }
+    service = MLPipelineService(
+        DriftDetector(),
+        ModelRegistry(),
+        NullPublisher(),
+        market_client=FakeMarketDataClient(universe),
+        data_contract=TOY_CONTRACT,
+        dataset_params=TOY_PARAMS,
+    )
+    plain = await service.feature_importance(
+        list(universe), Interval.D1, limit=1500, n_repeats=2, params=SMALL
+    )
+    with_candidates = await service.feature_importance(
+        list(universe), Interval.D1, limit=1500, n_repeats=2, include_candidates=True, params=SMALL
+    )
+
+    assert plain["registrable"] is False
+    assert plain["noise_control_planted"] is True
+    assert plain["importance"]["noise_control"] is not None
+    # nothing was logged to the registry by a diagnostic
+    assert service.registry.model_ids() == []
+
+    measured = {row["feature"] for row in with_candidates["importance"]["features"]}
+    assert "rsi_14" in measured  # a production feature is still there
+    assert measured > {row["feature"] for row in plain["importance"]["features"]}
+    assert with_candidates["include_candidates"] is True

@@ -263,16 +263,48 @@ function renderMl(d){
   cards.push(card("Serving", s
     ? Object.entries(s).map(([k,v]) => kv(k, typeof v==="object" ? JSON.stringify(v) : esc(String(v)))).join("")
     : none("unavailable")));
-  cards.push(card("Last completed runs", Object.keys(runs).length
-    ? `<div class="scroll"><table><tr><th>Operation</th><th>Summary</th></tr>` +
-      Object.entries(runs).map(([op,r]) =>
-        `<tr><td>${esc(op)}</td><td>${esc(JSON.stringify(r).slice(0,160))}</td></tr>`).join("") +
+  // /runs is an INDEX: [{operation, completed_at}] — reading it as a map put
+  // array positions ("0", "1") in the Operation column.
+  const runList = Array.isArray(runs) ? runs : Object.values(runs||{});
+  cards.push(card("Last completed runs", runList.length
+    ? `<div class="scroll"><table><tr><th>Operation</th><th>Completed</th></tr>` +
+      runList.map(r =>
+        `<tr><td>${esc(r.operation ?? "?")}</td><td>${esc(r.completed_at ?? "—")}</td></tr>`).join("") +
       `</table></div>`
     : none("no long-running operation has completed in this container")), true);
-  cards.push(card("Feature importance",
-    none("not built — the report is an open item in the gap audit, and an empty chart " +
-         "here would imply the model has no important features rather than that nobody measured them")));
+  cards.push(card("Feature importance", renderImportance(d.importance||{}), true));
   return cards.join("");
+}
+
+function importanceRows(rows, bar){
+  return `<div class="scroll"><table>
+    <tr><th>Feature</th><th>Δ IC</th><th class="num">t</th><th class="num">Δ AUC</th><th>Note</th></tr>` +
+    rows.map(r => {
+      const strong = Math.abs(r.t) > bar;
+      // Sign matters: permuting a feature the model leans on the WRONG way
+      // improves the ranking, and a chart of |Δ| would hide exactly that.
+      const w = Math.min(100, Math.abs(r.ic_drop)/Math.max(...rows.map(x=>Math.abs(x.ic_drop)),1e-9)*100);
+      const colour = r.ic_drop >= 0 ? "#1f6feb" : "#f85149";
+      return `<tr><td>${esc(r.feature)}</td>
+        <td style="width:45%"><div style="background:${colour};opacity:${strong?".85":".3"};
+          height:9px;border-radius:3px;width:${w.toFixed(1)}%"></div></td>
+        <td class="num">${num(r.t,2)}</td><td class="num">${num(r.auc_drop,4)}</td>
+        <td>${r.redundant ? `<span class="chip warn">~${esc(r.most_correlated_with||"")}</span>` : ""}</td></tr>`;
+    }).join("") + `</table></div>`;
+}
+
+function renderImportance(imp){
+  if (!imp.table) return none(imp.reason || "not measured");
+  const t = imp.table, bar = t.tstat_bar ?? 2;
+  const noise = t.noise_control;
+  return `<div class="muted">${esc(imp.source||"")}${imp.measured_at ? " · "+esc(imp.measured_at) : ""}</div>` +
+    kv("Baseline IC (holdout)", num(t.base_ic,5)) +
+    kv("Sessions paired", t.n_sessions) +
+    kv("Significance bar (|t|, corrected)", num(bar,2)) +
+    (noise ? kv("Planted noise column scored", num(noise.t,2)+" t") : "") +
+    `<h4>By feature</h4>` + importanceRows(t.features||[], bar) +
+    ((t.groups||[]).length ? `<h4>By family</h4>` + importanceRows(t.groups, bar) : "") +
+    `<div class="muted" style="margin-top:8px">${esc(t.verdict||"")}</div>`;
 }
 
 function renderHealth(d){

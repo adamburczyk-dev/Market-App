@@ -36,6 +36,38 @@ _EQUITY = [
     111_000.0,
 ]
 
+
+def _row(name: str, drop: float, t: float, twin: str | None = None) -> dict:
+    return {
+        "feature": name,
+        "members": [name],
+        "ic_drop": drop,
+        "ic_drop_se": abs(drop / t) if t else 0.0,
+        "t": t,
+        "auc_drop": drop / 2,
+        "max_abs_correlation": 0.95 if twin else 0.31,
+        "most_correlated_with": twin or "volume_ratio",
+        "redundant": twin is not None,
+    }
+
+
+_IMPORTANCE = {
+    "n_rows": 5040,
+    "n_sessions": 126,
+    "base_ic": 0.0121,
+    "base_auc": 0.531,
+    "n_repeats": 3,
+    "tstat_bar": 2.93,
+    "features": [
+        _row("return_20d", 0.0041, 4.1),
+        _row("momentum_12_1", 0.0009, 1.2, twin="return_20d"),
+        _row("rsi_14", -0.0002, -0.4),
+    ],
+    "groups": [_row("momentum", 0.0055, 5.2)],
+    "noise_control": None,
+    "verdict": "1 of 3 features clear the corrected bar (|t| > 2.93): return_20d.",
+}
+
 _DEFAULTS: dict[str, dict] = {
     "rp": {
         "value": 100000.0,
@@ -56,7 +88,15 @@ _DEFAULTS: dict[str, dict] = {
         ],
         "count": 25,
     },
-    "runs": {"runs": {"train": {"version": 3}}},
+    # /runs is an INDEX of {operation, completed_at} — a LIST, as ml-pipeline
+    # really answers. The fixture used to be a map, which is how the UI came to
+    # render array positions in the Operation column.
+    "runs": {"runs": [{"operation": "train", "completed_at": "2026-08-03T09:00:00+00:00"}]},
+    "run_train": {
+        "operation": "train",
+        "completed_at": "2026-08-03T09:00:00+00:00",
+        "result": {"gate": {"importance": _IMPORTANCE}},
+    },
     "serving": {"model": "m1", "paused": False},
     "strat": {
         "strategies": [
@@ -108,6 +148,11 @@ class FakeSource:
 
     async def ml_runs(self) -> dict | None:
         return self._data["runs"]
+
+    async def ml_run(self, operation: str) -> dict | None:
+        # absent = "that operation has not completed here", which is exactly
+        # what a 404 from ml-pipeline becomes on the real client
+        return self._data.get(f"run_{operation}")
 
     async def ml_serving(self) -> dict | None:
         return self._data["serving"]

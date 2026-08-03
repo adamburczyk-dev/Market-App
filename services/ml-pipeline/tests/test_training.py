@@ -1,12 +1,20 @@
 """End-to-end walk-forward training + gate report on a synthetic universe."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from src.core.dataset import DatasetParams, build_dataset, drop_zero_variance_features
+from src.core.importance import NOISE_FEATURE
 from src.core.labels import LabelParams
 from src.core.model import TrainConfig
-from src.core.training import TrainingParams, run_training
+from src.core.training import (
+    TrainingParams,
+    holdout_split,
+    run_importance_study,
+    run_training,
+)
 
 from .test_dataset import make_bars, trending
 
@@ -40,8 +48,53 @@ def test_training_produces_model_and_report():
     assert report.holdout.n_test > 0
     assert len(report.folds) >= 1
     d = report.as_dict()
-    assert set(d) == {"passed", "reasons", "conditions", "holdout", "folds"}
+    assert set(d) == {"passed", "reasons", "conditions", "importance", "holdout", "folds"}
     assert isinstance(d["passed"], bool)
+
+
+def test_gate_report_says_which_inputs_the_holdout_model_used():
+    """Faza 3: a run that cannot name its model's inputs is one nobody can act on."""
+    ds = synthetic_dataset()
+    _, report = run_training(ds, SMALL)
+    assert report.importance is not None
+    measured = {e.name for e in report.importance.features}
+    assert measured == set(ds.feature_names)
+    # The production contract is what was measured — no planted column here.
+    assert report.importance.noise_control is None
+    assert report.as_dict()["importance"]["n_sessions"] == report.importance.n_sessions
+
+
+def test_importance_can_be_switched_off_and_says_NOT_MEASURED_rather_than_zero():
+    ds = synthetic_dataset()
+    _, report = run_training(ds, replace(SMALL, importance_repeats=0))
+    assert report.importance is None
+    # null, never an empty table: "nobody measured" and "nothing mattered" are
+    # different statements and the renderer has to be able to tell them apart.
+    assert report.as_dict()["importance"] is None
+
+
+def test_the_importance_study_plants_a_noise_column_and_is_not_registrable():
+    ds = synthetic_dataset()
+    result = run_importance_study(ds, SMALL, n_repeats=2)
+    assert result["noise_control_planted"] is True
+    assert result["registrable"] is False
+    table = result["importance"]
+    assert table["noise_control"] is not None
+    names = {row["feature"] for row in table["features"]}
+    assert NOISE_FEATURE in names
+    # The study fits its own model; the dataset it was handed is untouched, so
+    # the production feature contract cannot pick the column up by accident.
+    assert NOISE_FEATURE not in ds.feature_names
+
+
+def test_the_holdout_seam_has_one_definition():
+    """The study and the gate must score the SAME untouched window."""
+    ds = synthetic_dataset()
+    work, train, holdout = holdout_split(ds, SMALL)
+    assert len(holdout) == SMALL.holdout_size
+    assert max(train) < min(holdout)
+    # purged at the seam: horizon + embargo sessions are dropped from training
+    assert len(work) - len(train) == SMALL.horizon + SMALL.embargo
 
 
 def interaction_universe(

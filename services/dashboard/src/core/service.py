@@ -232,14 +232,19 @@ class DashboardService:
     # --- section 5: ML model performance ----------------------------------
 
     async def ml_section(self) -> dict[str, Any]:
-        models, runs, serving = await asyncio.gather(
-            self._source.models(), self._source.ml_runs(), self._source.ml_serving()
+        models, runs, serving, trained, study = await asyncio.gather(
+            self._source.models(),
+            self._source.ml_runs(),
+            self._source.ml_serving(),
+            self._source.ml_run("train"),
+            self._source.ml_run("feature-importance"),
         )
         return {
             "models": (models or {}).get("models", []),
-            "runs": (runs or {}).get("runs", {}),
+            "runs": (runs or {}).get("runs", []),
             "serving": serving,
             "available": models is not None,
+            "importance": _importance(trained, study, reachable=models is not None),
         }
 
     # --- section 6: system health -----------------------------------------
@@ -255,6 +260,61 @@ class DashboardService:
             "total": len(probes),
             "slowest_ms": max(latencies) if latencies else None,
         }
+
+
+def _importance(
+    trained: dict[str, Any] | None, study: dict[str, Any] | None, reachable: bool
+) -> dict[str, Any]:
+    """The feature-importance table plus WHERE it came from.
+
+    Two runs can produce one, and they are not interchangeable: the training
+    run measures the model the system would actually serve, while the
+    standalone study fits a diagnostic model carrying a planted noise column
+    that serving cannot produce. The training run therefore wins when both
+    exist, and the source travels with the table — an importance table read
+    against the wrong model is worse than none.
+
+    Every "no table" case names itself. "Nobody has measured this", "the model
+    was trained with the measurement switched off" and "ml-pipeline is down"
+    are three different situations, and a blank panel says the same nothing
+    for all three.
+    """
+    from_training = ((trained or {}).get("result") or {}).get("gate", {}).get("importance")
+    from_study = ((study or {}).get("result") or {}).get("importance")
+    if from_training:
+        return {
+            "table": from_training,
+            "source": "training run — the model this system would serve",
+            "measured_at": (trained or {}).get("completed_at"),
+        }
+    if from_study:
+        return {
+            "table": from_study,
+            "source": (
+                "feature-importance study — a DIAGNOSTIC model with a planted noise "
+                "column, not the served one"
+            ),
+            "measured_at": (study or {}).get("completed_at"),
+        }
+    if not reachable:
+        return {"table": None, "source": None, "reason": "ml-pipeline unavailable"}
+    if trained is not None:
+        return {
+            "table": None,
+            "source": None,
+            "reason": (
+                "the last training run carries no importance table — it ran with the "
+                "measurement switched off, or its holdout was too short to pair"
+            ),
+        }
+    return {
+        "table": None,
+        "source": None,
+        "reason": (
+            "no training run or importance study has completed in this container — "
+            "not measured, which is not the same as no feature mattering"
+        ),
+    }
 
 
 def _status(ok: bool) -> str:

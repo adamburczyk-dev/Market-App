@@ -341,11 +341,11 @@ make test-market-data     # pojedynczy serwis
 cd services/ml-pipeline && python -m pytest tests/ -v
 ```
 
-Stan na 2026-08-02: **1400 testów, wszystkie zielone** na Pythonie 3.12; `ruff` + `ruff format` + `mypy` czyste (`--strict` dla `trading-common`). Rozkład:
+Stan na 2026-08-03: **1418 testów, wszystkie zielone** na Pythonie 3.12; `ruff` + `ruff format` + `mypy` czyste (`--strict` dla `trading-common`). Rozkład:
 
 | Komponent | Testów | Co jest testowane |
 |-----------|:---:|-------------------|
-| `ml-pipeline` | 325 | Etykiety triple-barrier, podziały purged, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring, badania |
+| `ml-pipeline` | 340 | Etykiety triple-barrier, podziały purged, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring, badania, ważność cech |
 | `trading-common` | 325 | Kontrakty, zdarzenia, `RiskEnvelope`, `CostAwareFilter`, cechy, rangi, fundamenty, scheduler, **registry strategii** |
 | `risk-mgmt` | 133 | Wielkość pozycji, limity reżimowe/sektorowe, wyłącznik z zatrzaskiem, trwałość stanu |
 | `signal-aggregator` | 97 | Łączenie sygnałów per strategia, wagi adaptacyjne, bufory TTL, wybór poziomów, filtr kosztów |
@@ -359,7 +359,7 @@ Stan na 2026-08-02: **1400 testów, wszystkie zielone** na Pythonie 3.12; `ruff`
 | `notification` | 33 | Mapowanie zdarzeń na alerty, kanały, izolacja awarii |
 | `scripts/` | 33 | Bootstrap uniwersum, kontrola pokrycia, diagnostyka, audyt zależności |
 | `company-classifier` | 25 | Klasyfikacja stylu, routing modeli |
-| `dashboard` | 34 | 6 sekcji, statystyki ryzyka, sonda zdrowia, tolerancja braku serwisu |
+| `dashboard` | 37 | 6 sekcji, statystyki ryzyka, sonda zdrowia, ważność cech, tolerancja braku serwisu |
 
 ### Wzorzec konfiguracji testów
 

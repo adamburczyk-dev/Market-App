@@ -33,6 +33,12 @@ from src.core.evaluation import (
 )
 from src.core.gate import GateOutcome, GateThresholds, evaluate_gate
 from src.core.gbdt import GbdtConfig, train_gbdt
+from src.core.importance import (
+    NOISE_FEATURE,
+    ImportanceReport,
+    noise_control_column,
+    permutation_importance,
+)
 from src.core.model import TrainConfig, train_classifier
 from src.core.splits import purged_walk_forward
 
@@ -66,6 +72,11 @@ class TrainingParams:
     # T1-3: the six-condition gate. `gate_sharpe` above feeds its economics
     # condition, so the project rule (OOS Sharpe > 0.5) stays in one place.
     gate: GateThresholds = field(default_factory=GateThresholds)
+    # Faza 3: permutation repeats for the holdout importance table. 0 skips it.
+    # It costs (features + families) x repeats forward passes on the holdout —
+    # no fitting — so the default is on: a training run that cannot say which
+    # inputs its model used is a run nobody can act on.
+    importance_repeats: int = 3
 
 
 @dataclass(frozen=True)
@@ -111,6 +122,11 @@ class GateReport:
     passed: bool
     reasons: list[str]
     outcome: GateOutcome | None = None  # per-condition detail (G0–G5)
+    # Faza 3: which inputs the HOLDOUT model actually used, measured by
+    # within-session permutation on the holdout itself (core/importance.py).
+    # Attached to the report rather than to `holdout` because it is a property
+    # of one model on untouched data, not a per-window score.
+    importance: ImportanceReport | None = None
 
     def as_dict(self) -> dict:
         def fold(f: FoldReport) -> dict:
@@ -167,6 +183,10 @@ class GateReport:
             # G0–G5 with their numbers: a failed gate must say WHICH question
             # was answered "no", and a passed one must show what it cleared.
             "conditions": self.outcome.as_dict() if self.outcome is not None else [],
+            # Which inputs the model used, not which columns correlate. `null`
+            # means it was not measured (repeats set to 0, or a holdout too
+            # short to pair) — never "no feature mattered".
+            "importance": self.importance.as_dict() if self.importance is not None else None,
             "holdout": fold(self.holdout),
             "folds": [fold(f) for f in self.folds],
         }
@@ -174,6 +194,29 @@ class GateReport:
 
 def _mask(dates: list[datetime], allowed: set[datetime]) -> np.ndarray:
     return np.array([d in allowed for d in dates], dtype=bool)
+
+
+def holdout_split(
+    ds: Dataset, p: TrainingParams
+) -> tuple[list[datetime], list[datetime], list[datetime]]:
+    """(work sessions, purged train sessions, holdout sessions).
+
+    One definition for the two callers that need the seam — the training run
+    and the importance study. A study that measured on a holdout drawn a few
+    sessions differently from the one the gate scored would be reporting on a
+    model fitted to data the gate's model never saw, and nothing in either
+    report would say so.
+    """
+    sessions = sorted(set(ds.dates))
+    if len(sessions) <= p.holdout_size:
+        raise ValueError(
+            f"dataset has {len(sessions)} sessions; needs more than the "
+            f"{p.holdout_size}-session holdout"
+        )
+    work = sessions[: -p.holdout_size]
+    holdout = sessions[-p.holdout_size :]
+    gap = p.horizon + p.embargo
+    return work, (work[:-gap] if gap else work), holdout
 
 
 def fit_on_dates(ds: Dataset, dates: list[datetime], params: TrainingParams) -> Predictor | None:
@@ -328,6 +371,94 @@ def score_window(
     )
 
 
+def _holdout_importance(
+    ds: Dataset, model: Predictor, holdout: list[datetime], p: TrainingParams
+) -> ImportanceReport | None:
+    """Permutation importance of the holdout model, on the holdout (Faza 3).
+
+    Degrades to ``None`` rather than failing the training run: a holdout too
+    short to pair session-by-session is a reason to omit the table, not a
+    reason to throw away a completed walk-forward. The report renders `null` as
+    "not measured", which is a different statement from "no feature mattered".
+    """
+    if p.importance_repeats <= 0:
+        return None
+    mask = _mask(ds.dates, set(holdout))
+    try:
+        return permutation_importance(
+            model,
+            ds.x[mask],
+            ds.y[mask],
+            [d for d, keep in zip(ds.dates, mask, strict=True) if keep],
+            ds.next_returns[mask],
+            ds.feature_names,
+            n_repeats=p.importance_repeats,
+        )
+    except ValueError as exc:
+        logger.warning("Feature importance not measured", reason=str(exc))
+        return None
+
+
+def run_importance_study(
+    ds: Dataset,
+    params: TrainingParams | None = None,
+    n_repeats: int = 5,
+    seed: int = 11,
+) -> dict[str, Any]:
+    """Importance with a planted noise column — the empirical floor of the table.
+
+    The training run measures the PRODUCTION model, so its feature contract is
+    the production contract and nothing may be added to it. This study fits its
+    own model through the identical path with one extra column that is a valid
+    cross-sectional rank and predicts nothing by construction, and reports what
+    that column scores. That number is the honest bar: the Šidák correction
+    assumes the tests are independent and the model is indifferent to a useless
+    input, and a model that latched onto the noise says so here instead of in a
+    footnote.
+
+    Diagnostic only — the fitted model carries a column serving cannot produce,
+    so it is neither registered nor registrable.
+    """
+    p = params or TrainingParams()
+    work, train_dates, holdout = holdout_split(ds, p)
+    planted = replace(
+        ds,
+        x=np.column_stack([ds.x, noise_control_column(ds.dates, seed=seed)]),
+        feature_names=[*ds.feature_names, NOISE_FEATURE],
+    )
+    model = fit_on_dates(planted, train_dates, p)
+    if model is None:
+        raise ValueError("window before the holdout is untrainable (too small or single-class)")
+    mask = _mask(planted.dates, set(holdout))
+    report = permutation_importance(
+        model,
+        planted.x[mask],
+        planted.y[mask],
+        [d for d, keep in zip(planted.dates, mask, strict=True) if keep],
+        planted.next_returns[mask],
+        planted.feature_names,
+        n_repeats=n_repeats,
+        seed=seed,
+    )
+    logger.info(
+        "Importance study finished",
+        holdout_sessions=len(holdout),
+        train_sessions=len(train_dates),
+        features=len(planted.feature_names),
+    )
+    return {
+        "sessions": len(work) + len(holdout),
+        "train_sessions": len(train_dates),
+        "holdout_sessions": len(holdout),
+        "model_kind": model.diagnostics.get("model_kind", "mlp"),
+        # Said out loud because the table below contains a column that does not
+        # exist in the model the system serves.
+        "noise_control_planted": True,
+        "registrable": False,
+        "importance": report.as_dict(),
+    }
+
+
 def run_training(ds: Dataset, params: TrainingParams | None = None) -> tuple[Predictor, GateReport]:
     """Walk-forward evaluation → gate report → final model.
 
@@ -344,8 +475,7 @@ def run_training(ds: Dataset, params: TrainingParams | None = None) -> tuple[Pre
             f"{p.holdout_size + p.train_size + p.test_size} for holdout + one fold"
         )
 
-    work = sessions[: -p.holdout_size]
-    holdout = sessions[-p.holdout_size :]
+    work, holdout_train, holdout = holdout_split(ds, p)
 
     folds = purged_walk_forward(work, p.train_size, p.test_size, p.horizon, p.embargo)
     fold_reports: list[FoldReport] = []
@@ -367,8 +497,6 @@ def run_training(ds: Dataset, params: TrainingParams | None = None) -> tuple[Pre
         )
 
     # Holdout model: trained on everything BEFORE the holdout, purged at the seam.
-    gap = p.horizon + p.embargo
-    holdout_train = work[:-gap] if gap else work
     holdout_model = fit_on_dates(ds, holdout_train, p)
     if holdout_model is None:
         raise ValueError("holdout window is untrainable (too small or single-class)")
@@ -391,6 +519,7 @@ def run_training(ds: Dataset, params: TrainingParams | None = None) -> tuple[Pre
         passed=outcome.passed,
         reasons=reasons,
         outcome=outcome,
+        importance=_holdout_importance(ds, holdout_model, holdout, p),
     )
     logger.info(
         "Training gate evaluated",

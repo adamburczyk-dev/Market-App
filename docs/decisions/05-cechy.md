@@ -159,3 +159,62 @@ połowę listy.
 klasyfikowany ruchem względem POPRZEDNIEJ ceny typowej), a w pętli %D indeks `end - 14` schodził
 poniżej zera — w Pythonie to wycinek liczony od końca, więc „za mało historii" zamieniało się
 w pusty wycinek i `ValueError` trzy funkcje dalej. Oba przypinają teraz testy.
+
+## Ważność cech: co model UŻYWA, a nie co koreluje (Faza 3)
+
+`per_feature_ic` (instrument etapu E2) mierzy dowód **marginalny**: czy dana kolumna przewiduje
+sama z siebie. Nie odpowiada na pytanie, które podejmuje decyzje o kontrakcie cech — czy model
+**potrzebuje** tej kolumny, mając pozostałe czternaście. Te dwie rzeczy rozjeżdżają się rutynowo:
+cecha o silnym IC bywa redundantna, a cecha bez własnego IC może nieść interakcję, na której model
+faktycznie handluje. `core/importance.py` mierzy to drugie — permutacyjnie.
+
+Cztery decyzje robią różnicę między liczbą a jej obrazkiem:
+
+**Mierzone POZA próbą, na holdoucie.** Permutacja kolumny w oknie, na którym model był FITOWANY,
+raportuje to, co zapamiętał. Holdout — ostatnie `holdout_size` sesji, nietknięte przy selekcji — to
+jedyne okno, gdzie spadek znaczy „tyle tej cechy niesie zdolność predykcyjną".
+
+**Permutacja WEWNĄTRZ sesji** — lekcja z sondy pojemności ([06](06-walidacja-i-bramka.md)) w innym
+pytaniu. Globalne tasowanie kolumny przenosi wartości MIĘDZY datami, więc niszczy dwie rzeczy naraz:
+które NAZWISKO miało którą wartość ORAZ rozkład brzegowy cechy w danej sesji — a cechy są trwałe,
+więc ten rozkład dryfuje z reżimem. Miarą jest przekrojowe IC per sesja, więc sama zmiana rozkładu
+zarejestrowałaby się jako ważność nawet dla kolumny, której model nie czyta.
+**Zmierzone, nie założone**: cecha STAŁA w obrębie sesji (kształt każdego one-hota `macro_*`) dostaje
+przy permutacji wewnątrzsesyjnej dokładnie `ΔIC 0.00000, t 0.00`, a przy tasowaniu globalnym
+**`ΔIC +0.236, t +3.55`** — połowa ważności prawdziwego sygnału na tym samym panelu, wymyślona
+w całości. Rodzina `macro_*` weszłaby do raportu jako istotna.
+
+**Punktowane spadkiem IC, PAROWANYM sesja po sesji.** IC to wielkość, na której zbudowane są rangowe
+warunki bramki, więc ważność jest w tej samej jednostce co decyzja, którą informuje. Ważniejsze jest
+parowanie: nieparowane porównanie dwóch średnich po 126 sesjach ginie w zmienności samego IC,
+a różnica per sesja tę zmienność usuwa, bo oba człony widziały ten sam dzień. Błąd standardowy
+różnicy parowanej zamienia spadek w dowód, a **próg skorygowany Šidákiem na liczbę testowanych cech**
+nie pozwala odczytać największego z piętnastu losowań szumu jako ulubionego wejścia modelu.
+
+**Raportowane także dla RODZIN.** Permutacja dzieli zasługę między skorelowane cechy: dwa
+bliskie duplikaty wyglądają każdy na nieważny, bo model odzyskuje sygnał przez bliźniaka. To nie jest
+wada do zaklinania, tylko powód, żeby permutować całą rodzinę naraz — a rodzina jest jednostką,
+w której ten projekt podejmuje decyzje. Każdy wiersz niesie dodatkowo najsilniejszą korelację z cechą
+**spoza** swojej grupy, więc zero obok bliźniaka 0.95 czyta się jako redundancja, a nie jako brak
+znaczenia.
+
+**Bieg na żywo pokazał dokładnie ten mechanizm.** Na uniwersum 20 nazw × 1047 sesji **żadna
+pojedyncza cecha nie przeszła progu** (najwyżej `amihud_20`, t +1.63), a **rodzina `liquidity`
+przeszła z t +4.18 i ΔIC +0.094** przy bazowym IC modelu 0.124 — czyli trzy czwarte całej mocy
+rankującej. Raport wyłącznie per-cecha orzekłby „model nie zależy od niczego".
+
+**Podłoga jest MIERZONA, nie założona.** Trasa `POST /models/feature-importance` fituje własny model
+z **posadzoną kolumną czystego szumu** (prawidłowa ranga przekrojowa, zero informacji z konstrukcji)
+i raportuje, ile ta kolumna zdobyła: na biegu na żywo `t = +0.16`. Korekta Šidáka zakłada
+niezależność testów i obojętność modelu na bezużyteczne wejście — model, który przyczepił się do
+szumu, mówi to tutaj, a nie w przypisie. Studium jest **wyłącznie diagnostyczne**: dopasowany model
+ma kolumnę, której serwowanie nie umie wytworzyć, więc nic z niego nie jest rejestrowane ani
+promowalne. Bieg treningowy mierzy model PRODUKCYJNY i posadzonej kolumny nie ma (`noise_control:
+null`).
+
+**Defekt złapany testem, nie przeglądem.** Model, który ignoruje kolumnę **dokładnie** (drzewo, które
+nigdy na niej nie dzieli; waga zero), daje identyczne predykcje przed i po permutacji — a powtórzenia
+są sumowane i dzielone, co w binarnym floacie nie jest identycznością. Zmierzony spadek wyszedł
+`1.7e-17` przy błędzie standardowym `5.2e-18`, więc kolumna, której model dowodnie nie czyta,
+zdobyła **t = +3.23** i została ogłoszona jako przekraczająca próg istotności. Pył podzielony przez
+pył to iloraz, nie dowód — `IC_DROP_EPSILON` zeruje spadki poniżej 1e-9.

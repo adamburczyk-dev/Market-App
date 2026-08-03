@@ -197,7 +197,7 @@ def _normal_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
-def _normal_ppf(p: float) -> float:
+def normal_ppf(p: float) -> float:
     """Inverse normal CDF (Acklam's rational approximation, ~1e-9 accurate)."""
     p = min(max(p, 1e-12), 1 - 1e-12)
     a = [
@@ -263,8 +263,8 @@ def expected_max_sharpe(n_trials: int, sharpe_std: float = 1.0) -> float:
     if n <= 1:
         return 0.0
     return sharpe_std * (
-        (1 - EULER_MASCHERONI) * _normal_ppf(1 - 1.0 / n)
-        + EULER_MASCHERONI * _normal_ppf(1 - 1.0 / (n * math.e))
+        (1 - EULER_MASCHERONI) * normal_ppf(1 - 1.0 / n)
+        + EULER_MASCHERONI * normal_ppf(1 - 1.0 / (n * math.e))
     )
 
 
@@ -412,17 +412,40 @@ def _annualized_sharpe(returns: np.ndarray) -> float:
     return float(returns.mean() / std * math.sqrt(TRADING_DAYS)) if std > 0 else 0.0
 
 
-def _spearman(a: np.ndarray, b: np.ndarray) -> float:
+MIN_RANKABLE_ROWS = 3  # below this a cross-section has no ranking to speak of
+
+
+def spearman(a: np.ndarray, b: np.ndarray) -> float:
     """Rank correlation without a scipy round-trip (ties averaged)."""
-    if len(a) < 3:
+    if len(a) < MIN_RANKABLE_ROWS:
         return 0.0
-    ra, rb = _average_ranks(a), _average_ranks(b)
+    ra, rb = average_ranks(a), average_ranks(b)
     if ra.std() == 0 or rb.std() == 0:
         return 0.0
     return float(np.corrcoef(ra, rb)[0, 1])
 
 
-def _average_ranks(values: np.ndarray) -> np.ndarray:
+def session_groups(dates: list[datetime]) -> list[list[int]]:
+    """Row indices per session, in DATE order, skipping unrankable cross-sections.
+
+    One definition, because two callers scoring the same window have to line up
+    session-for-session: permutation importance subtracts a permuted IC series
+    from the unpermuted one, and a pairing that silently used a different
+    session order would subtract session 4's IC from session 9's and call the
+    difference importance.
+
+    Date order (rather than order of first appearance) is also what the
+    Newey-West correction in ``per_feature_ic`` assumes — it reads
+    autocovariance at lag k, which is a statement about time.
+    """
+    by_date: dict[datetime, list[int]] = defaultdict(list)
+    for i, d in enumerate(dates):
+        by_date[d].append(i)
+    return [by_date[d] for d in sorted(by_date) if len(by_date[d]) >= MIN_RANKABLE_ROWS]
+
+
+def average_ranks(values: np.ndarray) -> np.ndarray:
+    """Ranks with ties averaged — the building block of every Spearman here."""
     order = np.argsort(values, kind="mergesort")
     ranks = np.empty(len(values), dtype=float)
     sorted_values = values[order]
@@ -560,7 +583,7 @@ def relative_metrics(
         rows = by_date[session]
         p = probs[rows]
         r = next_returns[rows]
-        ics.append(_spearman(p, r))
+        ics.append(spearman(p, r))
 
         returns_by_symbol = {symbols[i]: float(next_returns[i]) for i in rows}
         held, turnover, cost = long_book[idx]
@@ -609,18 +632,27 @@ def relative_metrics(
     )
 
 
+def session_ic_series(
+    scores: np.ndarray,
+    next_returns: np.ndarray,
+    groups: list[list[int]],
+) -> np.ndarray:
+    """Per-session rank IC of a scoring, over pre-computed session groups.
+
+    Taking the groups as an argument rather than re-deriving them is what lets
+    a caller subtract two IC series element-wise and know the elements describe
+    the same sessions.
+    """
+    return np.array([spearman(scores[rows], next_returns[rows]) for rows in groups], dtype=float)
+
+
 def _feature_ic_series(
     dates: list[datetime],
     feature_column: np.ndarray,
     next_returns: np.ndarray,
 ) -> list[float]:
-    by_date: dict[datetime, list[int]] = defaultdict(list)
-    for i, d in enumerate(dates):
-        by_date[d].append(i)
     return [
-        _spearman(feature_column[rows], next_returns[rows])
-        for rows in by_date.values()
-        if len(rows) >= 3
+        float(ic) for ic in session_ic_series(feature_column, next_returns, session_groups(dates))
     ]
 
 

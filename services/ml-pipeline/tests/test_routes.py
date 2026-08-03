@@ -156,6 +156,37 @@ async def test_cost_study_defaults_the_book_size(wired: tuple[AsyncClient, MLPip
 
 
 @pytest.mark.asyncio
+async def test_feature_importance_needs_a_market_client(
+    wired: tuple[AsyncClient, MLPipelineService],
+):
+    client, _ = wired
+    resp = await client.post(
+        "/api/v1/ml-pipeline/models/feature-importance",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500},
+    )
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_feature_importance_refuses_zero_permutations(
+    wired: tuple[AsyncClient, MLPipelineService],
+):
+    """Zero repeats is not a cheaper study, it is no measurement at all — and a
+    report shaped like the real one with nothing behind it is worse than a 422."""
+    client, _ = wired
+    ok = await client.post(
+        "/api/v1/ml-pipeline/models/feature-importance",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500},
+    )
+    assert ok.status_code == 503  # unwired, but the body validated
+    bad = await client.post(
+        "/api/v1/ml-pipeline/models/feature-importance",
+        json={"symbols": ["AAPL", "MSFT"], "interval": "1d", "limit": 500, "n_repeats": 0},
+    )
+    assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_alpha_decay_needs_a_market_client(wired: tuple[AsyncClient, MLPipelineService]):
     client, _ = wired
     resp = await client.post(

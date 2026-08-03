@@ -29,7 +29,7 @@ from trading_common.prices import adjusted_ohlc
 from trading_common.ranking import cross_sectional_rank
 from trading_common.schemas import OHLCVBar
 
-from src.core.evaluation import _spearman
+from src.core.evaluation import spearman
 from src.core.labels import LabelParams, excess_barrier_label, triple_barrier_label
 
 logger = structlog.get_logger()
@@ -287,7 +287,7 @@ def _score_one_target(
         positives += int(y.sum())
         for name in ranked[0].features:
             column = np.array([r.features.get(name, 0.5) for r in ranked], dtype=float)
-            per_session_ic.setdefault(name, []).append(_spearman(column, y))
+            per_session_ic.setdefault(name, []).append(spearman(column, y))
 
     if not per_session_ic or n_samples == 0:
         return None
