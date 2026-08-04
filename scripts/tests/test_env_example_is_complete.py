@@ -114,3 +114,27 @@ def test_bootstrap_forces_utf8_before_it_prints_anything():
     first_call = body.index("_force_utf8_console()")
     first_print = body.index("print(") if "print(" in body else len(body)
     assert first_call < first_print, "the console is reconfigured after the first print"
+
+
+def test_a_symbol_file_may_document_itself():
+    """`@file` reads a hand-written list, and this one has to explain itself.
+
+    scripts/universe.txt deliberately contains delisted tickers so the panel is
+    not a survivor list; that needs a comment saying so. Without comment
+    handling the header became eight "symbols" and the backfill opened with
+    eight 404s.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "bootstrap_syms", REPO / "scripts" / "bootstrap-universe.py"
+    )
+    assert spec is not None and spec.loader is not None
+    boot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(boot)
+
+    listing = "# universe, delisted included on purpose\n#\nAAPL\nMSFT\n\n  # trailing note\nNVDA\n"
+    assert boot.split_symbols(listing) == ["AAPL", "MSFT", "NVDA"]
+    # The inline form keeps working — commas OR whitespace, unchanged.
+    assert boot.split_symbols("SEE,K,HES") == ["SEE", "K", "HES"]
+    assert boot.split_symbols("SEE K HES") == ["SEE", "K", "HES"]

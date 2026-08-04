@@ -162,8 +162,17 @@ def split_symbols(raw: str) -> list[str]:
 
     Quoting the value avoids it, but a separator that depends on remembering to
     quote is a trap rather than an interface. Both separators are accepted.
+
+    Lines starting with `#` are dropped, because `@file` reads a file people
+    write by hand and a universe list is exactly the kind of file that needs to
+    explain itself — ours documents why delisted tickers are in it on purpose.
+    Without this the header became eight "symbols" and the run opened with
+    eight 404s before reaching a real ticker.
     """
-    return [token.upper() for token in re.split(r"[,\s]+", raw.strip()) if token]
+    kept = [line for line in raw.splitlines() if not line.lstrip().startswith("#")]
+    return [
+        token.upper() for token in re.split(r"[,\s]+", " ".join(kept).strip()) if token
+    ]
 
 
 def default_train_limit(years: float) -> int:

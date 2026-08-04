@@ -43,6 +43,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await conn.execute(
                     text("ALTER TABLE ohlcv ADD COLUMN IF NOT EXISTS adj_close DOUBLE PRECISION")
                 )
+                # Same trap one level up: `create_all` will not fix the KEY of a
+                # table that already exists. A database created before the
+                # primary key became (symbol, interval, ts) still carries the
+                # old (id, ts), and the bulk upsert needs a unique constraint
+                # matching its ON CONFLICT target — without one every write
+                # fails with InvalidColumnReferenceError, which reads like a
+                # code bug and is a schema age.
+                #
+                # A hypertable's unique key must include the partition column,
+                # which ts is. Idempotent via the catalogue check: ADD
+                # CONSTRAINT has no IF NOT EXISTS.
+                await conn.execute(
+                    text("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conrelid = 'ohlcv'::regclass
+                              AND conname = 'uq_ohlcv_symbol_interval_ts'
+                        ) THEN
+                            ALTER TABLE ohlcv
+                                ADD CONSTRAINT uq_ohlcv_symbol_interval_ts
+                                UNIQUE (symbol, interval, ts);
+                        END IF;
+                    END $$;
+                    """)
+                )
     except Exception as exc:  # noqa: BLE001 - keep the app up for health probes
         logger.error("Database init failed", error=str(exc))
     repository = OHLCVRepository(sessionmaker)
