@@ -1372,7 +1372,27 @@ def run_training(
     return 0
 
 
+def _force_utf8_console() -> None:
+    """Windows consoles default to a legacy codepage, and this script prints maths.
+
+    On a Polish install stdout is cp1250, which cannot encode the arrow in
+    "2005 -> 2026" or the sigma in the barrier report — so the run died on its
+    FIRST print, before touching a single symbol, with a UnicodeEncodeError
+    that says nothing about backfilling. The repo already carries the same
+    lesson for PowerShell (scripts/check-ps1-ascii.py); this is the Python half.
+
+    `errors="replace"` rather than strict: a mangled character in a progress
+    line is a cosmetic problem, and killing a multi-hour backfill over one is
+    not a trade anyone would make deliberately.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> int:
+    _force_utf8_console()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--symbols",

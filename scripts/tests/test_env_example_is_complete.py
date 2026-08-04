@@ -87,3 +87,30 @@ def test_the_two_schedulers_are_documented_with_their_symbol_lists():
             f"{flag} and {symbols} must be documented together — the flag alone "
             "describes a scheduler that runs over nothing"
         )
+
+
+def test_bootstrap_forces_utf8_before_it_prints_anything():
+    """A legacy console codepage killed the run on its FIRST print.
+
+    The script prints "->" arrows and a sigma; on a Polish Windows install
+    stdout is cp1250, which encodes neither. The failure was a
+    UnicodeEncodeError raised before a single symbol was fetched, with a
+    traceback that says nothing about backfilling. The repo already carries
+    this lesson for PowerShell (check-ps1-ascii.py) — this is the Python half.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "bootstrap_enc", REPO / "scripts" / "bootstrap-universe.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert hasattr(module, "_force_utf8_console")
+
+    source = (REPO / "scripts" / "bootstrap-universe.py").read_text(encoding="utf-8")
+    body = source.split("def main() -> int:", 1)[1]
+    first_call = body.index("_force_utf8_console()")
+    first_print = body.index("print(") if "print(" in body else len(body)
+    assert first_call < first_print, "the console is reconfigured after the first print"
