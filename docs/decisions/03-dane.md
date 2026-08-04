@@ -49,7 +49,9 @@ najwyżej dwa lata na spółkę, a złączenie po 20 latach dawało neutralne 0.
 **Dowód:** `dataset.fundamental_coverage` — liczba, która odróżnia „cecha słaba" od „cechy, której
 tam nie było".
 **Ograniczenie:** EDGAR czytamy tylko rocznie (10-K), więc 20 lat to ~20 obserwacji na spółkę.
-Rodzina rankuje przekrój wolno i z definicji nie może nic znaczyć przy horyzoncie 10 sesji.
+Rodzina rankuje przekrój wolno i z definicji nie może nic znaczyć przy horyzoncie 10 sesji —
+warunek, który D2 rozstrzyga na jej korzyść: przy horyzoncie kwartalnym (63) roczne
+sprawozdanie ma szansę cokolwiek zrankować. Nadal wchodzi dopiero po pomiarze IC.
 
 ## Uniwersum point-in-time rekonstruowane po obrocie (D1)
 

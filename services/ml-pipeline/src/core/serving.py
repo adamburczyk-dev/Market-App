@@ -40,6 +40,7 @@ class ServingEngine:
         sell_threshold: float = 0.45,
         serve_interval: str = "1d",
         horizon_days: int = LABEL_HORIZON,
+        label_kind: str = "absolute",
         max_missing_fraction: float = 0.5,
         inference_log: InferenceLog | None = None,
     ) -> None:
@@ -51,6 +52,7 @@ class ServingEngine:
         self._sell = sell_threshold
         self._interval = serve_interval
         self._horizon_days = horizon_days
+        self._label_kind = label_kind
         self._max_missing = max_missing_fraction
         self._log = inference_log
         self._model: TrainedModel | None = None
@@ -167,6 +169,10 @@ class ServingEngine:
             confidence=min(1.0, 2.0 * abs(probability_up - 0.5)),
             probability_up=probability_up,
             horizon_days=self._horizon_days,
+            # What the probability is ABOUT. Without it a consumer reading 0.6
+            # cannot tell "likely to rise" from "likely to beat the universe",
+            # and in a falling market those are opposite claims.
+            label_kind=self._label_kind,
         )
         await self._publisher.publish(event)
         logger.info(

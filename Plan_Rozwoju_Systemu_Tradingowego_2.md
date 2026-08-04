@@ -2004,7 +2004,7 @@ pojemności, studia model-free (cel, sektory, koszty, zanik alfy), monitoring dr
 | Pozycja | Status | Uwaga |
 |---|---|---|
 | Sizing, limity, wyłącznik, bramka ryzyka na zdarzeniach | ✅ | + zatrzask wyłącznika, rejestr zleceń, limity sektorowe |
-| VaR, macierz korelacji | ❌ | nie liczone |
+| VaR, macierz korelacji | ✅ | **wiersz nieaktualny do 2026-08-04**: `trading_common.risk_metrics` liczy VaR historyczny, CVaR, serię obsunięcia i macierz korelacji od 2026-08-02, a dashboard je renderuje |
 | **Dashboard: 6 sekcji** | ✅ | zamknięte 2026-08-02. Wszystkie sześć: kapitał+P&L, VaR/obsunięcie/korelacje, atrybucja per strategia, backtest na żądanie, ML, zdrowie z opóźnieniami. Wykresy to inline SVG (brak CDN i bundlera w kontenerze). **Warunkiem był szereg czasowy, którego żaden serwis nie trzymał** — execution zapisuje teraz kapitał per sesja. Feature importance świadomie bez wykresu: nie jest zmierzony (pozycja audytu luk) |
 
 ## Faza 5 — produkcja

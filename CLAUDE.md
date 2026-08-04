@@ -34,17 +34,20 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback) 
 monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All 13 services (9 core +
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
-**Verified ground truth** (test counts measured 2026-08-03 on Python 3.12, not from memory —
-**1418 testów zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared):
+**Verified ground truth** (test counts measured 2026-08-04, not from memory — **1438 testów
+zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared. Uwaga: pomiar wykonany
+na **Pythonie 3.14** na maszynie użytkownika — to jedyny zainstalowany tam interpreter, a
+`requires-python = ">=3.12"` go dopuszcza; wszystkie zależności łącznie z `torch` 2.13 mają koła
+dla 3.14. Wcześniejsze liczniki mierzono na 3.12 w piaskownicy):
 
 | Komponent | Port | Rola | Testy |
 |---|---|---|---|
-| `shared/trading-common` | — | Kontrakty, wspólne obliczenia, **registry strategii** i **statystyki ryzyka** — wszystko, co musi być identyczne po obu stronach granicy serwisów | 325 |
+| `shared/trading-common` | — | Kontrakty, wspólne obliczenia, **registry strategii** i **statystyki ryzyka** — wszystko, co musi być identyczne po obu stronach granicy serwisów | 328 |
 | `market-data` | 8001 | OHLCV: pobranie (Yahoo/Alpha Vantage), walidacja, TimescaleDB, cache, harmonogram przyrostowy | 71 |
 | `feature-engine` | 8002 | Wskaźniki Tier-1 + wzbogacenie Tier-2, rangi przekrojowe (`/ranked`) | 38 |
 | `strategy` | 8003 | **Każda aktywna reguła** z registry → `RiskEnvelope` → `CostAwareFilter` → własny sygnał; monitor degradacji per strategia | 60 |
 | `backtest` | 8004 | Ocena **reguły z registry** na historii symbolu + walk-forward, tygodniowa rewalidacja, krzywa kapitału | 58 |
-| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania, **ważność cech** | 340 |
+| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania, **ważność cech** | 357 |
 | `risk-mgmt` | 8006 | Sizing adaptacyjny, limity reżimowe i sektorowe, wyłącznik z zatrzaskiem, rejestr zleceń | 133 |
 | `execution` | 8007 | Paper broker, wyjścia ochronne SL/TP, likwidacja na BLACK, feedback portfela, **historia kapitału** | 60 |
 | `notification` | 8008 | 5 strumieni → alerty (log/Slack/Telegram/e-mail) | 33 |
@@ -121,6 +124,15 @@ przez granicę serwisów.
     zablokowany w piaskownicy, więc kod jest zweryfikowany na realnym PostgreSQL-u, ale panel jest
     pusty do czasu backfillu. Do tego czasu kolumny `macro_*` nadal wypadają jako stałe, co serwis
     **mówi wprost** w logu i w `selection.macro.days_with_regime`. D8 odblokowana.
+  - **ML3-1** `InferenceLog` to `deque(maxlen=...)`, więc eksmisja jest po WIEKU, nie po tym, czy
+    głos został rozstrzygnięty. Limit jest teraz wyprowadzony (uniwersum × horyzont × 2), co
+    zamyka realny przypadek, ale przy uniwersum większym niż `PLANNED_UNIVERSE` albo przy
+    monitorze stojącym dłużej niż jeden horyzont nierozstrzygnięty BUY nadal może wypaść po cichu.
+    Uczciwym rozwiązaniem jest eksmisja świadoma rozstrzygnięcia, czyli coś innego niż goły `maxlen`.
+  - **ML3-2** stan `InferenceLog` jest wyłącznie w pamięci, więc restart kontenera kasuje wszystkie
+    oczekujące głosy. Przy horyzoncie 10 sesji tracono ~2 tygodnie obserwacji; przy 63 to kwartał
+    pętli uczącej znikający przy każdym deployu. Trwałość (Redis, jak `PortfolioState`) staje się
+    warunkiem sensowności ML-3 dopiero po przestawieniu horyzontu — dlatego wpis, a nie zmiana.
   - **P2-5** (z zarchiwizowanego planu predykcji, opcjonalne) fractional differentiation — do
     rozważenia dopiero, gdy cechy stacjonarne się wyczerpią.
   - **D7** the backtest engine still rebalances daily while ML evaluation uses `1/h` overlapping
@@ -677,7 +689,82 @@ danych (414 symboli × 20 lat) i seria defektów operacyjnych znalezionych dopie
   trening 200 z wypełnionym `gate.importance`, wersja 1 w MLflow, indeks `/runs` z obiema operacjami,
   a `measured_at` w dashboardzie zgadza się co do znacznika z `completed_at` biegu treningowego.
 
-**Next (2026-08-03): tor predykcji zablokowany na pomiarze — pracujemy poza nim.**
+- 2026-08-04 — **D2: wdrożona CAŁA ścieżka horyzontu 63, bez przestawienia domyślnej — i cztery
+  rzeczy, które przy h=10 były nieodróżnialne od poprawnego działania.** `docs/decisions/04` mówił
+  „rozstrzygnięty pomiarem, czeka na wdrożenie", więc wdrożenie miało być przestawieniem flagi.
+  Nie było. **(1) Horyzont był zadeklarowany CZTERY razy** (`LabelParams.horizon`,
+  `TrainingParams.horizon`, `Settings.LABEL_HORIZON_DAYS`, `MetaParams.horizon`) plus cztery
+  cieniujące domyślne argumenty, i **nic ich nie porównywało**: `TrainRequest` nie wystawia
+  horyzontu, więc `TrainingParams` brał własną wartość, a zbiór danych etykietową. Groźny kierunek
+  jest **cichy** — horyzont etykiety WIĘKSZY niż purge'u wpuszcza okno etykiety do każdego bloku
+  testowego i **poprawia** metryki; nic nie rzuca. Ta sama klasa co `MAX_OHLCV_LIMIT` zadeklarowany
+  dwa razy. Teraz jedna stała `LABEL_HORIZON`, przypięta testem zgodności.
+  **(2) `excess=True` było martwym kodem**: `build_dataset` i `OutcomeResolver` wołały
+  `triple_barrier_label` **bezwarunkowo**, a flagę czytał wyłącznie `target_study`. Etykieta
+  nadwyżkowa istniała jako przyrząd pomiarowy, nie jako ścieżka — samo przestawienie flagi nie
+  zmieniłoby w treningu **nic**. **(3) Pomiar, który rozstrzygnął D2, mieszał dwa rodzaje etykiet:**
+  dawny `_market_path` brał `max(lengths)`, zostawiał tylko serie pełnej długości i osłaniał każdą
+  etykietę warunkiem `len(market) == n` — przy niejednorodnych datach debiutu to benchmark
+  **ocalałych**, a każda krótsza spółka wypadała na etykietę **absolutną** wewnątrz kandydata
+  raportowanego jako nadwyżkowy. Nowy `core/market_path.py` kluczuje benchmark **datą sesji**
+  i liczy go z **mediany dziennych log-zwrotów** (indeks rebalansowany, uczciwy wobec przeżywalności).
+  **(4) Studium celu rankowało cechy BEZ filtru wykluczeń**, więc `mean |IC| 0.0274` policzono
+  z udziałem `close` i `sma_*` — `docs/decisions/04` odnotowywał to jako zastrzeżenie obok liczby,
+  którą to zastrzeżenie podważa. Filtr stosuje teraz tę samą regułę **dwóch** zbiorów co
+  `build_dataset`; pierwsza wersja wykluczała tylko `INADMISSIBLE` i **kontrola anty-szczęściowa nie
+  ugryzła** — wygrywał `donchian_low_20`, też poziom cenowy, tylko z `CANDIDATE_FEATURES`.
+  **Dwie ciche awarie ścieżki serwowania, obie zabójcze dla pętli ML-3.** `OUTCOME_DROP_AFTER_DAYS
+  = 42` to „3× horyzont w dniach" wpisane literałem: przy 63 sesjach (~91 dni kalendarzowych)
+  `too_old` strzela w dniu 43, gdy etykieta wciąż zwraca `None`, więc głos zostaje rozstrzygnięty
+  jako `label=None` **na zawsze** — `record_outcome` nigdy nie leci, waga adaptacyjna się nie uczy,
+  a ramię wydajnościowe driftu raportuje „not measured", co wygląda identycznie jak zimny start.
+  `INFERENCE_LOG_MAXLEN = 2000` na `deque`, który eksmituje **najstarsze** — czyli dokładnie głosy
+  mające dojrzeć; **to było zepsute już przy h=10** (414 nazw × 10 sesji = 4140 > 2000), a test
+  retencji pada przy obecnym horyzoncie, co jest na to dowodem. Oba wyprowadzone teraz wzorem.
+  **Znalezione przy okazji:** resolver liczył na cenach **surowych**, a `build_dataset` na
+  **skorygowanych** — split w oknie etykiety rozstrzygał barierę, której wytrenowana reguła by nie
+  dotknęła; rozjazd train/serve widoczny wyłącznie na zdarzeniach korporacyjnych. Do tego fetch
+  hoistowany: kilka oczekujących głosów na jednej nazwie pobierało to samo okno raz na głos.
+  **Kontrakt (contracts-first):** `MlSignalGeneratedEvent.label_kind` — `probability_up` 0.6 znaczy
+  „prawdopodobnie wzrośnie" pod etykietą absolutną i „prawdopodobnie pobije uniwersum" pod
+  nadwyżkową, a na spadającym rynku to **przeciwne twierdzenia o tej samej liczbie**. Default
+  `"absolute"` utrzymuje parsowalność starych wiadomości. **Lukę, że pole istnieje a nikt go nie
+  ustawia, znalazł bieg na żywo, nie typechecker** — default czynił to poprawnym.
+  **Świadomie NIE zrobione:** przestawienie `horizon` na 63 i `excess` na `True`. Szerokość barier
+  jest **własnością etykiety** i musi zostać zmierzona na realnym panelu; przy h=63 bariery są
+  2,51× szersze, ale ścieżka ma 6,3× więcej barów, żeby ich dotknąć.
+  Liczniki: shared 325 → 328 (+3), ml-pipeline 340 → 357 (+17) → **bateria 1438**; ruff + format +
+  mypy czyste, `check-dependencies` OK; signal-aggregator 97, backtest 58, dashboard 37 bez zmian.
+  **Kontrole anty-szczęściowe (wszystkie zweryfikowane przez cofnięcie):** przywrócenie
+  `TrainingParams.horizon` na literał wywala test zgodności i test szwu purge'u; wpisanie 42
+  z powrotem wywala test wyprowadzenia; przywrócenie bezwarunkowego `triple_barrier_label` wywala
+  test etykiety nadwyżkowej; przywrócenie obu limitów serwowania wywala 3 z 6 nowych testów;
+  usunięcie filtru studium wywala test celu ze zwycięzcą `sma_50`. **Bateria jest teraz
+  horyzonto-agnostyczna: 349 zielonych przy h=10 ORAZ 349 przy h=63** (zmierzone sondą, nie
+  założone — sonda zawęziła przewidywaną listę pęknięć z kilkunastu plików do **sześciu** testów).
+  **Zweryfikowane na żywo** na realnym `nats-server` (Docker) i realnym ml-pipeline na uvicornie,
+  z podmienionym wyłącznie fetcherem (panel 30 symboli × 700 sesji, **mieszane daty debiutu**):
+  `POST /models/target-study` → 200 w 139 s, `feature_scope: "model contract only"`, wszystkie 30
+  symboli z wierszami (późni debiutanci **nie** wypadają), a zwycięzcą jest **h=63 + nadwyżkowa**
+  z `pt_mult = 1.0` i `horizontal_share = 0.5957` — **wewnątrz pasma 40–70%**, przy porządku
+  63 ≻ 21 ≻ 10 i nadwyżkowa ≻ absolutna na każdym poziomie. Zwycięskie cechy to `price_to_sma50`
+  i `dist_52w_high`, czyli **bezwymiarowe**, nie poziomy. Potwierdzona też pułapka z planu: blok
+  `calibration` z najwyższego poziomu jest kalibrowany na **bieżącym** horyzoncie (`horizon: 10`),
+  więc szerokość zwycięzcy czyta się z `targets.candidates[]`. Kontrakt sprawdzony **po drucie**
+  przez realny JetStream: `label_kind: "excess"` i `horizon_days: 63` przechodzą round-trip,
+  a wiadomość bez tego pola parsuje się z `"absolute"`.
+
+**Next (2026-08-04): D2 wdrożona co do mechanizmu, czeka na JEDNĄ liczbę z realnego panelu.**
+
+Ścieżka horyzontu 63 jest zbudowana, przetestowana i zweryfikowana na żywo; **domyślne wartości
+wciąż to h=10, `excess=False`**. Do przestawienia brakuje skalibrowanego `pt_mult` przy h=63
+z **realnych** 414 symboli — czyli `targets.candidates[]` → wpis `horizon == 63 && excess == true`
+→ `pt_mult`, `horizontal_share`, `in_target_band`. ⚠️ **Nie z bloku `calibration`** — on jest
+kalibrowany na bieżącym horyzoncie i wyglądałby jak zielone światło. Panel syntetyczny dał 1.0
+w paśmie, ale to dowód na maszynerię, nie na liczbę. Razem z przestawieniem idą okna ewaluacji
+(`test_size` 63 → 189, `holdout_size` → 252, `val_size` → 126) — arytmetyka w `docs/decisions/06`.
+
+**Poprzedni „Next" (2026-08-03) — tor predykcji zablokowany na pomiarze — dalej obowiązuje poza D2:**
 
 Etapy **strategii + registry**, **dashboardu**, **historii makro (P2-4)**, **wskaźników** i **raportu
 feature importance** są zamknięte (wpisy z 2026-08-02 i 2026-08-03 na końcu logu). Kod toru predykcji

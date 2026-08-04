@@ -92,3 +92,31 @@ def test_the_purge_covers_the_label_window_that_build_dataset_actually_uses():
             f"purge seam {gap_sessions} does not cover a {label.horizon}-session label "
             f"plus a {train.embargo}-session embargo"
         )
+
+
+def test_the_published_event_names_the_label_it_was_trained_on():
+    """A contract field nobody populates is a field that lies by omission.
+
+    `label_kind` was added to MlSignalGeneratedEvent and then defaulted to
+    "absolute" everywhere — including after the label became excess, at which
+    point the event would have asserted the wrong referent rather than none.
+    Caught by a live run, not by the type checker: the default made it valid.
+    """
+    engine = ServingEngine.__init__
+    assert engine.__defaults__ is not None
+    assert "absolute" in engine.__defaults__
+
+    published: list[object] = []
+
+    class Recorder:
+        async def publish(self, event: object) -> None:
+            published.append(event)
+
+    served = ServingEngine(
+        Recorder(),  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,
+        label_kind="excess",
+    )
+    assert served._label_kind == "excess"

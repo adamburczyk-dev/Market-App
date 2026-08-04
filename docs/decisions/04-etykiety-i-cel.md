@@ -48,8 +48,48 @@ momentum 12-1 na horyzoncie kwartalnym.
 **Potwierdzenie z drugiej strony:** studium zaniku alfy pokazało, że IC wiarygodnych cech szczytuje
 średnio na **34 sesjach**, a dwie najsilniejsze (`amihud_20`, `dollar_volume_20`) rosną monotonicznie
 aż do 63. **Obecny horyzont 10 zamyka etykietę w środku ruchu.**
-**Zastrzeżenie:** zwycięzca opiera się na `close` — cesze **poziomu, wykluczonej z wejścia modelu** —
-więc akurat tej przewagi model nie zobaczy.
+**Zastrzeżenie — NAPRAWIONE 2026-08-03:** zwycięzca opierał się na `close`, czyli cesze poziomu
+wykluczonej z wejścia modelu. Przyczyną był defekt, nie interpretacja: `_score_one_target`
+iterował po **wszystkich** cechach, bez filtru wykluczeń, więc `mean |IC| 0.0274` policzono nad
+zbiorem kolumn **szerszym niż wejście modelu**. Studium stosuje teraz tę samą regułę dwóch zbiorów
+co `build_dataset` (`INADMISSIBLE` + `CANDIDATE`), a raport nazywa własny `feature_scope`.
+Kandydaci są mierzalni przez `include_candidates=True`, jak w regule E2.
+**Czego to nie zmieniło:** ranking. Na niezależnym panelu syntetycznym (30 symboli × 700 sesji,
+mieszane daty debiutu, realny serwis) po wykluczeniu poziomów **dalej wygrywa horyzont 63
+z etykietą nadwyżkową**, a porządek 63 ≻ 21 ≻ 10 i nadwyżkowa ≻ absolutna zachowuje się na każdym
+poziomie. Zwycięskie cechy to `price_to_sma50` i `dist_52w_high` — **bezwymiarowe**, nie poziomy.
+**Do potwierdzenia na realnych 414 symbolach** — panel syntetyczny pokazuje, że maszyneria mierzy
+to, co trzeba, a nie że liczba jest ta sama.
+
+### Wdrożenie (2026-08-03/04): co się okazało po drodze
+
+**Horyzont był zadeklarowany CZTERY razy** (`LabelParams.horizon`, `TrainingParams.horizon`,
+`Settings.LABEL_HORIZON_DAYS`, `MetaParams.horizon`) i nic ich nie porównywało — `TrainRequest`
+nie wystawia horyzontu, więc `TrainingParams` sięgał po własną wartość domyślną, a zbiór danych po
+etykietową. Groźny kierunek rozjazdu jest **cichy**: horyzont etykiety WIĘKSZY niż horyzont purge'u
+wpuszcza okno etykiety do każdego bloku testowego i **poprawia** metryki. Teraz jedna stała
+`LABEL_HORIZON`, przypięta testem zgodności.
+
+**Etykieta nadwyżkowa nie była ścieżką, tylko przyrządem.** `build_dataset` i `OutcomeResolver`
+wołały `triple_barrier_label` **bezwarunkowo**, więc `excess=True` nie zmieniało w treningu nic —
+wdrożenie D2 przez samo przestawienie flagi byłoby zmianą bez skutku.
+
+**Pomiar, który rozstrzygnął D2, mieszał dwa rodzaje etykiet.** Dawny `_market_path` brał
+`max(lengths)` i zostawiał tylko serie pełnej długości, a każdą etykietę osłaniał warunkiem
+`len(market) == n`. Przy niejednorodnych datach debiutu to benchmark **ocalałych**, a każda krótsza
+spółka wypadała na etykietę **absolutną** wewnątrz kandydata raportowanego jako nadwyżkowy.
+Nowy `core/market_path.py` kluczuje benchmark **datą sesji** i liczy go z **mediany dziennych
+log-zwrotów** (indeks rebalansowany, uczciwy wobec przeżywalności — spółka wnosi wkład tylko
+w dni, w których notowana).
+
+**Koszt decyzji, wprost:** przy h=63 `n_effective_samples` spada z ~1873 do **~294**, przy własnej
+regule modułu „poniżej ~50 obserwacji na cechę dane finansowe nie niosą wnioskowania" (×15 cech =
+750). To jest cena horyzontu kwartalnego i ma być widoczna **przed** biegiem, nie po nim.
+
+**Szerokość barier przy h=63:** na panelu syntetycznym `pt_mult = 1.0` daje `horizontal_share`
+**0.5957**, czyli wewnątrz pasma 40–70%. **Pułapka przy czytaniu raportu:** blok `calibration`
+z najwyższego poziomu jest kalibrowany na **bieżącym** horyzoncie (potwierdzone na żywo: `horizon:
+10`), więc szerokość zwycięzcy czyta się z `targets.candidates[]`, nie stamtąd.
 
 ## Etykieta nadwyżkowa — zbudowana, domyślnie wyłączona (P1-3)
 
@@ -60,6 +100,15 @@ nadwyżkowej i **przegrana** dla absolutnej. Przy książce ocenianej względem 
 **Dlaczego wyłączona:** włączy ją pomiar, nie preferencja.
 **Świadomy koszt:** skanowanie close-to-close, bo dla syntetycznej nogi rynkowej nie ma ścieżki
 śróddziennej — bariera dotknięta i odwrócona w ciągu sesji umyka.
+**Stan 2026-08-04:** ścieżka **zbudowana i przetestowana**, flaga wciąż `False`. Pomiar wskazał
+etykietę nadwyżkową, ale przestawienie domyślnej czeka na skalibrowane `pt_mult` przy h=63
+z **realnego** panelu — patrz „Wdrożenie" wyżej.
+**Co ZOSTAJE absolutne, świadomie:** `next_returns` (P&L książki — książka jest long-only na
+gotówce, a `relative_metrics` już odejmuje uniwersum, żeby dać `sharpe_active`; odjęcie benchmarku
+drugi raz po cichu zmieniłoby to, co czyta warunek ekonomiczny bramki) oraz `signed_return`
+w resolverze (to są pieniądze; spółka, która spadła 3% przy rynku −5%, nikomu nie zapłaciła 2%).
+`label`/`correct` liczone są **regułą treningową** — inaczej monitor driftu ocenia model względem
+pytania, którego mu nie zadano.
 
 ## Nakładanie etykiet obsługujemy purgingiem, nie odrzucaniem próbek
 

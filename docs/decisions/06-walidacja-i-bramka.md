@@ -104,7 +104,39 @@ pozycja trzymana jest h sesji.
 **Zmierzone:** obrót 80% → 8%, koszt 10.0%/rok → 1.0%/rok. **Uzasadnienie to zgodność horyzontów,
 NIE odzysk kosztów** — dryf kosztowy realnego biegu to 0.14 jedn. Sharpe'a, nie 0.6.
 **Otwarte (D7):** silnik backtestu nadal rebalansuje dziennie, więc backtest i ocena ML są
-nieporównywalne.
+nieporównywalne. **Po przejściu na h=63 rozjazd rośnie z 10 do 63 sesji, więc D7 robi się pilne** —
+Sharpe z backtestu przestaje być dowodem dla bramki w jakimkolwiek sensie.
+
+### Okna ewaluacji trzeba przeparametryzować RAZEM z horyzontem (2026-08-03)
+
+To jest ta „ponowna ocena transz", której domagał się wiersz D2, i wynik jest kontrintuicyjny.
+
+**Liczba foldów NIE spada.** Pętla w `core/splits.py` nie zawiera `gap`, więc przy 4725 sesjach
+i `train_size=756`, `test_size=63` wychodzi **61 foldów zarówno przy h=10, jak i przy h=63**.
+Kurczy się okno treningowe wewnątrz foldu (741 → 688 sesji, −7,2%) i okno dopasowania (673 → 557,
+−17%). Strażnik `gap >= train_size` (68 vs 756) nie ma prawa wystrzelić.
+
+**Realne uszkodzenie jest w transzach.** `test_size = 63` **równa się** nowemu horyzontowi, więc
+księga Jegadeesha-Titmana jest w rozgrzewce przez **100% każdego foldu**: udział stanu ustalonego
+spada z 85,7% (h=10) do **1,6%**. Każdy `sharpe`, `turnover` i `cost_drag` byłby wtedy stanem
+przejściowym, a stitchowana krzywa G5 — 61 zębami piły.
+
+| | h=10, `test_size` 63 | h=63, `test_size` **189** |
+|---|---|---|
+| foldy | 61 | **19** |
+| pokrycie OOS | 3843 sesji | 3591 sesji |
+| stan ustalony w foldzie | 85,7% | **67%** |
+| sesje dopasowania / fold | 673 | 562 |
+
+Proponowane: `test_size` 63 → **189** (3h), `holdout_size` 126 → **252**, `val_size` 63 → **126**
+(przy 63 walidacja to JEDNA niezależna obserwacja etykiety — dokładnie ten mechanizm, którego
+awaria dała zapadnięcie w biegu #3). G0 `min_recent_folds=2`, G3 `folds[-3:]` i G5 `n ≥ 8` dalej
+spełnione. **19 dopasowań zamiast 61 czyni trening ~3× tańszym**, co równoważy 5–6× wolniejsze
+`average_uniqueness` (O(rows × horizon) w czystym Pythonie).
+
+**Świadomie ODRZUCONE:** „naprawa" rozgrzewki przez wstępne zapełnienie wszystkich rękawów w t=0.
+Zmieniłoby to znaczenie konstrukcji i trzeba by je nanieść także na h=10, tracąc porównywalność
+z biegami #1–#3. Poszerzenie okna jest uczciwsze.
 
 ---
 
@@ -116,7 +148,7 @@ Jego niezamknięte decyzje żyją tutaj, żeby nie zniknęły razem z dokumentem
 | # | Decyzja | Status | Co ją odblokuje |
 |---|---|---|---|
 | **D1** | Źródło uniwersum point-in-time | rekomendacja przyjęta (rekonstrukcja po obrocie, `03-dane.md`), ale **lista kandydatów nadal jest listą ocalałych** | dostawca składu indeksu albo dane spółek wycofanych; `survivorship_report` mierzy, ile brakuje |
-| **D2** | Horyzont 10 / 21 / 63 | **rozstrzygnięty pomiarem na 63** (`04-etykiety-i-cel.md`), niewdrożony | zmiana `LabelParams.horizon` + ponowna ocena transz i rebalansu |
+| **D2** | Horyzont 10 / 21 / 63 | **rozstrzygnięty pomiarem na 63** (`04-etykiety-i-cel.md`). **Ścieżka wdrożona 2026-08-03/04**: jedna stała `LABEL_HORIZON`, zbudowana ścieżka etykiety nadwyżkowej, naprawiony benchmark, domknięte limity serwowania. **Wartość domyślna wciąż 10** | skalibrowane `pt_mult` przy h=63 z **realnego** panelu (`targets.candidates[]`, NIE blok `calibration`) + przeparametryzowanie okien pod transze — patrz niżej |
 | **D3** | Makro liczone dwa razy (nastawienie w agregatorze + limity w risk-mgmt) | **otwarta** — patrz `07-agregacja-i-decyzja.md` | decyzja człowieka; rekomendacja: limity zostają, nastawienie znika |
 | **D5** | Filtr RSI jako osobna reguła czy doklejka do momentum | **zamknięta 2026-08-02: osobna reguła** (`rsi_bollinger_reversion`). Są to przeciwne zakłady — momentum kupuje szczyt przekroju, rewersja kupuje wyprzedaną nazwę — więc sklejenie ich uśredniłoby dokładnie tę niezgodę, którą agregator ma ważyć. Zmierzalne: reguły są teraz osobnymi źródłami wag | — |
 | **D7** | Backtest na nakładających się transzach | **otwarta** — silnik nadal rebalansuje dziennie, więc backtest i ocena ML mierzą różne obiekty | przepisanie silnika na przekrojowy z transzami `1/h` |

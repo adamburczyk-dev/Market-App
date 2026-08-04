@@ -13,6 +13,7 @@ from src.core.aggregator_client import HttpAggregatorClient
 from src.core.feature_client import HttpFeatureClient
 from src.core.fundamentals_client import HttpFundamentalsClient
 from src.core.inference_log import InferenceLog
+from src.core.labels import LabelParams
 from src.core.macro_client import HttpMacroClient
 from src.core.market_data_client import HttpMarketDataClient
 from src.core.model_store import MlflowModelStore
@@ -74,6 +75,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         sell_threshold=settings.SELL_PROBABILITY,
         serve_interval=settings.SERVE_INTERVAL,
         horizon_days=settings.LABEL_HORIZON_DAYS,
+        # Read off the label definition, not configured separately — the two
+        # disagreeing is the same class of defect as a stale horizon.
+        label_kind="excess" if LabelParams().excess else "absolute",
         inference_log=inference_log,
     )
     if serving.reload() is None:

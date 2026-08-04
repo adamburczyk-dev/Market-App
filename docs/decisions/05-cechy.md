@@ -83,7 +83,8 @@ wyrazić.
 | `fund_book_to_market`, `fund_earnings_yield` | Fama–French |
 
 **Ograniczenie:** EDGAR rocznie (10-K) → ~20 obserwacji na spółkę przez 20 lat. Rodzina rankuje
-przekrój wolno; przy horyzoncie 10 sesji nie może nic znaczyć, przy 63 może.
+przekrój wolno; przy horyzoncie 10 sesji nie może nic znaczyć, przy 63 może — a D2 wskazał
+63, więc warunek rozstrzyga się na korzyść tej rodziny (pomiar IC wciąż obowiązuje).
 **Status: zbudowana, NIE w modelu** — wchodzi, gdy tabela IC per cecha to potwierdzi.
 
 ## Blok klasycznej analizy technicznej — dla REGUŁ, nie dla modelu
