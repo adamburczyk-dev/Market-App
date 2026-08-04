@@ -519,4 +519,20 @@ Opcjonalne, włączające funkcje (brak klucza = funkcja wyłączona, serwis dzi
 `ALPHA_VANTAGE_API_KEY` (zapasowe źródło OHLCV) · `FRED_API_KEY` (makro) · `SEC_USER_AGENT` (EDGAR) ·
 `SLACK_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `SMTP_HOST`+`EMAIL_FROM`+`EMAIL_TO` (kanały alertów).
 
-Pełny szablon: [`.env.example`](.env.example).
+**Bez tych dwóch stack wstaje „zdrowy" i nie robi NIC:**
+
+```env
+FETCH_SYMBOLS=AAPL,MSFT,...      # market-data: dzienne pobranie przyrostowe
+REFRESH_SYMBOLS=AAPL,MSFT,...    # fundamental-data: tygodniowe odświeżenie panelu
+```
+
+Oba harmonogramy są **domyślnie włączone**, ale ich listy symboli są puste, więc zadanie cykliczne
+startuje i nie ma czego pobrać. Serwisy mówią to w logu przy starcie (`Scheduled pull idle — set
+FETCH_SYMBOLS to enable it`) i to jest całe ostrzeżenie, jakie dostaniesz. Cały łańcuch zdarzeń jest
+zakotwiczony w `market_data.updated`, więc bez `FETCH_SYMBOLS` system nie przepracuje samodzielnie
+ani jednego dnia — a reguła „30 dni papieru z dodatnim Sharpe'em przed realnym kapitałem" nie ma jak
+zacząć się naliczać.
+
+Pełny szablon: [`.env.example`](.env.example). Jego kompletność względem compose'a jest przypięta
+testem (`scripts/tests/test_env_example_is_complete.py`) — w obie strony, bo zmienna udokumentowana,
+której nikt nie czyta, jest równie myląca jak nieudokumentowana.

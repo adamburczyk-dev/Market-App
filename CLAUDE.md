@@ -34,7 +34,7 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback) 
 monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All 13 services (9 core +
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
-**Verified ground truth** (test counts measured 2026-08-04, not from memory — **1438 testów
+**Verified ground truth** (test counts measured 2026-08-04, not from memory — **1441 testów
 zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared. Uwaga: pomiar wykonany
 na **Pythonie 3.14** na maszynie użytkownika — to jedyny zainstalowany tam interpreter, a
 `requires-python = ">=3.12"` go dopuszcza; wszystkie zależności łącznie z `torch` 2.13 mają koła
@@ -56,7 +56,7 @@ dla 3.14. Wcześniejsze liczniki mierzono na 3.12 w piaskownicy):
 | `company-classifier` | 8011 | Profil → styl inwestycyjny + routing stosu modeli | 25 |
 | `signal-aggregator` | 8012 | **Węzeł decyzyjny**: każda strategia osobno + ML + makro → jedna decyzja z poziomami i sektorem | 97 |
 | `dashboard` | 8501 | BFF nad HTTP pozostałych serwisów + **6 sekcji z wykresami** (kapitał, ryzyko, strategie, backtest, ML z ważnością cech, zdrowie) | 37 |
-| `scripts/` | — | Bootstrap uniwersum, diagnostyka stacku, audyt zależności | 33 |
+| `scripts/` | — | Bootstrap uniwersum, diagnostyka stacku, audyt zależności | 36 |
 
 Co z tego jest **wiążące**, a nie tylko opisowe:
 
@@ -214,6 +214,13 @@ przez granicę serwisów.
   robustness item; risk-mgmt/execution are single-writer Redis snapshots). Render-verified with a
   real `helm` binary (lint + template, dev & prod: 13 Deployments/Services, 13 ingress paths,
   secret refs, prod deep-merge). No HPA yet — deliberate until consumers can scale.
+> ⚠️ **Wpisy `[env]` poniżej opisują PIASKOWNICĘ, w której powstawała większość tego kodu — a NIE
+> maszynę użytkownika.** Zweryfikowane 2026-08-04 na Windowsie użytkownika: **egress do dostawców
+> danych działa** (SEC, Yahoo, Stooq zwracają 200; FRED odpowiada i potrzebuje tylko klucza),
+> **Docker ciągnie obrazy z Docker Huba**, a jedyny obecny interpreter to **Python 3.14**, nie 3.12.
+> Czytając te wpisy jako opis bieżącego środowiska, powie się użytkownikowi, że czegoś nie da się
+> zrobić, kiedy da się bez problemu — tak się stało. **Sprawdź, zanim powiesz „zablokowane".**
+
 - [env] Sandbox default `python3` is 3.11; project requires 3.12 → use `python3.12` for local installs/tests.
 - [env] CI runs only on push to `main`/`develop` and PR→`main`; feature branches (`claude/*`) get no CI until a PR — verify locally before pushing.
 - [env] Market-data egress is blocked from the sandbox (query1/query2.finance.yahoo.com and
