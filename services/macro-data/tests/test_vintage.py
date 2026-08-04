@@ -216,3 +216,51 @@ async def test_backfill_stores_every_vintage_the_fetcher_returns(store):
     written = await service.backfill({"unemployment_rate": "UNRATE"})
     assert written == {"unemployment_rate": 2}
     assert len(await store.series_history("UNRATE")) == 2
+
+
+# --- FRED's 2000-vintage cap, found on the first real backfill -------------
+
+
+def test_the_realtime_window_is_sliced_below_freds_vintage_cap():
+    """A daily series has more vintages than FRED will serve in one response.
+
+    T10Y2Y over 20 years has ~3100 vintage dates; FRED refuses anything past
+    2000 with a 400 that names the count. Both series the regime classifier
+    actually reads are daily, so before slicing a 20-year backfill returned
+    HTTP 200 having stored nothing the classifier could use.
+    """
+    from src.core.fred_client import (
+        MAX_VINTAGES_PER_REQUEST,
+        VINTAGE_SLICE_YEARS,
+        _vintage_slices,
+    )
+
+    # ~250 business days a year is the vintage rate of a daily, daily-revised
+    # series — the worst case this has to survive.
+    assert VINTAGE_SLICE_YEARS * 260 < MAX_VINTAGES_PER_REQUEST
+
+    slices = _vintage_slices()
+    assert slices, "no realtime windows produced"
+    for start, end in slices:
+        assert start <= end, f"inverted window {start}..{end}"
+    # Contiguous: a gap between windows is a vintage nobody fetches, and a
+    # missing vintage reads as "never revised" rather than as missing data.
+    for (_, prev_end), (next_start, _) in zip(slices, slices[1:], strict=False):
+        assert next_start > prev_end
+        assert next_start[:4] <= str(int(prev_end[:4]) + 1)
+    # The last window must stay open, or a vintage published tomorrow is lost.
+    assert slices[-1][1] == "9999-12-31"
+
+
+def test_the_api_key_never_reaches_a_log_line():
+    """httpx puts the full URL in the exception message, and the key is a query
+    parameter — so the first upstream failure wrote it to the container log in
+    plaintext, where log shipping keeps it."""
+    from src.core.fred_client import _redact
+
+    key = "76d91b061ddabde772d83654ddf74d48"
+    message = f"Client error '400 Bad Request' for url '...&api_key={key}&file_type=json'"
+    redacted = _redact(message, key)
+    assert key not in redacted
+    assert "***" in redacted
+    assert _redact("no secret configured", None) == "no secret configured"

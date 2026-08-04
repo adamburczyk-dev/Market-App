@@ -60,6 +60,14 @@ class NullMacroStore:
         return {}
 
 
+# Bind-parameter budget. PostgreSQL caps a statement at 65535 parameters and
+# SQLite at 999 by default; this row binds five columns, so the smaller ceiling
+# governs and is applied to both — a backfill is not hot enough to justify two
+# code paths.
+COLUMNS_PER_ROW = 5
+MAX_ROWS_PER_INSERT = 999 // COLUMNS_PER_ROW
+
+
 def _deduplicate(observations: list[MacroObservation]) -> list[MacroObservation]:
     """Last occurrence wins per natural key.
 
@@ -99,12 +107,21 @@ class SqlMacroStore:
         async with self._sessions() as session:
             dialect = session.bind.dialect.name if session.bind is not None else "postgresql"
             insert = sqlite_insert if dialect == "sqlite" else pg_insert
-            statement = insert(MacroObservationRow).values(payload)
-            statement = statement.on_conflict_do_update(
-                index_elements=["series", "observation_date", "realtime_start"],
-                set_={"value": statement.excluded.value, "source": statement.excluded.source},
-            )
-            await session.execute(statement)
+            # One statement per CHUNK, not per call. A wire protocol carries a
+            # bounded number of bind parameters (65535 on PostgreSQL, 999 by
+            # default on SQLite), and this table binds COLUMNS_PER_ROW of them
+            # per row — so a single daily series over 20 years of vintages
+            # blows the limit and takes the whole backfill with it. The failure
+            # only appears at real volume: every test fixture fits in one
+            # statement.
+            for start in range(0, len(payload), MAX_ROWS_PER_INSERT):
+                chunk = payload[start : start + MAX_ROWS_PER_INSERT]
+                statement = insert(MacroObservationRow).values(chunk)
+                statement = statement.on_conflict_do_update(
+                    index_elements=["series", "observation_date", "realtime_start"],
+                    set_={"value": statement.excluded.value, "source": statement.excluded.source},
+                )
+                await session.execute(statement)
             await session.commit()
         return len(payload)
 
