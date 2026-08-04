@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # single day unattended, which is what the "30 days of paper trading"
     # rule requires before any real capital.
     SCHEDULE_FETCH_ENABLED: bool = True
+    # A stack that is not up 24/7 never reaches FETCH_AT_HOUR_UTC, so the
+    # aligned daily schedule would never fire even once — not late, never. On
+    # boot, run the pull immediately if none is recorded for today.
+    FETCH_CATCHUP_ON_START: bool = True
     # Comma-separated. Empty = nothing to pull, and the job stays down rather
     # than inventing a universe.
     FETCH_SYMBOLS: str = ""
