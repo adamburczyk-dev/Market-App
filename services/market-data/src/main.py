@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
+from typing import Any
 
 import nats
 import redis.asyncio as aredis
@@ -22,6 +23,50 @@ from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure
 from src.models.db import Base, make_engine, make_sessionmaker
 
 logger = structlog.get_logger()
+
+
+async def _retire_compression(conn: Any) -> None:
+    """Stop TimescaleDB compressing ohlcv, and say so if chunks are still packed.
+
+    TS-1, decided 2026-08-04 by measurement. Compression assumes history is
+    immutable and append-only; this table is rewritten by design, because
+    adj_close belongs to the bar PLUS every later corporate action, so a split
+    makes the provider restate everything and the repair reaches back to
+    earliest_timestamp. Writing 20 years of one symbol needed 101429 tuples
+    decompressed against a 100000 limit — every history rewrite failed.
+
+    Removing the POLICY is instant and idempotent. DECOMPRESSING existing
+    chunks is not: 1043 of them is minutes of work, which would run on every
+    container start and blow the health-check budget the way the ml-pipeline
+    routes once did. So the remaining chunks are REPORTED with the command that
+    clears them, rather than cleared here.
+    """
+    if not await _has_timescale(conn):
+        return
+    await conn.execute(
+        text("SELECT remove_compression_policy('market_data.ohlcv', if_exists => TRUE)")
+    )
+    packed = await conn.execute(
+        text(
+            "SELECT COUNT(*) FROM timescaledb_information.chunks "
+            "WHERE hypertable_name = 'ohlcv' AND is_compressed"
+        )
+    )
+    remaining = int(packed.scalar() or 0)
+    if remaining:
+        logger.warning(
+            "ohlcv chunks are still compressed — history rewrites will fail",
+            compressed_chunks=remaining,
+            fix=("SELECT decompress_chunk(c, true) FROM show_chunks('market_data.ohlcv') c;"),
+        )
+
+
+async def _has_timescale(conn: Any) -> bool:
+    """Postgres resolves relation names at PARSE time, so querying a
+    timescaledb_information view on a plain Postgres raises rather than
+    returning nothing. Gate on the extension itself."""
+    found = await conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'"))
+    return found.scalar() is not None
 
 
 @asynccontextmanager
@@ -70,6 +115,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     END $$;
                     """)
                 )
+                await _retire_compression(conn)
     except Exception as exc:  # noqa: BLE001 - keep the app up for health probes
         logger.error("Database init failed", error=str(exc))
     repository = OHLCVRepository(sessionmaker)

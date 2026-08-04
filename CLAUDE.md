@@ -112,12 +112,16 @@ przez granicę serwisów.
     clears it (`POST /circuit-breaker/reset`, refused while the breach still stands) and RED holds
     for the rest of the session instead of lifting on an intraday bounce; the latch is persisted,
     so a container restart is no longer a way to satisfy "require human restart".
-  - **TS-1** `init-db.sql` włącza kompresję TimescaleDB na `market_data.ohlcv` z polityką 7 dni,
-    a market-data **z założenia przepisuje historię** (naprawa po restatemencie odświeża każdy bar,
-    backfill wolno powtórzyć, sonda diagnostyczna pisze). Zapis do skompresowanego chunka to inna
-    ścieżka niż do świeżego i zależy od wersji rozszerzenia. Nie da się tego odtworzyć w piaskownicy
-    (obraz timescale niepobieralny), więc `diagnose.py` **raportuje** teraz liczbę skompresowanych
-    chunków — decyzja (wydłużyć próg kompresji albo ją wyłączyć dla tej tabeli) czeka na tę liczbę.
+  - [✅ done 2026-08-04] ~~**TS-1** kompresja TimescaleDB na `ohlcv`~~: rozstrzygnięte **pomiarem**,
+    na który czekało. Zapis 20 lat JEDNEGO symbolu wymagał rozpakowania **101 429 krotek przy
+    limicie 100 000**, przy 1043 z 1045 chunków skompresowanych — czyli każde nadpisanie historii
+    padało. Kompresja zakłada historię niezmienną, a ta tabela jest **z założenia przepisywana**
+    (naprawa po restatemencie sięga do `earliest_timestamp`), więc założenie polityki było fałszywe,
+    nie tylko ciasne. Polityka usunięta z `init-db.sql`, start market-daty zdejmuje ją idempotentnie
+    i **raportuje** pozostałe skompresowane chunki z komendą naprawczą (dekompresja 1043 chunków to
+    minuty — w starcie wywaliłaby budżet health-checku). Zweryfikowane na żywej bazie: 0/1045
+    skompresowanych, zapis AAPL przechodzi dwukrotnie i jest idempotentny, a rozmiar **spadł**
+    695 MB → 565 MB, więc obawiany koszt składowania się nie zmaterializował.
   - [✅ done 2026-08-02] ~~**P2-4** `macro-data` nie ma warstwy trwałości~~: panel **vintage**
     (ALFRED `realtime_start`), odczyt as-of po DWÓCH osiach czasu, `regime_by_date` ma wreszcie
     źródło. **Zostaje do zrobienia u użytkownika: `POST /backfill`** — egress do FRED jest

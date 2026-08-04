@@ -6,7 +6,7 @@ import structlog
 from trading_common.events import MacroUpdatedEvent, RegimeChangedEvent
 from trading_common.schemas import MacroObservation, MacroRegime, MacroSnapshot
 
-from src.core.fred_client import MacroFetcher
+from src.core.fred_client import MacroFetcher, derive_spreads
 from src.core.regime import RegimeThresholds, classify_regime
 from src.core.repository import MacroStore, NullMacroStore
 from src.events.publisher import Publisher
@@ -75,7 +75,7 @@ class MacroDataService:
         keep asserting the old verdict, with nothing to say it was computed
         under different rules.
         """
-        indicators = await self._store.as_of(day)
+        indicators = derive_spreads(await self._store.as_of(day))
         return classify_regime(
             yield_curve_10y_2y=indicators.get("T10Y2Y"),
             credit_spread_baa_10y=indicators.get("BAA10Y"),
@@ -121,10 +121,13 @@ class MacroDataService:
                 # Newest PERIOD wins; within one period, the newest VINTAGE wins.
                 if held is None or (candidate[0], candidate[1]) > (held[0], held[1]):
                     current[obs.series] = candidate
+            # Same derivation as the single-day path, so a session cannot be
+            # classified one way by `regime_on` and another by the history.
+            visible = derive_spreads({series: held[2] for series, held in current.items()})
             regime = classify_regime(
-                yield_curve_10y_2y=_value(current, "T10Y2Y"),
-                credit_spread_baa_10y=_value(current, "BAA10Y"),
-                pmi=_value(current, "PMI"),
+                yield_curve_10y_2y=visible.get("T10Y2Y"),
+                credit_spread_baa_10y=visible.get("BAA10Y"),
+                pmi=visible.get("PMI"),
                 thresholds=self._thresholds,
             )
             if regime is not None:

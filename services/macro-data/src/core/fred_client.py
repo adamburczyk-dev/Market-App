@@ -28,12 +28,53 @@ from trading_common.schemas import MacroObservation
 logger = structlog.get_logger()
 
 # Indicator name → FRED series id. All are published directly by FRED.
+# SOURCE series, not FRED's calculated ones. T10Y2Y and BAA10Y are computed by
+# FRED, and ALFRED only began archiving their vintages on 2014-01-27 — so an
+# as-of read for any session before then finds nothing, which on a 20-year panel
+# is nine years with no macro regime at all. The inputs FRED calculates them
+# from carry vintages back to 2005 and earlier (DGS10/DGS2 from 2005-06-28, BAA
+# from 2005-02-07), so we store those and do the subtraction ourselves.
+#
+# Measured, not assumed: probing ALFRED window by window is what separated
+# "the series has no vintages" from "the series has no vintages YET".
 DEFAULT_SERIES = {
-    "yield_curve_10y_2y": "T10Y2Y",  # 10Y minus 2Y Treasury spread
-    "credit_spread_baa_10y": "BAA10Y",  # Moody's BAA minus 10Y Treasury
+    "treasury_10y": "DGS10",
+    "treasury_2y": "DGS2",
+    "corporate_baa": "BAA",
     "unemployment_rate": "UNRATE",
     "fed_funds_rate": "FEDFUNDS",
 }
+
+# indicator -> (minuend, subtrahend), using FRED's own definitions:
+#   T10Y2Y = DGS10 - DGS2      BAA10Y = BAA - DGS10
+DERIVED_SPREADS: dict[str, tuple[str, str]] = {
+    "T10Y2Y": ("DGS10", "DGS2"),
+    "BAA10Y": ("BAA", "DGS10"),
+}
+
+
+def derive_spreads(values: dict[str, float]) -> dict[str, float]:
+    """Add the calculated spreads to a series->value map, at READ time.
+
+    Derived rather than stored, for the same reason the regime is: persisting
+    a computed indicator freezes one version of its definition into the data.
+    A stored value also cannot say WHICH vintage of each leg it came from,
+    while deriving from an as-of read gets that for free — both legs are
+    already the values that were public on the day being asked about.
+
+    A leg that is missing yields no spread rather than a partial one, and any
+    spread already present (from a database written before this change) is left
+    alone.
+    """
+    out = dict(values)
+    for indicator, (minuend, subtrahend) in DERIVED_SPREADS.items():
+        if indicator in out:
+            continue
+        left, right = values.get(minuend), values.get(subtrahend)
+        if left is not None and right is not None:
+            out[indicator] = left - right
+    return out
+
 
 # ALFRED's "give me every vintage" window. 1776-07-04 is FRED's own documented
 # floor for realtime_start, not a joke of ours.

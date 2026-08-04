@@ -52,17 +52,24 @@ SELECT create_hypertable(
 CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol_interval_ts
     ON market_data.ohlcv (symbol, interval, ts DESC);
 
--- Kompresja danych starszych niż 7 dni
-ALTER TABLE market_data.ohlcv SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'symbol, interval'
-);
-
-SELECT add_compression_policy(
-    'market_data.ohlcv',
-    INTERVAL '7 days',
-    if_not_exists => TRUE
-);
+-- BEZ KOMPRESJI — świadomie (TS-1, rozstrzygnięte 2026-08-04 pomiarem).
+--
+-- Kompresja TimescaleDB zakłada historię niezmienną i dopisywaną na końcu.
+-- Ta tabela jest Z ZAŁOŻENIA przepisywana: `adj_close` nie jest własnością
+-- świecy, tylko świecy plus wszystkich PÓŹNIEJSZYCH zdarzeń korporacyjnych,
+-- więc po splicie dostawca przelicza całą historię, a naprawa sięga wstecz do
+-- `earliest_timestamp`. Założenie polityki było więc fałszywe, nie tylko ciasne.
+--
+-- Zmierzone, zanim to usunięto: zapis 20 lat JEDNEGO symbolu wymagał
+-- rozpakowania 101 429 krotek przy limicie 100 000
+-- (`tuple decompression limit exceeded`), więc każde nadpisanie historii padało
+-- — przy 1043 z 1045 chunków skompresowanych. Podniesienie limitu przesunęłoby
+-- ścianę zamiast ją usunąć, bo każdy zapis do starego chunka i tak rozpakowuje
+-- i pakuje z powrotem.
+--
+-- Kosztem jest miejsce na dysku (695 MB skompresowane urośnie kilkukrotnie).
+-- Jeśli kiedyś zacznie boleć, właściwą odpowiedzią jest kompresja z progiem
+-- DŁUŻSZYM niż najgłębszy możliwy restatement, a nie 7 dni.
 
 -- ============================================================
 -- Panel fundamentów (point-in-time, P2-3)

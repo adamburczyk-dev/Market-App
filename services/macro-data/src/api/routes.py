@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from trading_common.schemas import MacroSnapshot
 
 from src.api.deps import get_service
+from src.core.fred_client import DEFAULT_SERIES
 from src.core.service import MacroDataService
 
 logger = structlog.get_logger()
@@ -70,17 +71,15 @@ class BackfillRequest(BaseModel):
     """Which series to pull, and over what observation window.
 
     Series are given as FRED ids because that is what the vintage store is keyed
-    on; the indicator name is a label for the report. Defaults cover the three
-    the regime classifier actually reads.
+    on; the indicator name is a label for the report.
+
+    The default is DEFAULT_SERIES itself rather than a copy. It was a copy, and
+    the copies drifted: switching the fetcher to source series left this list
+    still naming FRED's calculated ones, so a backfill went on storing exactly
+    the series the change existed to stop using — and reported success.
     """
 
-    series: dict[str, str] = Field(
-        default_factory=lambda: {
-            "yield_curve_10y_2y": "T10Y2Y",
-            "credit_spread_baa_10y": "BAA10Y",
-            "unemployment_rate": "UNRATE",
-        }
-    )
+    series: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_SERIES))
     start: date | None = None
     end: date | None = None
 

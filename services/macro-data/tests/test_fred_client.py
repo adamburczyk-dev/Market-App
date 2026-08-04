@@ -22,8 +22,9 @@ async def test_disabled_without_api_key():
     assert fc.enabled is False
     assert await fc.latest("T10Y2Y") is None
     assert await fc.fetch_indicators() == {
-        "yield_curve_10y_2y": None,
-        "credit_spread_baa_10y": None,
+        "treasury_10y": None,
+        "treasury_2y": None,
+        "corporate_baa": None,
         "unemployment_rate": None,
         "fed_funds_rate": None,
     }
@@ -72,15 +73,70 @@ async def test_fetch_indicators_maps_all_series():
     def handler(request: httpx.Request) -> httpx.Response:
         sid = request.url.params["series_id"]
         return obs_response(
-            {"T10Y2Y": "0.5", "BAA10Y": "1.8", "UNRATE": "4.0", "FEDFUNDS": "5.25"}[sid]
+            {"DGS10": "4.2", "DGS2": "3.7", "BAA": "6.0", "UNRATE": "4.0", "FEDFUNDS": "5.25"}[sid]
         )
 
     fc = client_with(handler)
     result = await fc.fetch_indicators()
     assert result == {
-        "yield_curve_10y_2y": 0.5,
-        "credit_spread_baa_10y": 1.8,
+        "treasury_10y": 4.2,
+        "treasury_2y": 3.7,
+        "corporate_baa": 6.0,
         "unemployment_rate": 4.0,
         "fed_funds_rate": 5.25,
     }
     await fc.aclose()
+
+
+# --- derived spreads (2026-08-04) -----------------------------------------
+
+
+def test_spreads_are_derived_from_source_series():
+    """FRED's own definitions: T10Y2Y = DGS10 - DGS2, BAA10Y = BAA - DGS10.
+
+    The calculated series exist in FRED but ALFRED only archives their vintages
+    from 2014-01-27, so an as-of read before then found nothing — nine years of
+    a twenty-year panel with no macro regime. The inputs carry vintages back to
+    2005, so we store those and subtract at read time.
+    """
+    from src.core.fred_client import derive_spreads
+
+    derived = derive_spreads({"DGS10": 4.2, "DGS2": 3.7, "BAA": 6.0})
+    assert derived["T10Y2Y"] == pytest.approx(0.5)
+    assert derived["BAA10Y"] == pytest.approx(1.8)
+    # The source values survive — the map is extended, not replaced.
+    assert derived["DGS10"] == pytest.approx(4.2)
+
+
+def test_a_missing_leg_yields_no_spread_rather_than_half_of_one():
+    """A one-legged spread is a number with no meaning, and it would classify."""
+    from src.core.fred_client import derive_spreads
+
+    assert "T10Y2Y" not in derive_spreads({"DGS10": 4.2})
+    assert "BAA10Y" not in derive_spreads({"BAA": 6.0})
+
+
+def test_a_stored_calculated_series_is_left_alone():
+    """Databases written before this change hold real T10Y2Y vintages.
+
+    Recomputing over them would silently replace a value FRED published with
+    one we reconstructed — close, but not the number that was public.
+    """
+    from src.core.fred_client import derive_spreads
+
+    derived = derive_spreads({"T10Y2Y": 0.42, "DGS10": 4.2, "DGS2": 3.7})
+    assert derived["T10Y2Y"] == pytest.approx(0.42)
+
+
+def test_the_backfill_route_defaults_to_the_fetchers_own_series():
+    """Two lists of series drifted apart, and the drift reported success.
+
+    The route carried its own copy naming FRED's CALCULATED series. After the
+    fetcher moved to source series the copy still said T10Y2Y/BAA10Y, so a
+    backfill kept storing precisely what the change existed to stop using, and
+    returned HTTP 200 with a healthy-looking row count.
+    """
+    from src.api.routes import BackfillRequest
+    from src.core.fred_client import DEFAULT_SERIES
+
+    assert BackfillRequest().series == DEFAULT_SERIES
