@@ -115,6 +115,28 @@ class FundamentalsFetcher(Protocol):
     async def aclose(self) -> None: ...
 
 
+# Tickers whose filing history does NOT live under the CIK SEC currently maps
+# them to. Each entry is a CLAIM SOMEONE VERIFIED, and the annual count is the
+# evidence — a wrong CIK here attaches another company's financials to this
+# ticker, which is worse than having none: plausible numbers, wrong firm,
+# straight into a cross-sectional model with nothing to flag it.
+#
+# Deliberately a hand-checked table rather than automatic discovery. EDGAR
+# exposes no predecessor link; the only apparent signal is the accession-number
+# prefix, which names the FILER. Measured on these very symbols, that heuristic
+# proposes State Street as the predecessor of Chubb, Corning, Huntington,
+# Principal and Bunge, and JPMorgan as NXP's — right for Exxon by luck and
+# wrong seven times out of eight.
+HISTORICAL_CIKS: dict[str, str] = {
+    # SEC maps XOM to ExxonMobil Holdings Corp (2 quarterly facts, no annual);
+    # the 48 annual observations 2008-2025 are under Exxon Mobil Corp.
+    "XOM": "0000034088",
+    # Absent from company_tickers.json entirely, yet filing: 39 annual
+    # observations 2008-2025 under American Electric Power Company, Inc.
+    "AEP": "0000004904",
+}
+
+
 class EdgarClient:
     def __init__(
         self,
@@ -147,7 +169,18 @@ class EdgarClient:
             return None
 
     async def ticker_to_cik(self, symbol: str) -> str | None:
-        """Resolve a ticker to a zero-padded 10-digit CIK."""
+        """Resolve a ticker to a zero-padded 10-digit CIK.
+
+        `company_tickers.json` maps a ticker to the CIK of the registrant
+        TODAY, which is a point-in-time-now view used here to reconstruct
+        twenty years of history — the same shape of error as a survivor-only
+        universe. After a reorganisation the ticker points at a fresh entity
+        with no filings, and after a delisting it points at nothing at all.
+        `HISTORICAL_CIKS` overrides both cases.
+        """
+        override = HISTORICAL_CIKS.get(symbol.upper())
+        if override is not None:
+            return override
         if not self._cik_cache:
             data = await self._get_json(self._tickers_url)
             if data is None:
@@ -156,7 +189,32 @@ class EdgarClient:
                 self._cik_cache[row["ticker"].upper()] = f"{int(row['cik_str']):010d}"
         return self._cik_cache.get(symbol.upper())
 
-    async def _annual_by_period(self, cik: str, tag: str, unit: str) -> dict[date, Observation]:
+    async def company_facts(self, cik: str) -> dict[str, Any] | None:
+        """Every XBRL fact the filer has ever reported, in ONE request.
+
+        Replaces per-tag `companyconcept` calls, for two independent reasons.
+
+        It is CORRECT where the other endpoint is not. Measured on the real
+        API: `companyconcept/CIK0000024741/us-gaap/Assets` returns an empty
+        unit list for Corning, while `companyfacts` for the same CIK carries
+        152 observations of that exact tag, 50 of them annual. Same for Chubb,
+        Capital One, Huntington, Principal, NXP and Bunge — seven of the eight
+        symbols that failed the first real backfill, all of them reported as
+        "no EDGAR fundamentals" when SEC plainly had the data.
+
+        And it is one request per COMPANY instead of one per TAG. With ~20 tags
+        and their fallbacks that is a twentyfold cut in requests against a
+        rate-limited public API, which is the difference between a backfill and
+        a throttling incident.
+        """
+        data = await self._get_json(f"{self._base}/api/xbrl/companyfacts/CIK{cik}.json")
+        if data is None:
+            return None
+        facts = data.get("facts", {}).get("us-gaap", {})
+        return facts if isinstance(facts, dict) else {}
+
+    @staticmethod
+    def _annual_by_period(facts: dict[str, Any], tag: str, unit: str) -> dict[date, Observation]:
         """period-end → (value, first filing date) from annual (10-K/FY) observations.
 
         The same period is reported many times — the original 10-K, any
@@ -164,12 +222,8 @@ class EdgarClient:
         matters for point-in-time work is the EARLIEST: that is when the market
         first had the number (P2-3).
         """
-        url = f"{self._base}/api/xbrl/companyconcept/CIK{cik}/us-gaap/{tag}.json"
-        data = await self._get_json(url)
-        if data is None:
-            return {}
         out: dict[date, Observation] = {}
-        for obs in data.get("units", {}).get(unit, []):
+        for obs in facts.get(tag, {}).get("units", {}).get(unit, []):
             if obs.get("form") not in ("10-K", "10-K/A") or obs.get("fp") != "FY":
                 continue
             end = obs.get("end")
@@ -187,18 +241,20 @@ class EdgarClient:
                 out[period] = Observation(float(val), filed)
         return out
 
-    async def _field_values(
-        self, cik: str, candidates: tuple[tuple[str, str], ...]
+    @classmethod
+    def _field_values(
+        cls, facts: dict[str, Any], candidates: tuple[tuple[str, str], ...]
     ) -> dict[date, Observation]:
         """Merge candidate concepts per period; earlier candidates win on conflict.
 
         A filer may report different periods under different tags (e.g. pre- vs
-        post-ASC-606 revenue), so every candidate is fetched and unioned rather
-        than stopping at the first non-empty one.
+        post-ASC-606 revenue), so every candidate is read and unioned rather
+        than stopping at the first non-empty one. Now a dict lookup instead of
+        a network round trip, since the whole fact set is already in hand.
         """
         merged: dict[date, Observation] = {}
         for tag, unit in candidates:
-            for period, obs in (await self._annual_by_period(cik, tag, unit)).items():
+            for period, obs in cls._annual_by_period(facts, tag, unit).items():
                 merged.setdefault(period, obs)
         return merged
 
@@ -207,12 +263,35 @@ class EdgarClient:
             return []
         cik = await self.ticker_to_cik(symbol)
         if cik is None:
-            logger.warning("Unknown ticker for EDGAR", symbol=symbol)
+            logger.warning(
+                "Ticker not in SEC's company_tickers.json",
+                symbol=symbol,
+                hint="delisted, or a registrant SEC no longer lists — "
+                "add HISTORICAL_CIKS if it filed",
+            )
             return []
 
-        by_field: dict[str, dict[date, Observation]] = {}
-        for fieldname, candidates in TAG_MAP.items():
-            by_field[fieldname] = await self._field_values(cik, candidates)
+        facts = await self.company_facts(cik)
+        if not facts:
+            # Says which of the two it is. The old message asked whether the
+            # ticker was known and SEC_USER_AGENT set, when in fact the ticker
+            # HAD resolved — pointing at configuration while the truth was that
+            # this CIK carries no us-gaap facts, usually a holding company
+            # created in a reorganisation whose history sits under a
+            # predecessor (ExxonMobil Holdings has two quarterly facts; Exxon
+            # Mobil Corp has forty-eight annual ones).
+            logger.warning(
+                "CIK resolved but carries no us-gaap facts",
+                symbol=symbol,
+                cik=cik,
+                hint="likely a successor registrant — add the predecessor to HISTORICAL_CIKS",
+            )
+            return []
+
+        by_field: dict[str, dict[date, Observation]] = {
+            fieldname: self._field_values(facts, candidates)
+            for fieldname, candidates in TAG_MAP.items()
+        }
 
         # candidate annual periods = union of period-ends seen, most recent first
         periods = sorted({p for values in by_field.values() for p in values}, reverse=True)

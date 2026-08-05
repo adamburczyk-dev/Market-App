@@ -46,11 +46,18 @@ def sec_handler(request: httpx.Request) -> httpx.Response:
     path = request.url.path
     if path.endswith("company_tickers.json"):
         return httpx.Response(200, json=TICKERS)
-    if "/companyconcept/" in path:
-        tag = path.rsplit("/", 1)[-1].removesuffix(".json")
-        unit = TAG_UNITS.get(tag, "USD")
-        obs = [{"end": e, "val": v, "form": f, "fp": fp} for (e, v, f, fp) in CONCEPTS.get(tag, [])]
-        return httpx.Response(200, json={"units": {unit: obs}})
+    if "/companyfacts/" in path:
+        facts = {
+            tag: {
+                "units": {
+                    TAG_UNITS.get(tag, "USD"): [
+                        {"end": e, "val": v, "form": f, "fp": fp} for (e, v, f, fp) in rows
+                    ]
+                }
+            }
+            for tag, rows in CONCEPTS.items()
+        }
+        return httpx.Response(200, json={"facts": {"us-gaap": facts}})
     return httpx.Response(404)
 
 
@@ -137,13 +144,18 @@ def handler_with_concepts(concepts: dict):  # type: ignore[no-untyped-def]
         path = request.url.path
         if path.endswith("company_tickers.json"):
             return httpx.Response(200, json=TICKERS)
-        if "/companyconcept/" in path:
-            tag = path.rsplit("/", 1)[-1].removesuffix(".json")
-            if tag not in concepts:
-                return httpx.Response(404)  # filer doesn't use this concept
-            unit = "USD/shares" if tag == "EarningsPerShareBasic" else "USD"
-            obs = [{"end": e, "val": v, "form": f, "fp": fp} for (e, v, f, fp) in concepts[tag]]
-            return httpx.Response(200, json={"units": {unit: obs}})
+        if "/companyfacts/" in path:
+            facts = {
+                tag: {
+                    "units": {
+                        ("USD/shares" if tag == "EarningsPerShareBasic" else "USD"): [
+                            {"end": e, "val": v, "form": f, "fp": fp} for (e, v, f, fp) in rows
+                        ]
+                    }
+                }
+                for tag, rows in concepts.items()
+            }
+            return httpx.Response(200, json={"facts": {"us-gaap": facts}})
         return httpx.Response(404)
 
     return handler
@@ -213,13 +225,19 @@ def filed_handler(request: httpx.Request) -> httpx.Response:
     path = request.url.path
     if path.endswith("company_tickers.json"):
         return httpx.Response(200, json=TICKERS)
-    if "/companyconcept/" in path:
-        tag = path.rsplit("/", 1)[-1].removesuffix(".json")
-        obs = [
-            {"end": e, "val": v, "form": f, "fp": fp, "filed": filed}
-            for (e, v, f, fp, filed) in FILED.get(tag, [])
-        ]
-        return httpx.Response(200, json={"units": {"USD": obs}})
+    if "/companyfacts/" in path:
+        facts = {
+            tag: {
+                "units": {
+                    "USD": [
+                        {"end": e, "val": v, "form": f, "fp": fp, "filed": filed}
+                        for (e, v, f, fp, filed) in rows
+                    ]
+                }
+            }
+            for tag, rows in FILED.items()
+        }
+        return httpx.Response(200, json={"facts": {"us-gaap": facts}})
     return httpx.Response(404)
 
 
@@ -259,15 +277,16 @@ async def test_a_field_without_a_filing_date_leaves_the_statement_undated():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("company_tickers.json"):
             return httpx.Response(200, json=TICKERS)
-        tag = request.url.path.rsplit("/", 1)[-1].removesuffix(".json")
-        rows = FILED.get(tag, [])
-        obs = [
-            {"end": e, "val": v, "form": f, "fp": fp}  # no "filed"
-            if tag == "Assets"
-            else {"end": e, "val": v, "form": f, "fp": fp, "filed": filed}
-            for (e, v, f, fp, filed) in rows
-        ]
-        return httpx.Response(200, json={"units": {"USD": obs}})
+        facts = {}
+        for tag, rows in FILED.items():
+            obs = [
+                {"end": e, "val": v, "form": f, "fp": fp}  # no "filed"
+                if tag == "Assets"
+                else {"end": e, "val": v, "form": f, "fp": fp, "filed": filed}
+                for (e, v, f, fp, filed) in rows
+            ]
+            facts[tag] = {"units": {"USD": obs}}
+        return httpx.Response(200, json={"facts": {"us-gaap": facts}})
 
     ec = client_with(handler)
     statements = await ec.latest_statements("AAPL", count=1)
@@ -283,3 +302,86 @@ async def test_statements_without_any_filing_dates_stay_undated():
     statements = await ec.latest_statements("AAPL", count=1)
     await ec.aclose()
     assert statements[0].filed_at is None
+
+
+# --- CIK resolution, after the first real 455-symbol backfill --------------
+
+
+@pytest.mark.asyncio
+async def test_a_historical_cik_overrides_the_map_sec_publishes_today():
+    """`company_tickers.json` names the registrant TODAY, not the filer of the
+    history. XOM points at ExxonMobil Holdings Corp — two quarterly facts, no
+    annual — while the 48 annual observations sit under Exxon Mobil Corp. Using
+    a current-view source to reconstruct twenty years is the same shape of
+    error as a survivor-only universe.
+    """
+    from src.core.edgar_client import HISTORICAL_CIKS
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("company_tickers.json"):
+            return httpx.Response(200, json=TICKERS)
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"facts": {"us-gaap": {}}})
+
+    ec = client_with(handler)
+    assert await ec.ticker_to_cik("XOM") == HISTORICAL_CIKS["XOM"]
+    # AEP is absent from SEC's map entirely, yet files — the override is the
+    # only way it resolves at all.
+    assert await ec.ticker_to_cik("AEP") == HISTORICAL_CIKS["AEP"]
+    await ec.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_whole_fact_set_is_fetched_once_per_company():
+    """One request per COMPANY, not per TAG.
+
+    `companyconcept` also returned an EMPTY unit list for tags SEC plainly
+    holds — Corning's Assets is 152 observations in `companyfacts` and zero
+    through the concept endpoint. Seven of the eight symbols that failed the
+    first real backfill were that, reported as "no EDGAR fundamentals".
+    """
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("company_tickers.json"):
+            return httpx.Response(200, json=TICKERS)
+        calls.append(request.url.path)
+        facts = {
+            tag: {
+                "units": {
+                    TAG_UNITS.get(tag, "USD"): [
+                        {"end": e, "val": v, "form": f, "fp": fp} for (e, v, f, fp) in rows
+                    ]
+                }
+            }
+            for tag, rows in CONCEPTS.items()
+        }
+        return httpx.Response(200, json={"facts": {"us-gaap": facts}})
+
+    ec = client_with(handler)
+    statements = await ec.latest_statements("AAPL", count=2)
+    await ec.aclose()
+
+    assert statements, "no statements assembled"
+    assert len(calls) == 1, f"expected one data request, made {len(calls)}"
+    assert "/companyfacts/" in calls[0]
+    assert not any("/companyconcept/" in c for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_a_cik_with_no_facts_is_reported_as_such_not_as_an_unknown_ticker():
+    """The old message asked whether the ticker was known and the user agent
+    set, when the ticker HAD resolved — pointing at configuration while the
+    truth was a successor registrant with no history."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("company_tickers.json"):
+            return httpx.Response(200, json=TICKERS)
+        return httpx.Response(200, json={"facts": {"us-gaap": {}}})
+
+    ec = client_with(handler)
+    assert await ec.ticker_to_cik("AAPL") is not None  # resolution worked
+    assert await ec.latest_statements("AAPL") == []  # ...but there are no facts
+    await ec.aclose()

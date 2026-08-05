@@ -112,7 +112,15 @@ async def backfill(
     if not stored:
         raise HTTPException(
             status_code=404,
-            detail=f"no EDGAR fundamentals for {symbol} (SEC_USER_AGENT set? ticker known?)",
+            # Names the two causes separately. The old wording asked whether
+            # the user agent was set and the ticker known, which sent the reader
+            # to the configuration for eight symbols whose tickers had resolved
+            # perfectly well.
+            detail=(
+                f"no annual EDGAR filings for {symbol}: either SEC does not list "
+                "the ticker (delisted), or its CIK carries no us-gaap facts "
+                "(successor registrant — see HISTORICAL_CIKS)"
+            ),
         )
     return {"symbol": symbol.upper(), "periods": stored}
 
@@ -124,7 +132,15 @@ async def refresh(symbol: str, service: FundamentalDataService = Depends(get_ser
     if record is None:
         raise HTTPException(
             status_code=404,
-            detail=f"no EDGAR fundamentals for {symbol} (SEC_USER_AGENT set? ticker known?)",
+            # Names the two causes separately. The old wording asked whether
+            # the user agent was set and the ticker known, which sent the reader
+            # to the configuration for eight symbols whose tickers had resolved
+            # perfectly well.
+            detail=(
+                f"no annual EDGAR filings for {symbol}: either SEC does not list "
+                "the ticker (delisted), or its CIK carries no us-gaap facts "
+                "(successor registrant — see HISTORICAL_CIKS)"
+            ),
         )
     return _view(*record)
 

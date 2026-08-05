@@ -440,10 +440,24 @@ def backfill_fundamentals(
             time.sleep(pause_s)
 
     with_data = [s for s, n in stored.items() if n > 0]
+    # Every symbol lands in exactly one bucket, and the three sum to the input.
+    # They did not before: a symbol answering 200 with zero periods appeared in
+    # neither `with_data` nor `failures`, so 41 names vanished from the report
+    # and "41 failed" was indistinguishable from "41 tickers no longer exist" —
+    # on a universe that deliberately holds delisted companies, that is the one
+    # distinction a reader needs.
+    empty = sorted(s for s, n in stored.items() if n == 0)
+    missing = sorted(set(symbols) - set(stored) - set(failures))
     print(
         f"\n  {len(with_data)}/{len(symbols)} symbols have at least one annual period; "
-        f"{len(failures)} failed"
+        f"{len(empty)} returned none; {len(failures)} failed"
     )
+    if empty:
+        shown = ", ".join(empty[:10]) + ("..." if len(empty) > 10 else "")
+        print(f"  {len(empty):>3}x no annual filings (delisted or never an SEC filer)")
+        print(f"       {shown}")
+    if missing:  # should be impossible; say so loudly rather than swallow it
+        print(f"  {len(missing):>3}x UNACCOUNTED: {', '.join(missing[:10])}")
     if failures:
         by_reason: dict[str, list[str]] = {}
         for symbol, reason in failures.items():
@@ -453,9 +467,12 @@ def backfill_fundamentals(
             print(f"  {len(names):>3}x {reason}\n       {shown}")
     if report is not None:
         report["fundamentals_backfill"] = {
+            "requested": len(symbols),
             "periods_by_symbol": stored,
             "symbols_with_data": len(with_data),
+            "symbols_without_filings": empty,
             "errors": failures,
+            "unaccounted": missing,
         }
     # Annual filings only: 20 years of history is ~20 observations per name, so
     # the family ranks the cross-section slowly. That is a property of the data,

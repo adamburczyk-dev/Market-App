@@ -138,3 +138,20 @@ def test_a_symbol_file_may_document_itself():
     # The inline form keeps working — commas OR whitespace, unchanged.
     assert boot.split_symbols("SEE,K,HES") == ["SEE", "K", "HES"]
     assert boot.split_symbols("SEE K HES") == ["SEE", "K", "HES"]
+
+
+def test_the_fundamentals_report_accounts_for_every_symbol():
+    """41 names vanished from the first real run's report.
+
+    A symbol answering 200 with zero annual periods went into neither the
+    success list nor the errors, so the report said "404 with data, 10 failed"
+    out of 455 and stayed silent about the rest. On a universe that
+    deliberately contains delisted companies, "no filings" versus "request
+    failed" is exactly the distinction a reader needs.
+    """
+    source = (REPO / "scripts" / "bootstrap-universe.py").read_text(encoding="utf-8")
+    block = source.split('report["fundamentals_backfill"] = {', 1)[1].split("}", 1)[0]
+    for key in ("requested", "symbols_without_filings", "unaccounted"):
+        assert f'"{key}"' in block, (
+            f"the report cannot close its accounting without {key}"
+        )
