@@ -49,9 +49,20 @@ logger = structlog.get_logger()
 @dataclass(frozen=True)
 class TrainingParams:
     train_size: int = 756  # ~3y of sessions
-    test_size: int = 63  # ~3m
-    holdout_size: int = 126  # ~6m, untouched during selection
-    val_size: int = 63  # tail of each train window used for early stop + calibration
+    # Sized against the LABEL HORIZON, not the calendar. The tranche book
+    # refreshes sleeve `t mod horizon`, so it only reaches steady state after
+    # `horizon` sessions: at test_size == horizon the book is in warm-up for
+    # 100% of every fold and every Sharpe, turnover and cost figure is a
+    # transient. 3x the horizon leaves ~67% of each fold in steady state.
+    # Arithmetic and the rejected alternative (pre-seeding the sleeves, which
+    # would change the construction and break comparability with runs #1-#3)
+    # are in docs/decisions/06.
+    test_size: int = 189  # 3x horizon
+    holdout_size: int = 252  # 4x horizon (~1y), untouched during selection
+    # One horizon of validation is ONE independent label episode — too little to
+    # early-stop or calibrate on, and that mechanism failing is what produced
+    # run #3's collapse to a constant.
+    val_size: int = 126  # 2x horizon
     horizon: int = LABEL_HORIZON  # label horizon → purge width
     embargo: int = 5
     quantile: float = 0.2

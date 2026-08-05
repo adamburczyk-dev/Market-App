@@ -117,8 +117,14 @@ def test_build_dataset_actually_uses_the_excess_label():
         "RUNNER": bars("RUNNER", slow),
     }
 
+    # BOTH sides explicit. Pinning only the horizon was not enough: once
+    # `excess` became the default, `LabelParams(horizon=10)` silently produced
+    # an EXCESS dataset and this test compared excess against excess. A test
+    # about whether a flag changes behaviour cannot lean on that flag's default.
     common = {"min_history": 30, "min_universe": 3}
-    absolute = build_dataset(panel, DatasetParams(label=LabelParams(horizon=10), **common))
+    absolute = build_dataset(
+        panel, DatasetParams(label=LabelParams(horizon=10, excess=False), **common)
+    )
     excess = build_dataset(
         panel, DatasetParams(label=LabelParams(horizon=10, excess=True), **common)
     )

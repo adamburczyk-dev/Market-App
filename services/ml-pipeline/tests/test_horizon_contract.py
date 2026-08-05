@@ -120,3 +120,24 @@ def test_the_published_event_names_the_label_it_was_trained_on():
         label_kind="excess",
     )
     assert served._label_kind == "excess"
+
+
+def test_the_evaluation_windows_admit_a_steady_state_book():
+    """Sized against the horizon, not the calendar — a property, not literals.
+
+    The tranche book refreshes sleeve `t mod horizon`, so it reaches steady
+    state only after `horizon` sessions. At test_size == horizon every fold is
+    100% warm-up and every Sharpe, turnover and cost figure in the gate is a
+    transient; at 3x the horizon about two thirds of each fold is steady.
+
+    val_size is pinned too: one horizon of validation is ONE independent label
+    episode, and early stopping plus probability calibration selected on a
+    single observation is the mechanism whose failure produced run #3's
+    collapse to a constant.
+    """
+    train = TrainingParams()
+    assert train.test_size >= 3 * train.horizon, "folds are mostly tranche warm-up"
+    assert train.holdout_size >= 3 * train.horizon, "holdout cannot reach steady state"
+    assert train.val_size >= 2 * train.horizon, "too few label episodes to early-stop on"
+    # And the purge must still leave a usable training window.
+    assert train.horizon + train.embargo < train.train_size

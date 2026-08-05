@@ -5,7 +5,9 @@ down −8% first is not a "win"). The triple barrier asks which came first: the
 profit barrier, the loss barrier, or the time (vertical) barrier. Barriers
 scale with trailing volatility so a label means the same thing for a calm
 mega-cap and a volatile small-cap. Parameters per docs/ml_integration_plan.md
-§4: ±2·σ₂₀·√h around the reference close, vertical barrier h = 10 sessions.
+§4, as superseded by measurement (docs/decisions/04): ±1·σ₂₀·√h around the
+reference close, vertical barrier h = 63 sessions, labels measured RELATIVE to
+the cross-section.
 """
 
 import math
@@ -21,7 +23,7 @@ import numpy as np
 # is silent: a label horizon LARGER than the purge horizon leaks label window
 # into every test block and makes the metrics look BETTER. Nothing raises.
 # Same class of defect as MAX_OHLCV_LIMIT declared twice in two values.
-LABEL_HORIZON = 10
+LABEL_HORIZON = 63
 
 
 def outcome_drop_after_days(horizon: int = LABEL_HORIZON) -> int:
@@ -44,6 +46,10 @@ class LabelParams:
     # the triple barrier into a fixed-horizon sign label with extra steps.
     # `calibrate_barriers` scans multipliers on real paths and reports the mix;
     # 1.0 is what it picks (about half the labels touch a horizontal barrier).
+    # Re-measured at h=63 on the real panel rather than assumed: the barriers
+    # are 2.51x wider in absolute terms but the path has 6.3x more bars to
+    # touch them, and the two effects very nearly cancel — horizontal share
+    # 0.6449, inside the 40-70% target band, so the width does NOT move.
     pt_mult: float = 1.0  # profit barrier, in sigma*sqrt(horizon) units
     sl_mult: float = 1.0  # loss barrier, in sigma*sqrt(horizon) units
     horizon: int = LABEL_HORIZON  # vertical barrier (sessions)
@@ -54,7 +60,13 @@ class LabelParams:
     # close-to-close cumulative excess (no intraday path exists for a
     # synthetic market leg), so they trade intraday precision for measuring
     # the right quantity.
-    excess: bool = False
+    # Measured on the real 414-symbol panel, 2026-08-05: horizon 63 with the
+    # EXCESS label wins on model-free IC (mean |IC| 0.0256, best feature
+    # realized_vol_20 at +0.077), and the ordering 63 > 21 > 10 with excess
+    # beating absolute holds at every horizon. Crucially the study now excludes
+    # the columns the model cannot consume, so the caveat that hung over the
+    # original 0.0274 — that its winner was `close`, a price level — is gone.
+    excess: bool = True
 
 
 @dataclass(frozen=True)

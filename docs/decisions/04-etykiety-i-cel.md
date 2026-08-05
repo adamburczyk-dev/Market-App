@@ -34,7 +34,7 @@ wielokrotnego testowania.
 
 ## Horyzont — wybiera POMIAR, nie preferencja (D2)
 
-**Status: rozstrzygnięty pomiarem, czeka na wdrożenie.**
+**Status: WDROŻONY 2026-08-05.** Domyślne to `horizon=63`, `excess=True`, `pt_mult=sl_mult=1.0`.
 **Kiedy:** prior 21 sesji (2026-07-28), pomiar 2026-07-31/08-01
 **Dlaczego pomiar, a nie wybór:** horyzont kusi, żeby dopasować model do każdego wariantu
 i zatrzymać zwycięzcę — klasyczna fabryka biasu selekcji. Zamiast tego oceniany jest statystyką
@@ -60,6 +60,31 @@ z etykietą nadwyżkową**, a porządek 63 ≻ 21 ≻ 10 i nadwyżkowa ≻ absol
 poziomie. Zwycięskie cechy to `price_to_sma50` i `dist_52w_high` — **bezwymiarowe**, nie poziomy.
 **Do potwierdzenia na realnych 414 symbolach** — panel syntetyczny pokazuje, że maszyneria mierzy
 to, co trzeba, a nie że liczba jest ta sama.
+
+### Pomiar potwierdzający na realnym panelu (2026-08-05)
+
+Studium celu przepuszczone przez **414 symboli × 5293 świece** (29 min), już z filtrem wykluczeń,
+czyli nad kolumnami, które model faktycznie konsumuje (`feature_scope: "model contract only"`):
+
+| h | excess | pt_mult | horizontal_share | w paśmie | best_feature | IC | mean \|IC\| |
+|---|---|---|---|---|---|---|---|
+| **63** | **tak** | **1.0** | **0.6449** | **tak** | `realized_vol_20` | +0.0772 | **0.0256** |
+| 21 | tak | 1.0 | 0.5509 | tak | `realized_vol_20` | +0.0571 | 0.0188 |
+| 63 | nie | 1.0 | 0.6852 | tak | `momentum_12_1` | +0.0492 | 0.0124 |
+| 10 | tak | 1.0 | 0.4852 | tak | `realized_vol_20` | +0.0464 | 0.0165 |
+| 21 | nie | 1.0 | 0.6350 | tak | `realized_vol_20` | +0.0322 | 0.0110 |
+| 10 | nie | 1.0 | 0.6029 | tak | `downside_vol_20` | +0.0235 | 0.0099 |
+
+**Co to rozstrzyga.** `pt_mult` **zostaje 1.0** — obawa, że przy h=63 bariery zdegenerują się
+w drugą stronę (bo są 2,51× szersze), nie zmaterializowała się: ścieżka ma 6,3× więcej barów, żeby
+ich dotknąć, i oba efekty niemal się znoszą. Porządek **63 ≻ 21 ≻ 10** i **nadwyżkowa ≻ absolutna**
+odtwarza się na każdym poziomie. Wicemistrzem h=63 absolutnego jest `momentum_12_1` z IC +0.049 —
+dokładnie ten, który odnotowano w lipcu.
+**Zastrzeżenie z lipca jest zamknięte:** te liczby policzono **bez** kolumn poziomu, więc zwycięzcą
+jest `realized_vol_20`, cecha bezwymiarowa, a nie `close`. Kontrola: pomiar przy h=10 daje
+`horizontal_share` **0.6029** wobec udokumentowanych 60,2% z lipca — panel i kod zgadzają się
+z historycznym pomiarem co do trzeciego miejsca po przecinku.
+Artefakt: `reports/target-study-2026-08-05.json`.
 
 ### Wdrożenie (2026-08-03/04): co się okazało po drodze
 
@@ -100,9 +125,8 @@ nadwyżkowej i **przegrana** dla absolutnej. Przy książce ocenianej względem 
 **Dlaczego wyłączona:** włączy ją pomiar, nie preferencja.
 **Świadomy koszt:** skanowanie close-to-close, bo dla syntetycznej nogi rynkowej nie ma ścieżki
 śróddziennej — bariera dotknięta i odwrócona w ciągu sesji umyka.
-**Stan 2026-08-04:** ścieżka **zbudowana i przetestowana**, flaga wciąż `False`. Pomiar wskazał
-etykietę nadwyżkową, ale przestawienie domyślnej czeka na skalibrowane `pt_mult` przy h=63
-z **realnego** panelu — patrz „Wdrożenie" wyżej.
+**Stan 2026-08-05: WŁĄCZONA.** Włączył ją pomiar, nie preferencja — realny panel 414 symboli
+wskazał h=63 + nadwyżkową jako zwycięzcę, przy `horizontal_share` 0.6449 w paśmie.
 **Co ZOSTAJE absolutne, świadomie:** `next_returns` (P&L książki — książka jest long-only na
 gotówce, a `relative_metrics` już odejmuje uniwersum, żeby dać `sharpe_active`; odjęcie benchmarku
 drugi raz po cichu zmieniłoby to, co czyta warunek ekonomiczny bramki) oraz `signed_return`

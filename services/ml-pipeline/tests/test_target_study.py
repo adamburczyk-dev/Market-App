@@ -139,7 +139,10 @@ def test_target_scoring_is_model_free_and_ranks_candidates():
 def test_label_params_default_to_the_calibrated_width():
     assert LabelParams().pt_mult == pytest.approx(1.0)
     assert LabelParams().sl_mult == pytest.approx(1.0)
-    assert LabelParams().excess is False  # absolute stays the default until measured
+    # Flipped 2026-08-05 BY the measurement it was waiting for: on the real
+    # 414-symbol panel h=63 + excess wins with horizontal_share 0.6449, inside
+    # the 40-70% band, so pt_mult stays 1.0 as well.
+    assert LabelParams().excess is True
 
 
 def test_the_target_ranking_ignores_columns_the_model_can_never_consume():
