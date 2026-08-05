@@ -34,7 +34,7 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback) 
 monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All 13 services (9 core +
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
-**Verified ground truth** (test counts measured 2026-08-04, not from memory — **1441 testów
+**Verified ground truth** (test counts measured 2026-08-04, not from memory — **1463 testów
 zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared. Uwaga: pomiar wykonany
 na **Pythonie 3.14** na maszynie użytkownika — to jedyny zainstalowany tam interpreter, a
 `requires-python = ">=3.12"` go dopuszcza; wszystkie zależności łącznie z `torch` 2.13 mają koła
@@ -43,7 +43,7 @@ dla 3.14. Wcześniejsze liczniki mierzono na 3.12 w piaskownicy):
 | Komponent | Port | Rola | Testy |
 |---|---|---|---|
 | `shared/trading-common` | — | Kontrakty, wspólne obliczenia, **registry strategii** i **statystyki ryzyka** — wszystko, co musi być identyczne po obu stronach granicy serwisów | 328 |
-| `market-data` | 8001 | OHLCV: pobranie (Yahoo/Alpha Vantage), walidacja, TimescaleDB, cache, harmonogram przyrostowy | 71 |
+| `market-data` | 8001 | OHLCV: pobranie (Yahoo/Alpha Vantage), walidacja, TimescaleDB, cache, harmonogram przyrostowy | 81 |
 | `feature-engine` | 8002 | Wskaźniki Tier-1 + wzbogacenie Tier-2, rangi przekrojowe (`/ranked`) | 38 |
 | `strategy` | 8003 | **Każda aktywna reguła** z registry → `RiskEnvelope` → `CostAwareFilter` → własny sygnał; monitor degradacji per strategia | 60 |
 | `backtest` | 8004 | Ocena **reguły z registry** na historii symbolu + walk-forward, tygodniowa rewalidacja, krzywa kapitału | 58 |
@@ -51,12 +51,12 @@ dla 3.14. Wcześniejsze liczniki mierzono na 3.12 w piaskownicy):
 | `risk-mgmt` | 8006 | Sizing adaptacyjny, limity reżimowe i sektorowe, wyłącznik z zatrzaskiem, rejestr zleceń | 133 |
 | `execution` | 8007 | Paper broker, wyjścia ochronne SL/TP, likwidacja na BLACK, feedback portfela, **historia kapitału** | 60 |
 | `notification` | 8008 | 5 strumieni → alerty (log/Slack/Telegram/e-mail) | 33 |
-| `fundamental-data` | 8009 | SEC EDGAR, Piotroski 9/9, **panel point-in-time** (`filed_at`) | 54 |
-| `macro-data` | 8010 | FRED + detekcja reżimu → `macro.regime_changed`, **panel vintage (ALFRED)** | 54 |
+| `fundamental-data` | 8009 | SEC EDGAR, Piotroski 9/9, **panel point-in-time** (`filed_at`) | 57 |
+| `macro-data` | 8010 | FRED + detekcja reżimu → `macro.regime_changed`, **panel vintage (ALFRED)** | 60 |
 | `company-classifier` | 8011 | Profil → styl inwestycyjny + routing stosu modeli | 25 |
 | `signal-aggregator` | 8012 | **Węzeł decyzyjny**: każda strategia osobno + ML + makro → jedna decyzja z poziomami i sektorem | 97 |
 | `dashboard` | 8501 | BFF nad HTTP pozostałych serwisów + **6 sekcji z wykresami** (kapitał, ryzyko, strategie, backtest, ML z ważnością cech, zdrowie) | 37 |
-| `scripts/` | — | Bootstrap uniwersum, diagnostyka stacku, audyt zależności | 36 |
+| `scripts/` | — | Bootstrap uniwersum, diagnostyka stacku, audyt zależności | 39 |
 
 Co z tego jest **wiążące**, a nie tylko opisowe:
 
@@ -764,6 +764,55 @@ danych (414 symboli × 20 lat) i seria defektów operacyjnych znalezionych dopie
   więc szerokość zwycięzcy czyta się z `targets.candidates[]`. Kontrakt sprawdzony **po drucie**
   przez realny JetStream: `label_kind: "excess"` i `horizon_days: 63` przechodzą round-trip,
   a wiadomość bez tego pola parsuje się z `"absolute"`.
+
+- 2026-08-05 — **Pierwsza kampania na realnym stacku: osiem defektów, których żaden test nie mógł
+  złapać.** Wszystkie wymagały prawdziwego FRED-a, prawdziwego PostgreSQL-a albo polskiej konsoli
+  Windows; wszystkie ujawniły się dopiero, gdy 13 serwisów faktycznie wstało i sięgnęło po dane.
+  **Makro — cztery warstwy, każda zasłaniająca następną.** FRED odmawia odpowiedzi obejmującej
+  więcej niż **2000 dat vintage**, a seria DZIENNA rewidowana codziennie ma ich ~3100 przez 20 lat;
+  obie serie czytane przez klasyfikator reżimu są dzienne, więc limit nie był przypadkiem
+  brzegowym, tylko całą funkcjonalnością. Ciało odpowiedzi było **wyrzucane**, a to jedyne miejsce,
+  gdzie FRED tłumaczy 400 — ta sama lekcja co puste `HTTP 500: {}`. Po naprawie pobierania padł
+  zapis: **83 210 parametrów bindowania** przy limicie 65 535 Postgresa (każdy fixture mieści się
+  w jednym zapytaniu, więc pokazał to dopiero realny wolumen). A na końcu okazało się, że `T10Y2Y`
+  i `BAA10Y` są **WYLICZANE** przez FRED i ALFRED archiwizuje ich vintage dopiero od 2014-01-27 —
+  odczyt as-of dla 2005–2014 nie zwracał nic, czyli 9 z 20 lat panelu bez reżimu. Serie źródłowe
+  (`DGS10`, `DGS2`, `BAA`) mają vintage od 2005, więc przechowujemy je i **wyprowadzamy spready
+  przy odczycie** definicjami samego FRED-a — tak jak reżim, żeby nie zamrozić jednej wersji
+  definicji w danych. **Klucz API był logowany jawnym tekstem** (httpx wkłada pełny URL do
+  komunikatu wyjątku); zredagowany. Efekt: 38 613 wierszy vintage i **7518 sklasyfikowanych dni**
+  2006→2026 tam, gdzie wcześniej było zero — werdykty zgadzają się z historią, choć nikt ich do
+  niej nie dopasowywał (kryzys XI 2008, VIII 2011, III 2020).
+  **EDGAR — rekomendowałem złą naprawę dla 7 z 8 spółek i skorygował mnie pomiar.** Osiem żywych
+  firm padło z „no EDGAR fundamentals"; postawiłem na reorganizacje korporacyjne. Prawdą było co
+  innego: **`companyconcept` zwraca pustą listę dla tagów, które SEC ewidentnie ma** (Corning:
+  0 przez concept, 152 obserwacje przez `companyfacts`). Klient czyta teraz `companyfacts` — jedno
+  żądanie na SPÓŁKĘ zamiast na TAG, czyli ~20× mniej wywołań. Reorganizacją był tylko Exxon
+  (`XOM` → ExxonMobil Holdings, 0 rocznych; historia pod CIK 34088, 48 rocznych) plus `AEP`, którego
+  w mapie SEC w ogóle nie ma. **Automatycznego wykrywania poprzednika świadomie NIE zbudowano:**
+  EDGAR nie wystawia takiej relacji, a jedyny pozorny sygnał — prefiks numeru akcesyjnego — oznacza
+  podmiot SKŁADAJĄCY. Zmierzone na tych właśnie tickerach: heurystyka wskazuje **State Street** jako
+  poprzednika Chubb, Corning, Huntington, Principal i Bunge, a **JPMorgan** jako NXP (to instytucje
+  składające 13F/13G o tych spółkach) — trafia dla Exxona przez przypadek i myli się 7 razy na 8,
+  a pomyłka podstawia wiarygodne finanse NIEWŁAŚCIWEJ firmy do modelu przekrojowego. Stąd ręczna
+  tablica `HISTORICAL_CIKS`, gdzie każdy wpis niesie liczbę sprawozdań, która go weryfikuje.
+  Panel: 404 → **413 spółek, 9278 okresów**, mediana 24 na spółkę.
+  **Harmonogram nie działał na laptopie, i to z powodu, którego nie da się załatać.** `asyncio.sleep`
+  mierzy czas **monotoniczny**, który staje, gdy host śpi — zmierzone: **20,0 h zegarowo wobec 4,3 h
+  monotonicznie** po jednej nocy, więc timer wycelowany w 23:00 UTC wciąż odliczał następnego
+  popołudnia i dzienne pobranie nie odpaliło ani razu. Wyrównanie do godziny jest na takiej maszynie
+  nieosiągalne. Harmonogram to teraz **heartbeat co 30 min** zadający pytanie ZEGAROWE (czy istnieje
+  ukończone pobranie pokrywające najnowszą dostępną sesję); uśpienie opóźnia uderzenie, ale nie może
+  zafałszować odpowiedzi. `FETCH_AT_HOUR_UTC` znaczy teraz „godzina, po której widać dzisiejsze
+  zamknięcie": pobranie sprzed niej zapisuje się jako pokrywające POPRZEDNIĄ sesję, więc poranny bieg
+  nie zamyka dnia i najwyżej dwa pobrania dziennie.
+  **Do tego:** `.env.example` nie dokumentował **22** zmiennych czytanych przez compose (w tym
+  `FETCH_SYMBOLS`, bez którego stack wstaje zdrowy i nie robi nic) i dokumentował **3**, których nic
+  nie czyta — przypięte testem w obie strony; bootstrap wywracał się na cp1250 przy PIERWSZYM
+  `print`; żywa tabela `ohlcv` miała klucz `(id, ts)` sprzed poprawki, bo `create_all` nie migruje
+  istniejących tabel; a uniwersum handlowe istniało wyłącznie wewnątrz artefaktu `reports/`.
+  Liczniki: market-data 71 → 81, macro-data 54 → 60, fundamental-data 54 → 57, scripts 36 → 39 →
+  **bateria 1463**; ruff + format + mypy czyste, `check-dependencies` OK.
 
 **Next (2026-08-04): D2 wdrożona co do mechanizmu, czeka na JEDNĄ liczbę z realnego panelu.**
 
