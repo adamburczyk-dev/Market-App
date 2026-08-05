@@ -1,25 +1,32 @@
-"""Did today's pull already happen? — the question a part-time stack must ask.
+"""Has today's pull happened yet? — asked on a heartbeat, not on a timer.
 
-`PeriodicTask` aligns its first run to `FETCH_AT_HOUR_UTC` so the daily pull
-lands after a market close rather than wherever the container happened to
-start. That is right for a stack that runs continuously, and WRONG for one that
-does not: a container up from 09:00 to 18:00 never reaches 23:00 UTC, so the
-scheduled pull never fires — not late, never. Nothing logs an error, because
-nothing failed; the run was simply always still in the future.
+Two things make a once-a-day aligned timer wrong for a stack that is not up
+around the clock, and the second one is the reason this module exists at all.
 
-So on boot we ask whether the pull already ran TODAY, and if not, run it now
-instead of waiting. The regular schedule stays exactly as it was: if the
-container happens to be up at the configured hour, that run happens too and is
-a cheap incremental no-op, because `plan_fetch` resumes from the last stored
-bar.
+A container up from 09:00 to 18:00 never reaches FETCH_AT_HOUR_UTC, so an
+aligned first run fires NEVER — not late. That much is obvious once stated.
 
-The marker is a DATE, not a timestamp, and it is written only after a run
-finishes. A run that crashes half way leaves the day unmarked, so the next boot
-retries it — the opposite bias would silently skip a day of data.
+The second is not: `asyncio.sleep` measures MONOTONIC time, which stops while
+the host is suspended. Measured on the user's laptop after one night — 20.0
+hours of wall clock against 4.3 hours of monotonic — so a timer set for "in
+four hours" was still counting down the following afternoon. On a machine that
+sleeps, an aligned daily timer cannot hold its alignment: it drifts by exactly
+as much as the machine rested, and never lands on the hour it was aimed at.
+
+So the schedule is a short HEARTBEAT that asks a wall-clock question: is there
+a completed pull recorded for today? Suspend just delays the next beat; it
+cannot corrupt the answer, because the answer is a date comparison rather than
+an elapsed-time one.
+
+`FETCH_AT_HOUR_UTC` keeps its meaning as the hour after which a same-day pull
+can see today's close. A pull that runs before it is recorded as covering the
+PREVIOUS session, so one later beat the same day picks up the close — at most
+two pulls a day, and the loop terminates because the second one is recorded
+after the hour.
 """
 
 from collections.abc import Awaitable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
 
 import structlog
@@ -87,14 +94,31 @@ class NullSyncMarker:
         return None
 
 
-def needs_catchup(last_sync: date | None, now: datetime | None = None) -> bool:
-    """True when no successful pull has been recorded for today (UTC).
+def coverage_date(now: datetime, close_hour: int) -> date:
+    """Which session a pull running at `now` can actually have covered.
 
-    Compared by DATE in UTC, matching how the schedule's hour is expressed. A
-    marker dated in the future — a clock that jumped, a restored snapshot —
-    counts as "already synced" rather than triggering a pull on every boot
-    until the calendar catches up.
+    Before the close hour the provider has nothing for today, so the run is
+    recorded against yesterday. That is what lets a later beat the same day
+    fetch today's close instead of the marker claiming the day is finished.
+    """
+    return now.date() if now.hour >= close_hour else now.date() - timedelta(days=1)
+
+
+def needs_catchup(
+    last_sync: date | None,
+    now: datetime | None = None,
+    close_hour: int = 23,
+) -> bool:
+    """True when no completed pull covers the latest session available now.
+
+    A date comparison, deliberately — not elapsed time. A suspended host makes
+    elapsed time lie by however long it slept, while "is the marker older than
+    the session we could fetch" survives any amount of suspension.
+
+    A marker dated in the future — a clock that jumped, a restored snapshot —
+    counts as covered rather than triggering a pull on every beat until the
+    calendar catches up.
     """
     if last_sync is None:
         return True
-    return last_sync < (now or datetime.now(UTC)).date()
+    return last_sync < coverage_date(now or datetime.now(UTC), close_hour)

@@ -46,10 +46,13 @@ class Settings(BaseSettings):
     # single day unattended, which is what the "30 days of paper trading"
     # rule requires before any real capital.
     SCHEDULE_FETCH_ENABLED: bool = True
-    # A stack that is not up 24/7 never reaches FETCH_AT_HOUR_UTC, so the
-    # aligned daily schedule would never fire even once — not late, never. On
-    # boot, run the pull immediately if none is recorded for today.
-    FETCH_CATCHUP_ON_START: bool = True
+    # How often to ASK whether today's session is already covered. Short,
+    # because the answer is a cheap date comparison and the pull itself is
+    # skipped when nothing is due. A once-a-day timer cannot do this job on a
+    # machine that sleeps: asyncio.sleep measures monotonic time, which stops
+    # during suspend — measured 20.0h wall against 4.3h monotonic after one
+    # night, so a 4-hour timer was still pending the next afternoon.
+    FETCH_CHECK_INTERVAL_S: float = 1_800.0  # 30 min
     # Comma-separated. Empty = nothing to pull, and the job stays down rather
     # than inventing a universe.
     FETCH_SYMBOLS: str = ""

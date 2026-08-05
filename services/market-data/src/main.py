@@ -1,4 +1,3 @@
-import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
@@ -9,13 +8,18 @@ import redis.asyncio as aredis
 import structlog
 from fastapi import FastAPI
 from sqlalchemy import text
-from trading_common.scheduler import PeriodicTask, seconds_until_hour
+from trading_common.scheduler import PeriodicTask
 from trading_common.schemas import Interval
 
 from src.api import router as api_router
 from src.config import settings
 from src.core.cache import Cache, InMemoryCache, RedisCache
-from src.core.catchup import NullSyncMarker, RedisSyncMarker, needs_catchup
+from src.core.catchup import (
+    NullSyncMarker,
+    RedisSyncMarker,
+    coverage_date,
+    needs_catchup,
+)
 from src.core.fetchers import build_default_fetcher
 from src.core.incremental import is_weekend
 from src.core.observability import setup_observability
@@ -150,7 +154,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.service = service
 
     scheduler: PeriodicTask | None = None
-    catchup_task: asyncio.Task[None] | None = None
     fetch_symbols = settings.fetch_symbols
     if settings.SCHEDULE_FETCH_ENABLED and fetch_symbols:
 
@@ -172,40 +175,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             RedisSyncMarker(redis_client) if redis_client is not None else NullSyncMarker()
         )
 
-        async def _sync_and_mark() -> None:
+        async def _maybe_sync() -> None:
+            """One heartbeat: pull only if today's session is not covered yet.
+
+            The question is a DATE comparison, so a suspended host merely
+            delays the next beat instead of corrupting the schedule — which an
+            elapsed-time timer cannot say for itself.
+            """
+            now = datetime.now(UTC)
+            if not needs_catchup(await marker.last_sync(), now, settings.FETCH_AT_HOUR_UTC):
+                return
+            logger.info(
+                "Sync starting — no completed pull covers the latest session",
+                covers=coverage_date(now, settings.FETCH_AT_HOUR_UTC).isoformat(),
+            )
             await _sync_job()
-            # Only after the run finishes. A crash mid-pull leaves the day
-            # unmarked so the next boot retries it; marking first would skip a
-            # day of data on the strength of an attempt.
-            await marker.mark(datetime.now(UTC).date())
+            # Recorded only after the run finishes, and against the session it
+            # could actually have covered. A crash leaves the day uncovered so
+            # the next beat retries; marking first would skip a day of data on
+            # the strength of an attempt.
+            await marker.mark(coverage_date(datetime.now(UTC), settings.FETCH_AT_HOUR_UTC))
 
         scheduler = PeriodicTask(
             "market-data-sync",
-            interval_s=settings.FETCH_INTERVAL_S,
-            job=_sync_and_mark,
-            # Align to the configured hour so the first run lands after a close,
-            # not wherever the container happened to start.
-            initial_delay_s=seconds_until_hour(datetime.now(UTC), settings.FETCH_AT_HOUR_UTC),
+            interval_s=settings.FETCH_CHECK_INTERVAL_S,
+            job=_maybe_sync,
+            # Beat immediately: on a stack that runs a few hours a day, waiting
+            # even one interval can be the whole window.
+            initial_delay_s=0.0,
         )
         scheduler.start()
-
-        if settings.FETCH_CATCHUP_ON_START:
-            # A stack that is not up 24/7 never reaches FETCH_AT_HOUR_UTC, so
-            # the aligned schedule above would never fire even once. Ask
-            # whether today's pull already happened, and if not do it now.
-            #
-            # As a background task, NOT awaited here: 455 symbols at a 1s pause
-            # is minutes of work, and blocking the lifespan would fail the
-            # health check before the container ever reported ready — the
-            # mistake ml-pipeline already made with its long routes.
-            async def _catchup() -> None:
-                if not needs_catchup(await marker.last_sync()):
-                    logger.info("Catch-up pull not needed — already synced today")
-                    return
-                logger.info("Catch-up pull starting — no sync recorded for today")
-                await _sync_and_mark()
-
-            catchup_task = asyncio.create_task(_catchup())
     elif settings.SCHEDULE_FETCH_ENABLED:
         logger.info("Scheduled pull idle — set FETCH_SYMBOLS to enable it")
 
@@ -234,13 +233,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down service", service=settings.SERVICE_NAME)
-    if catchup_task is not None and not catchup_task.done():
-        # A catch-up pull can outlive a short-lived container; cancelling
-        # leaves the day unmarked, so the next boot picks it up again rather
-        # than believing a half-finished run counted.
-        catchup_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await catchup_task
     if scheduler is not None:
         await scheduler.stop()
     if nats_client is not None:
