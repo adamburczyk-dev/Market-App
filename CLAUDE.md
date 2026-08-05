@@ -34,7 +34,7 @@ feature-engine → strategy → risk-mgmt → execution → portfolio feedback) 
 monitoring, notification alerting, and a dashboard BFF over the HTTP APIs. **All 13 services (9 core +
 4 ML/AI extension) are now functionally implemented** — no skeletons left; Direction #3 complete.
 
-**Verified ground truth** (test counts measured 2026-08-04, not from memory — **1463 testów
+**Verified ground truth** (test counts measured 2026-08-05, not from memory — **1464 testów
 zielonych**; `ruff` + `ruff format` + `mypy` czyste, `--strict` na shared. Uwaga: pomiar wykonany
 na **Pythonie 3.14** na maszynie użytkownika — to jedyny zainstalowany tam interpreter, a
 `requires-python = ">=3.12"` go dopuszcza; wszystkie zależności łącznie z `torch` 2.13 mają koła
@@ -47,7 +47,7 @@ dla 3.14. Wcześniejsze liczniki mierzono na 3.12 w piaskownicy):
 | `feature-engine` | 8002 | Wskaźniki Tier-1 + wzbogacenie Tier-2, rangi przekrojowe (`/ranked`) | 38 |
 | `strategy` | 8003 | **Każda aktywna reguła** z registry → `RiskEnvelope` → `CostAwareFilter` → własny sygnał; monitor degradacji per strategia | 60 |
 | `backtest` | 8004 | Ocena **reguły z registry** na historii symbolu + walk-forward, tygodniowa rewalidacja, krzywa kapitału | 58 |
-| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania, **ważność cech** | 357 |
+| `ml-pipeline` | 8005 | Zbiór, trening, bramka G0–G5, rejestr MLflow, serwowanie, monitoring driftu, badania, **ważność cech** | 358 |
 | `risk-mgmt` | 8006 | Sizing adaptacyjny, limity reżimowe i sektorowe, wyłącznik z zatrzaskiem, rejestr zleceń | 133 |
 | `execution` | 8007 | Paper broker, wyjścia ochronne SL/TP, likwidacja na BLACK, feedback portfela, **historia kapitału** | 60 |
 | `notification` | 8008 | 5 strumieni → alerty (log/Slack/Telegram/e-mail) | 33 |
@@ -814,15 +814,48 @@ danych (414 symboli × 20 lat) i seria defektów operacyjnych znalezionych dopie
   Liczniki: market-data 71 → 81, macro-data 54 → 60, fundamental-data 54 → 57, scripts 36 → 39 →
   **bateria 1463**; ruff + format + mypy czyste, `check-dependencies` OK.
 
-**Next (2026-08-04): D2 wdrożona co do mechanizmu, czeka na JEDNĄ liczbę z realnego panelu.**
+- 2026-08-05 — **D2 ZAMKNIĘTA: horyzont 63 i etykieta nadwyżkowa są domyślne, bo pomiar tak
+  powiedział.** Studium celu na **414 symbolach × 5293 świece** (29 min, realny stack) dało
+  zwycięzcę **h=63 + nadwyżkowa** z `pt_mult` **1.0** i `horizontal_share` **0.6449** — wewnątrz
+  pasma 40–70%, więc **szerokość barier NIE musi się zmienić**. To była jedyna otwarta niewiadoma:
+  przy h=63 bariery są 2,51× szersze, ale ścieżka ma 6,3× więcej barów, żeby ich dotknąć, i oba
+  efekty niemal się znoszą. Porządek **63 ≻ 21 ≻ 10** i **nadwyżkowa ≻ absolutna** odtwarza się na
+  każdym poziomie; wicemistrzem h=63 absolutnego jest `momentum_12_1` z IC +0.049 — dokładnie ten
+  z lipca. **Zastrzeżenie z lipca zamknięte:** liczby policzono z `feature_scope: "model contract
+  only"`, więc zwycięzcą jest `realized_vol_20` (bezwymiarowa), a nie `close`. Kontrola zgodności:
+  pomiar przy h=10 daje `horizontal_share` **0.6029** wobec udokumentowanych 60,2% — panel i kod
+  zgadzają się z pomiarem sprzed tygodnia co do trzeciego miejsca po przecinku.
+  Przestawione razem z horyzontem: `test_size` 63 → **189**, `holdout_size` 126 → **252**,
+  `val_size` 63 → **126** — bo księga transzowa odświeża rękaw `t mod horizon`, więc przy
+  `test_size == horizon` **każdy fold jest w 100% rozgrzewką**, a każdy Sharpe, obrót i koszt
+  w bramce byłby stanem przejściowym. `OUTCOME_DROP_AFTER_DAYS` i `INFERENCE_LOG_MAXLEN` przeliczyły
+  się same, bo są wyprowadzone.
+  **Złapane przez własny test przy przestawianiu:** krok pinujący fixture'y pinował `horizon`, ale
+  **nie `excess`**, więc `test_build_dataset_actually_uses_the_excess_label` po zmianie domyślnej
+  porównywał nadwyżkową z nadwyżkową i przechodził na obu gałęziach. Test o tym, czy flaga zmienia
+  zachowanie, nie może opierać się na jej wartości domyślnej — obie strony są teraz jawne.
+  Liczniki: ml-pipeline 357 → 358 → **bateria 1464**; backtest 58, signal-aggregator 97,
+  dashboard 37 i shared 328 bez zmian; ruff + mypy czyste, `check-dependencies` OK.
+  **Kontrola anty-szczęściowa:** cofnięcie `excess` wywala test domyślnych; ustawienie h=63 przy
+  STARYCH oknach wywala nowy test własności („folds are mostly tranche warm-up") — czyli dokładnie
+  ten defekt, przed którym przeparametryzowanie chroni. Artefakt: `reports/target-study-2026-08-05.json`.
 
-Ścieżka horyzontu 63 jest zbudowana, przetestowana i zweryfikowana na żywo; **domyślne wartości
-wciąż to h=10, `excess=False`**. Do przestawienia brakuje skalibrowanego `pt_mult` przy h=63
-z **realnych** 414 symboli — czyli `targets.candidates[]` → wpis `horizon == 63 && excess == true`
-→ `pt_mult`, `horizontal_share`, `in_target_band`. ⚠️ **Nie z bloku `calibration`** — on jest
-kalibrowany na bieżącym horyzoncie i wyglądałby jak zielone światło. Panel syntetyczny dał 1.0
-w paśmie, ale to dowód na maszynerię, nie na liczbę. Razem z przestawieniem idą okna ewaluacji
-(`test_size` 63 → 189, `holdout_size` → 252, `val_size` → 126) — arytmetyka w `docs/decisions/06`.
+**Next (2026-08-05): D2 zamknięta — kolejnym krokiem jest BIEG TRENINGOWY na h=63.**
+
+Cel jest przestawiony i potwierdzony pomiarem, dane są kompletne (OHLCV 414 symboli × 20 lat,
+panel makro 7518 dni z reżimem, fundamenty 413 spółek × mediana 24 okresy). Nic nie blokuje
+`POST /models/train` — i to jest teraz właściwy następny ruch, bo **wszystkie liczby, na których
+stoją pozostałe decyzje, pochodzą z biegu przy h=10**: bramka odrzuciła model na 5 z 6 warunków,
+sonda pojemności wymaga powtórzenia po naprawie kontroli, a D8 (reżim jako cecha) czeka na IC
+kolumn `macro_*`, które dopiero teraz mają czym być wypełnione.
+**Czego się spodziewać, żeby nie odczytać wyniku źle:** przy h=63 `n_effective_samples` spada
+z ~1873 do **~294**, przy regule „≥50 obserwacji na cechę" (×15 cech = 750). Bieg jest wart
+zrobienia, ale **ujemny wynik przy tej liczbie nie rozstrzyga o horyzoncie** — rozstrzyga o tym,
+że próba jest za mała, i wtedy właściwą odpowiedzią jest szersze uniwersum albo CPCV, a nie powrót
+do h=10.
+**Wciąż otwarte i teraz PILNIEJSZE: D7** — silnik backtestu rebalansuje dziennie, a ocena ML używa
+transz 1/h. Przy h=10 rozjazd wynosił 10 sesji, przy 63 wynosi 63, więc Sharpe z backtestu przestał
+być dowodem dla bramki w jakimkolwiek sensie.
 
 **Poprzedni „Next" (2026-08-03) — tor predykcji zablokowany na pomiarze — dalej obowiązuje poza D2:**
 
