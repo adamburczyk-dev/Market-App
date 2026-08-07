@@ -273,6 +273,32 @@ Co się dzieje po kolei:
 3. **Trening** (`--train`) — zbiór przekrojowy dla całego uniwersum, etykiety triple-barrier, purged walk-forward z embargiem, bramka aktywacji. Model trafia do MLflow **niezależnie od wyniku bramki**; baseline driftu rejestruje się automatycznie.
 4. **Raport** (`--report-out`) — samowystarczalny JSON: pokrycie, kontekst zbioru (ile symboli miało historię, ile sesji, `positive_rate`) i pełny raport bramki z diagnostyką każdego foldu.
 
+### Raport przeżywa bieg, który go stworzył
+
+Trening na pełnym uniwersum kosztuje godziny i daje **jeden** artefakt. Trzy razy ten artefakt
+zginął z powodu niezwiązanego z tym, czy praca się udała: timeout czytania u klienta, zatrzymanie
+kontenera, i przerwanie w trakcie. Dlatego raport nie mieszka już wyłącznie w pamięci procesu:
+
+| Gdzie | Co tam jest | Kiedy |
+|---|---|---|
+| `reports/train.json` | pełny raport ostatniego ukończonego biegu | zapisywany w chwili zakończenia |
+| `reports/train.progress.json` | **checkpoint** — foldy policzone do tej pory | w trakcie biegu; kasowany, gdy raport wyląduje |
+| `GET /runs/{operation}` | ten sam raport po HTTP | także po restarcie kontenera (czyta z dysku) |
+| `GET /runs/{operation}/progress` | checkpoint po HTTP | 404 = brak checkpointu, czyli stan normalny między biegami |
+
+`reports/` jest **bind-mountem z hosta** (`RUN_REPORT_DIR`), więc plik pojawia się na dysku od razu,
+niezależnie od tego, czy ktoś jeszcze słucha na endpoincie. Dwie własności, na których to stoi:
+
+- **zapis jest atomowy** (plik tymczasowy → `fsync` → `os.replace`), więc przerwanie w trakcie
+  zapisu zostawia albo stary kompletny raport, albo nowy — nigdy uciętego JSON-a, który czyta się
+  jak zepsuty wynik zamiast jak przerwany zapis;
+- **stary raport nie udaje świeżego** — `completed_at` przesuwa się przy każdym zapisie, a poller
+  w skrypcie bootstrapu akceptuje wyłącznie raport z nowym znacznikiem.
+
+Checkpoint niesie `pred_std` każdego policzonego foldu, i to jest powód, dla którego w ogóle
+istnieje: bieg ubity na 40. z 61 foldów nadal odpowiada, czy model **wariował, czy już zapadł się
+do stałej** — a te dwa wyniki wymagają przeciwnych ruchów.
+
 ### Bramka aktywacji — sześć warunków
 
 Sam Sharpe nie wystarcza i mamy na to dowód z własnego biegu: model o holdoutowym AUC **0.4865**

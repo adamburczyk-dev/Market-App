@@ -301,6 +301,13 @@ services:
       MARKET_DATA_URL: http://market-data:8000
       FUNDAMENTAL_DATA_URL: http://fundamental-data:8000
       MLFLOW_TRACKING_URI: sqlite:////app/mlruns/mlflow.db
+      # Long-run reports land on the HOST, not in a container volume. A
+      # training pass costs hours and produces one artifact; twice now that
+      # artifact was destroyed by something unrelated to the work succeeding
+      # (a client read timeout, then stopping the container). A bind mount
+      # means the report exists on disk the moment it is written, whether or
+      # not anything is still listening on the HTTP endpoint.
+      RUN_REPORT_DIR: /app/run-reports
       # serving: features.ready → ranked vector + macro regime → ml.signal_generated
       FEATURE_ENGINE_URL: http://feature-engine:8000
       MACRO_DATA_URL: http://macro-data:8000
@@ -309,6 +316,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     volumes:
       - ml_mlruns:/app/mlruns
+      - ../reports:/app/run-reports
     ports:
       - "8005:8000"
     depends_on:

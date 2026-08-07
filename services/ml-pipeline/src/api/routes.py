@@ -190,6 +190,23 @@ async def get_run(operation: str, service: MLPipelineService = Depends(get_servi
     return entry
 
 
+@router.get("/runs/{operation}/progress")
+async def get_run_progress(
+    operation: str, service: MLPipelineService = Depends(get_service)
+) -> dict:
+    """Checkpoint of a pass in flight — or of one that died before finishing.
+
+    Present while a run is going and after one was interrupted; cleared when
+    the real report lands, so its presence next to a completed run of the same
+    operation always means "this one did not finish". 404 means no checkpoint,
+    which is the normal state between runs.
+    """
+    progress = service.run_progress(operation)
+    if progress is None:
+        raise HTTPException(status_code=404, detail=f"no checkpoint recorded for {operation}")
+    return progress
+
+
 @router.post("/models/train")
 async def train(req: TrainRequest, service: MLPipelineService = Depends(get_service)) -> dict:
     """Run the full training pass (plan §6–§7): dataset → purged walk-forward →

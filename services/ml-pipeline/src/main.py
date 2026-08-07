@@ -21,6 +21,7 @@ from src.core.monitoring.drift_detector import DriftDetector
 from src.core.observability import setup_observability
 from src.core.outcomes import OutcomeResolver
 from src.core.registry import ModelRegistry
+from src.core.run_store import build_run_store
 from src.core.service import MLPipelineService
 from src.core.serving import ServingEngine
 from src.events.publisher import NatsPublisher, NullPublisher, Publisher, ensure_stream
@@ -104,6 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         inference_log=inference_log,
         resolver=resolver,
         aggregator_client=aggregator_client,
+        run_store=build_run_store(settings.RUN_REPORT_DIR),
         horizon_days=settings.LABEL_HORIZON_DAYS,
     )
     app.state.service = service

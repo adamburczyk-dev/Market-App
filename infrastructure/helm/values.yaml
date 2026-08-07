@@ -122,6 +122,12 @@ services:
       MARKET_DATA_URL: http://market-data:8000
       FUNDAMENTAL_DATA_URL: http://fundamental-data:8000
       MLFLOW_TRACKING_URI: sqlite:////app/mlruns/mlflow.db
+      # long-run reports (training, studies) survive the PROCESS that made them
+      # — same PVC caveat as mlruns above: without a volume a rescheduled pod
+      # starts empty, so this buys durability against a crash or a client
+      # timeout, NOT against the pod moving. Compose bind-mounts the host's
+      # reports/ instead, which is the arrangement that actually keeps them.
+      RUN_REPORT_DIR: /app/run-reports
       # serving: features.ready → ranked vector + macro regime → ml.signal_generated
       FEATURE_ENGINE_URL: http://feature-engine:8000
       MACRO_DATA_URL: http://macro-data:8000

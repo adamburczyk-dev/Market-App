@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     FUNDAMENTAL_DATA_URL: str = "http://fundamental-data:8000"
     MLFLOW_TRACKING_URI: str = "sqlite:///mlruns/mlflow.db"
     MODEL_NAME: str = "global_v1"
+    # Where long-run reports are written so they outlive the process that made
+    # them. Empty = in-memory only, which is the historical behaviour and the
+    # right default for tests and scripts (no directories created on import).
+    # Compose points it at a bind mount so a report lands on the host straight
+    # away: the h=63 training run was destroyed by stopping the container, and
+    # a report reachable only through a live HTTP endpoint is a report that
+    # depends on the container outliving the person reading it.
+    RUN_REPORT_DIR: str = ""
 
     # Serving (plan ML-2): features.ready → infer → ml.signal_generated
     FEATURE_ENGINE_URL: str = "http://feature-engine:8000"

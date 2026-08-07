@@ -10,8 +10,9 @@ closing a different way a model with no edge can look profitable. Only a
 gate-passing model may serve non-HOLD signals.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -141,54 +142,6 @@ class GateReport:
     importance: ImportanceReport | None = None
 
     def as_dict(self) -> dict:
-        def fold(f: FoldReport) -> dict:
-            return {
-                "name": f.name,
-                "n_train": f.n_train,
-                "n_test": f.n_test,
-                "auc": round(f.auc, 4),
-                "brier": round(f.brier, 4),
-                "sharpe": round(f.portfolio.sharpe, 4),
-                "mean_daily_return": round(f.portfolio.mean_daily_return, 6),
-                "avg_turnover": round(f.portfolio.avg_turnover, 4),
-                "avg_positions": round(f.portfolio.avg_positions, 2),
-                "n_portfolio_sessions": f.portfolio.n_sessions,
-                # discrimination diagnostics — separate real edge from luck
-                "base_rate": round(f.diagnostics.base_rate, 4),
-                "selected_hit_rate": round(f.diagnostics.selected_hit_rate, 4),
-                "lift": round(f.diagnostics.lift, 4),
-                "pred_mean": round(f.diagnostics.pred_mean, 4),
-                "pred_std": round(f.diagnostics.pred_std, 4),
-                "pred_p10": round(f.diagnostics.pred_p10, 4),
-                "pred_p90": round(f.diagnostics.pred_p90, 4),
-                # underfit-vs-no-signal diagnostics (T0-3)
-                "auc_train": round(f.auc_train, 4),
-                "brier_delta": round(f.brier_delta, 5),
-                "brier_delta_se": round(f.brier_delta_se, 5),
-                **f.fit,
-                **(
-                    {
-                        "ic_mean": round(f.relative.ic_mean, 5),
-                        "ic_std": round(f.relative.ic_std, 5),
-                        "icir": round(f.relative.icir, 4),
-                        "ic_positive_share": round(f.relative.ic_positive_share, 4),
-                        "n_cross_sections": f.relative.n_cross_sections,
-                        "sharpe_benchmark_ew": round(f.relative.sharpe_benchmark_ew, 4),
-                        "sharpe_active": round(f.relative.sharpe_active, 4),
-                        "sharpe_long_short": round(f.relative.sharpe_long_short, 4),
-                        "sharpe_gross": round(f.relative.sharpe_gross, 4),
-                        "sharpe_net": round(f.relative.sharpe_net, 4),
-                        "cost_drag_annualized": round(f.relative.cost_drag_annualized, 5),
-                        "turnover_daily_mean": round(f.relative.turnover_daily_mean, 4),
-                    }
-                    if f.relative is not None
-                    else {}
-                ),
-                **{f"baseline_ic_{k}": round(v, 5) for k, v in f.baseline_ic.items()},
-                "feature_ic": f.feature_ic,
-                **f.window,
-            }
-
         return {
             "passed": self.passed,
             "reasons": self.reasons,
@@ -199,9 +152,66 @@ class GateReport:
             # means it was not measured (repeats set to 0, or a holdout too
             # short to pair) — never "no feature mattered".
             "importance": self.importance.as_dict() if self.importance is not None else None,
-            "holdout": fold(self.holdout),
-            "folds": [fold(f) for f in self.folds],
+            "holdout": fold_as_dict(self.holdout),
+            "folds": [fold_as_dict(f) for f in self.folds],
         }
+
+
+def fold_as_dict(f: FoldReport) -> dict:
+    """One window's numbers, flattened.
+
+    Module-level rather than a closure inside ``GateReport.as_dict`` because
+    the progress checkpoint serializes folds too, and a checkpoint whose folds
+    had a different shape from the final report's would be unreadable next to
+    it — the whole point of the checkpoint is that it can be compared with what
+    a finished run would have said.
+    """
+    return {
+        "name": f.name,
+        "n_train": f.n_train,
+        "n_test": f.n_test,
+        "auc": round(f.auc, 4),
+        "brier": round(f.brier, 4),
+        "sharpe": round(f.portfolio.sharpe, 4),
+        "mean_daily_return": round(f.portfolio.mean_daily_return, 6),
+        "avg_turnover": round(f.portfolio.avg_turnover, 4),
+        "avg_positions": round(f.portfolio.avg_positions, 2),
+        "n_portfolio_sessions": f.portfolio.n_sessions,
+        # discrimination diagnostics — separate real edge from luck
+        "base_rate": round(f.diagnostics.base_rate, 4),
+        "selected_hit_rate": round(f.diagnostics.selected_hit_rate, 4),
+        "lift": round(f.diagnostics.lift, 4),
+        "pred_mean": round(f.diagnostics.pred_mean, 4),
+        "pred_std": round(f.diagnostics.pred_std, 4),
+        "pred_p10": round(f.diagnostics.pred_p10, 4),
+        "pred_p90": round(f.diagnostics.pred_p90, 4),
+        # underfit-vs-no-signal diagnostics (T0-3)
+        "auc_train": round(f.auc_train, 4),
+        "brier_delta": round(f.brier_delta, 5),
+        "brier_delta_se": round(f.brier_delta_se, 5),
+        **f.fit,
+        **(
+            {
+                "ic_mean": round(f.relative.ic_mean, 5),
+                "ic_std": round(f.relative.ic_std, 5),
+                "icir": round(f.relative.icir, 4),
+                "ic_positive_share": round(f.relative.ic_positive_share, 4),
+                "n_cross_sections": f.relative.n_cross_sections,
+                "sharpe_benchmark_ew": round(f.relative.sharpe_benchmark_ew, 4),
+                "sharpe_active": round(f.relative.sharpe_active, 4),
+                "sharpe_long_short": round(f.relative.sharpe_long_short, 4),
+                "sharpe_gross": round(f.relative.sharpe_gross, 4),
+                "sharpe_net": round(f.relative.sharpe_net, 4),
+                "cost_drag_annualized": round(f.relative.cost_drag_annualized, 5),
+                "turnover_daily_mean": round(f.relative.turnover_daily_mean, 4),
+            }
+            if f.relative is not None
+            else {}
+        ),
+        **{f"baseline_ic_{k}": round(v, 5) for k, v in f.baseline_ic.items()},
+        "feature_ic": f.feature_ic,
+        **f.window,
+    }
 
 
 def _mask(dates: list[datetime], allowed: set[datetime]) -> np.ndarray:
@@ -471,13 +481,63 @@ def run_importance_study(
     }
 
 
-def run_training(ds: Dataset, params: TrainingParams | None = None) -> tuple[Predictor, GateReport]:
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def report_progress(
+    callback: ProgressCallback | None,
+    stage: str,
+    done: int,
+    total: int,
+    folds: list[FoldReport],
+) -> None:
+    """Publish what the run has finished so far. Never raises.
+
+    A checkpoint exists to survive a failure, so it must not be able to CAUSE
+    one: a callback that throws (a full disk, a read-only mount) would abort a
+    training pass in order to protect a diagnostic, which is backwards.
+
+    The folds are serialized with the same function the final report uses, so
+    an interrupted run and a finished one can be read side by side. `pred_std`
+    is the field that makes this worth writing at all — a pass killed at fold
+    40 still answers whether the model was varying or had already collapsed,
+    and those two outcomes call for opposite next moves.
+    """
+    if callback is None:
+        return
+    try:
+        callback(
+            {
+                "stage": stage,
+                "folds_done": done,
+                "folds_total": total,
+                "updated_at": datetime.now(UTC).isoformat(),
+                "folds": [fold_as_dict(f) for f in folds],
+            }
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Progress callback failed", stage=stage, error=str(exc))
+
+
+def run_training(
+    ds: Dataset,
+    params: TrainingParams | None = None,
+    on_progress: ProgressCallback | None = None,
+) -> tuple[Predictor, GateReport]:
     """Walk-forward evaluation → gate report → final model.
 
     The returned model is trained on ALL available history (with the standard
     internal val split) regardless of the gate outcome — the caller decides
     what a failed gate means (register as non-production, keep serving HOLD).
     Raises ValueError when the dataset is too small to evaluate at all.
+
+    ``on_progress`` is called after every completed stage. On the full universe
+    this pass runs for hours and, until it returns, exists nowhere: an
+    interruption at fold 40 of 61 destroyed 40 fits that had already been paid
+    for AND the evidence of what they showed. The callback is the only channel
+    through which a run that never finishes can still say something — notably
+    whether predictions were varying, which is the difference between "the
+    model was learning and we lost it" and "it had already collapsed".
     """
     p = params or TrainingParams()
     sessions = sorted(set(ds.dates))
@@ -490,11 +550,13 @@ def run_training(ds: Dataset, params: TrainingParams | None = None) -> tuple[Pre
     work, holdout_train, holdout = holdout_split(ds, p)
 
     folds = purged_walk_forward(work, p.train_size, p.test_size, p.horizon, p.embargo)
+    report_progress(on_progress, "folds", 0, len(folds), [])
     fold_reports: list[FoldReport] = []
     for k, fold in enumerate(folds):
         model = fit_on_dates(ds, list(fold.train_dates), p)
         if model is None:
             logger.warning("Fold skipped — untrainable window", fold=k)
+            report_progress(on_progress, "folds", k + 1, len(folds), fold_reports)
             continue
         fold_reports.append(
             score_window(
@@ -507,8 +569,10 @@ def run_training(ds: Dataset, params: TrainingParams | None = None) -> tuple[Pre
                 fit_dates=set(fold.train_dates),
             )
         )
+        report_progress(on_progress, "folds", k + 1, len(folds), fold_reports)
 
     # Holdout model: trained on everything BEFORE the holdout, purged at the seam.
+    report_progress(on_progress, "holdout", len(folds), len(folds), fold_reports)
     holdout_model = fit_on_dates(ds, holdout_train, p)
     if holdout_model is None:
         raise ValueError("holdout window is untrainable (too small or single-class)")
@@ -542,6 +606,9 @@ def run_training(ds: Dataset, params: TrainingParams | None = None) -> tuple[Pre
     )
 
     # Final model on the full history (fresh val split at the very end).
+    # Checkpointed because everything scored is already done by here: an
+    # interruption during this last fit loses a model, not the evidence.
+    report_progress(on_progress, "final_model", len(folds), len(folds), fold_reports)
     final_model = fit_on_dates(ds, sessions, p)
     if final_model is None:
         raise ValueError("full-history window is untrainable")

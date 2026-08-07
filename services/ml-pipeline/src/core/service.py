@@ -12,7 +12,7 @@ baseline and publish ModelDriftDetectedEvent when the verdict is actionable.
 
 import asyncio
 from dataclasses import asdict
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any
 
 import numpy as np
@@ -43,6 +43,7 @@ from src.core.model_store import MlflowModelStore
 from src.core.monitoring.drift_detector import DriftDetector, DriftReport
 from src.core.outcomes import OutcomeResolver
 from src.core.registry import ModelBaseline, ModelRegistry
+from src.core.run_store import NullRunStore, RunStorage
 from src.core.sector_study import run_sector_study
 from src.core.serving import ServingEngine
 from src.core.target_study import calibrate_barriers, score_targets
@@ -97,6 +98,7 @@ class MLPipelineService:
         inference_log: InferenceLog | None = None,
         resolver: OutcomeResolver | None = None,
         aggregator_client: Any = None,  # AggregatorClient protocol (record_outcome)
+        run_store: RunStorage | None = None,
         horizon_days: int = LABEL_HORIZON,
         data_contract: TrainingDataContract | None = None,
         dataset_params: DatasetParams | None = None,
@@ -116,6 +118,7 @@ class MLPipelineService:
         self._contract = data_contract or TrainingDataContract()
         self._dataset_params = dataset_params or DatasetParams()
         self._runs: dict[str, dict[str, Any]] = {}
+        self._run_store: RunStorage = run_store or NullRunStore()
 
     # --- completed runs, kept so a client timeout does not destroy them ------
 
@@ -128,22 +131,58 @@ class MLPipelineService:
         when the caller disconnects (measured, not assumed), so everything after
         the await still runs. Keeping the payload here is what makes it
         retrievable afterwards via GET /runs/{operation}.
+
+        The in-memory copy is per-process, which is one container restart away
+        from the same loss it was written to prevent — that is exactly how the
+        h=63 run was destroyed. The store writes the report to disk before this
+        returns, so the run survives the process that produced it.
         """
-        self._runs[operation] = {
-            "operation": operation,
-            "completed_at": datetime.now(UTC).isoformat(),
-            "result": result,
-        }
+        entry = self._run_store.save(operation, result)
+        self._runs[operation] = entry
+        # The checkpoint described a pass that is now over; a stale one sitting
+        # next to a finished report reads as "still running".
+        self._run_store.clear_progress(operation)
         return result
 
     def last_run(self, operation: str) -> dict[str, Any] | None:
-        return self._runs.get(operation)
+        """The last completed run — from memory, else from disk.
+
+        The disk fallback is what makes a cold container useful: after a
+        restart the process has no memory of anything, and the report is still
+        the most expensive artifact this service produces.
+        """
+        return self._runs.get(operation) or self._run_store.load(operation)
+
+    def run_progress(self, operation: str) -> dict[str, Any] | None:
+        """Checkpoint of a pass in flight (or of one that died mid-way)."""
+        return self._run_store.load_progress(operation)
+
+    def record_progress(self, operation: str, progress: dict[str, Any]) -> None:
+        """Checkpoint a long pass. Best-effort — never fails the run."""
+        self._run_store.save_progress(operation, progress)
+
+    def clear_progress(self, operation: str) -> None:
+        """Drop the checkpoint — the pass that owned it is over.
+
+        Called by the pass itself, not only by `record_run`: `record_run` is
+        invoked from the HTTP route, so leaving the cleanup there meant any
+        other caller (a script, a scheduled job) left behind a file that reads
+        as "still running" forever. The producer cleans up after itself.
+        """
+        self._run_store.clear_progress(operation)
 
     def runs(self) -> list[dict[str, Any]]:
         """Index only — the payloads are large and fetched one at a time."""
+        merged = {
+            entry["operation"]: entry.get("completed_at")
+            for entry in self._run_store.index()
+            if "operation" in entry
+        }
+        # Memory wins on collision: same process, so it is at least as fresh.
+        merged.update({name: entry["completed_at"] for name, entry in self._runs.items()})
         return [
-            {"operation": name, "completed_at": entry["completed_at"]}
-            for name, entry in sorted(self._runs.items())
+            {"operation": name, "completed_at": completed}
+            for name, completed in sorted(merged.items())
         ]
 
     @property
@@ -608,7 +647,22 @@ class MLPipelineService:
         # looks trained and means nothing; refuse instead of reporting success.
         contract = self._contract.validate(dataset, requested_sessions=requested_sessions)
         params_used = params or TrainingParams()
-        model, report = await asyncio.to_thread(run_training, dataset, params_used)
+
+        dataset_summary = _dataset_diagnostics(dataset, symbols)
+
+        # The pass below runs for hours on the full universe. Checkpoint each
+        # completed fold so an interruption leaves the evidence rather than
+        # only the bill. Carries the dataset summary because a fold's numbers
+        # are not interpretable without knowing what it was trained on.
+        # Runs on the worker thread — blocking IO belongs there.
+        def checkpoint(progress: dict[str, Any]) -> None:
+            self.record_progress("train", {**progress, "dataset": dataset_summary})
+
+        model, report = await asyncio.to_thread(
+            run_training, dataset, params_used, on_progress=checkpoint
+        )
+        # The pass is over — from here on the checkpoint would misrepresent it.
+        self.clear_progress("train")
 
         version: str | None = None
         # P4-1/P4-2: the registry persists an MLP state_dict and reconstructs
@@ -653,7 +707,7 @@ class MLPipelineService:
             "model_id": model_id,
             "samples": dataset.n_samples,
             "features": dataset.feature_names,
-            "dataset": _dataset_diagnostics(dataset, symbols),
+            "dataset": dataset_summary,
             # P3-1/P3-3: who was eligible when, and whether anybody ever left.
             "selection": selection,
             "dropped_zero_variance": dropped_features,
