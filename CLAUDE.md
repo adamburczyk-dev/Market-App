@@ -137,6 +137,20 @@ przez granicę serwisów.
     oczekujące głosy. Przy horyzoncie 10 sesji tracono ~2 tygodnie obserwacji; przy 63 to kwartał
     pętli uczącej znikający przy każdym deployu. Trwałość (Redis, jak `PortfolioState`) staje się
     warunkiem sensowności ML-3 dopiero po przestawieniu horyzontu — dlatego wpis, a nie zmiana.
+  - **FUND-1** (zmierzone 2026-08-07, na realnym panelu) **rodzina fundamentalna NIE MOŻE przejść
+    kontraktu danych na 20-letnim oknie** — i nie jest to kwestia backfillu, tylko częstotliwości
+    źródła. Czytamy EDGAR **wyłącznie rocznie (10-K)**, więc 20 lat to ~20 obserwacji na spółkę,
+    a panel zaczyna się dopiero przy pierwszym zgłoszeniu danej firmy. Zmierzony `neutral_fill_rate`
+    przy `fundamentals=True`: `fund_gross_profitability` **72%**, `fund_asset_growth` 69%,
+    `fund_book_to_market` 69%, `fund_leverage` 68%, `fund_accruals` 61%, `fund_roa` 59%,
+    `fund_earnings_yield` 59%, `fund_net_margin` 58%, `f_score` **48%** — przy progu kontraktu
+    **10%**. `fundamental_coverage` całego zbioru: 0.5759. Kontrakt odrzuca (422) i **ma rację**:
+    kolumna wypełniona neutralną rangą w 2 z 3 wierszy nie rankuje przekroju, tylko rozcieńcza
+    pozostałe. Trzy wyjścia, żadne darmowe: (a) **10-Q** — czterokrotnie więcej obserwacji, ale to
+    nowa ścieżka w `EdgarClient` i inna reguła as-of; (b) **krótsze okno** (np. 10 lat) — pokrycie
+    rośnie, próba spada o połowę, a przy h=63 `n_effective_samples` już jest wąskim gardłem;
+    (c) obniżenie progu — **odrzucone**, próg jest poprawny. Do czasu rozstrzygnięcia trening leci
+    z `fundamentals=False`, czyli na udokumentowanej domyślnej.
   - **P2-5** (z zarchiwizowanego planu predykcji, opcjonalne) fractional differentiation — do
     rozważenia dopiero, gdy cechy stacjonarne się wyczerpią.
   - **D7** the backtest engine still rebalances daily while ML evaluation uses `1/h` overlapping
@@ -839,6 +853,44 @@ danych (414 symboli × 20 lat) i seria defektów operacyjnych znalezionych dopie
   **Kontrola anty-szczęściowa:** cofnięcie `excess` wywala test domyślnych; ustawienie h=63 przy
   STARYCH oknach wywala nowy test własności („folds are mostly tranche warm-up") — czyli dokładnie
   ten defekt, przed którym przeparametryzowanie chroni. Artefakt: `reports/target-study-2026-08-05.json`.
+
+- 2026-08-07 — **Raport z biegu przeżywa bieg, który go stworzył — i trzeci raz był ostatnim.**
+  Trening na h=63 przeszedł u użytkownika i **przepadł razem z kontenerem**: `record_run` trzymał
+  raport w `self._runs`, czyli w słowniku na instancji serwisu, a `docker compose down` zabrał go
+  bez śladu. To ta sama strata co 31 lipca, tylko innym mechanizmem — wtedy timeout klienta, teraz
+  cykl życia procesu. Wspólne jest to, że **godziny obliczeń dają JEDEN artefakt**, a niszczyło go
+  za każdym razem coś niezwiązanego z tym, czy praca się udała.
+  `core/run_store.py` zapisuje raporty do katalogu przeżywającego proces. Dwie własności, nie sama
+  funkcja: **zapis jest atomowy** (plik tymczasowy → `fsync` → `os.replace`), więc przerwanie
+  zostawia stary kompletny raport albo nowy, nigdy uciętego JSON-a — a ucięty JSON czyta się jak
+  **zepsuty wynik**, nie jak przerwany zapis, i to jest gorsze niż brak pliku. Oraz **`completed_at`
+  przesuwa się przy każdym zapisie**, co dopiero teraz jest nośne: poller w skrypcie bootstrapu
+  akceptuje wyłącznie raport ze zmienionym znacznikiem, a zimny kontener od teraz MA poprzedni
+  raport, który mógłby podać jako odpowiedź na trwający bieg.
+  **Trzecia luka, na którą żaden z dwóch poprzednich mechanizmów nie pomagał: przerwanie W TRAKCIE.**
+  `run_training` publikuje teraz progres po każdym foldzie (`{operation}.progress.json`, endpoint
+  `GET /runs/{operation}/progress`). Bieg ubity na 40. z 61 foldów nadal odpowiada, czy `pred_std`
+  wariował, czy **już zapadł się do stałej** — a to są przeciwne wnioski wymagające przeciwnych
+  ruchów. Callback **nie może wywalić biegu**: diagnostyka, która przerywa pracę, którą opisuje, ma
+  odwróconą hierarchię. Serializator foldu wyciągnięty z domknięcia na poziom modułu, żeby
+  checkpoint i raport końcowy miały ten sam kształt — inaczej nie dałoby się ich porównać.
+  **Złapane przez nowy test end-to-end, nie przez przegląd**: czyszczenie checkpointu siedziało
+  wyłącznie w `record_run`, czyli w trasie HTTP, więc każdy inny wywołujący `train()` (skrypt,
+  zadanie cykliczne) zostawiał plik mówiący „jeszcze trwa" **na zawsze**. Producent sprząta teraz
+  po sobie. Do tego `operation` trafia do magazynu **ze ścieżki URL-a**, czyli jest niezaufanym
+  wejściem zamienianym na nazwę pliku — odrzucane na ścisłym slugu, nie sanityzowane po cichu,
+  bo przepisanie `../../etc/passwd` na coś nieszkodliwego ukrywa, że ktoś o to poprosił.
+  Compose montuje hostowe `reports/` (`RUN_REPORT_DIR`), więc plik jest na dysku w chwili zapisu,
+  niezależnie od tego, czy ktoś słucha na endpoincie; Helm dostaje tę samą zmienną z zastrzeżeniem
+  o PVC, które i tak już obowiązuje dla `mlruns`. Sprawdzone parserem zamiast założone: `values.yaml`
+  i compose **nie mają duplikatu klucza** (ten defekt raz już po cichu wyrzucił cały blok `env`),
+  a render compose pokazuje bind mount i zmienną. `helm lint` **niewykonany — helma nie ma na tej
+  maszynie**, więc to jedyna rzecz tutaj niezweryfikowana uruchomieniem.
+  Liczniki: ml-pipeline 358 → 379 (+21) → **bateria 1485**; ruff + format + mypy czyste,
+  dashboard 37 i scripts 39 bez zmian, `check-dependencies` OK.
+  **Kontrola anty-szczęściowa, wszystkie cztery zweryfikowane cofnięciem:** zapis w miejscu wywala
+  test atomowości; sanityzacja zamiast odmowy wywala 6 testów; usunięcie odczytu z dysku przy zimnym
+  starcie wywala test restartu; wyłączenie callbacku wywala oba testy przerwania.
 
 **Next (2026-08-05): D2 zamknięta — kolejnym krokiem jest BIEG TRENINGOWY na h=63.**
 
